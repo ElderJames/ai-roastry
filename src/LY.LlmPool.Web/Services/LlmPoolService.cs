@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -17,6 +18,8 @@ public class LlmPoolService
         _dbContext = dbContext;
         _logger = logger;
     }
+
+    #region Model Types
 
     public async Task<List<LlmModelType>> GetModelTypesAsync()
     {
@@ -49,6 +52,7 @@ public class LlmPoolService
         existing.Name = modelType.Name;
         existing.Description = modelType.Description;
         existing.Icon = modelType.Icon;
+        existing.DefaultEndpoint = modelType.DefaultEndpoint;
         existing.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
@@ -75,6 +79,10 @@ public class LlmPoolService
         await _dbContext.SaveChangesAsync();
     }
 
+    #endregion
+
+    #region Configs
+
     public async Task<List<LlmConfigGroup>> GetLlmGroupsAsync()
     {
         var configs = await _dbContext.Configs
@@ -90,6 +98,15 @@ public class LlmPoolService
                 Configs = g.ToList()
             })
             .ToList();
+    }
+
+    public async Task<List<LlmConfig>> GetConfigsAsync()
+    {
+        return await _dbContext.Configs
+            .Include(x => x.ModelType)
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .ToListAsync();
     }
 
     public async Task<LlmConfig?> GetConfigByIdAsync(string id)
@@ -146,27 +163,98 @@ public class LlmPoolService
         }
     }
 
-    public async Task<LlmConfig?> GetAvailableConfigAsync(string modelTypeId)
-    {
-        var configs = await _dbContext.Configs
-            .Where(x => x.ModelTypeId == modelTypeId && x.IsEnabled)
-            .ToListAsync();
+    #endregion
 
-        if (!configs.Any())
+    #region Endpoints
+
+    public async Task<List<LlmEndpoint>> GetEndpointsAsync()
+    {
+        return await _dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .ThenInclude(x => x.LlmConfig)
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+    }
+
+    public async Task<LlmEndpoint?> GetEndpointByPathAsync(string path)
+    {
+        return await _dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .ThenInclude(x => x.LlmConfig)
+            .FirstOrDefaultAsync(x => x.Path == path && x.IsEnabled);
+    }
+
+    public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
+    {
+        _dbContext.Endpoints.Add(endpoint);
+        await _dbContext.SaveChangesAsync();
+        return endpoint;
+    }
+
+    public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
+    {
+        var existing = await _dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .FirstOrDefaultAsync(x => x.Id == endpoint.Id);
+
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"Endpoint with ID {endpoint.Id} not found.");
+        }
+
+        existing.Name = endpoint.Name;
+        existing.Description = endpoint.Description;
+        existing.Path = endpoint.Path;
+        existing.IsEnabled = endpoint.IsEnabled;
+        existing.UpdatedAt = DateTime.UtcNow;
+
+        // Update configs
+        _dbContext.EndpointConfigs.RemoveRange(existing.EndpointConfigs);
+        _dbContext.EndpointConfigs.AddRange(endpoint.EndpointConfigs);
+
+        await _dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task DeleteEndpointAsync(string id)
+    {
+        var endpoint = await _dbContext.Endpoints.FindAsync(id);
+        if (endpoint == null)
+        {
+            throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
+        }
+
+        _dbContext.Endpoints.Remove(endpoint);
+        await _dbContext.SaveChangesAsync();
+    }
+
+    #endregion
+
+    #region Load Balancing
+
+    public async Task<LlmConfig?> GetAvailableConfigAsync(string path)
+    {
+        var endpoint = await _dbContext.Endpoints
+            .Include(e => e.EndpointConfigs)
+            .ThenInclude(c => c.LlmConfig)
+            .FirstOrDefaultAsync(e => e.Path == path && e.IsEnabled);
+
+        if (endpoint == null)
         {
             return null;
         }
 
+        var configs = endpoint.EndpointConfigs
+            .Where(c => c.LlmConfig != null && c.LlmConfig.IsEnabled)
+            .OrderBy(c => c.Priority)
+            .Select(c => c.LlmConfig)
+            .ToList();
+
         foreach (var config in configs)
         {
-            if (!_configLocks.ContainsKey(config.Id))
+            if (await TryAcquireConfigAsync(config!.Id))
             {
-                _configLocks[config.Id] = new SemaphoreSlim(1, 1);
-            }
-
-            if (await _configLocks[config.Id].WaitAsync(TimeSpan.Zero))
-            {
-                config.IsBusy = true;
                 return config;
             }
         }
@@ -188,4 +276,16 @@ public class LlmPoolService
             }
         }
     }
+
+    private async Task<bool> TryAcquireConfigAsync(string configId)
+    {
+        if (!_configLocks.ContainsKey(configId))
+        {
+            _configLocks[configId] = new SemaphoreSlim(1, 1);
+        }
+
+        return await _configLocks[configId].WaitAsync(TimeSpan.Zero);
+    }
+
+    #endregion
 } 

@@ -19,11 +19,6 @@ try {
         dotnet tool install --global dotnet-ef
     }
 
-    # Add required packages
-    Write-Host "Ensuring required packages are installed..."
-    dotnet add package Microsoft.EntityFrameworkCore.Design
-    dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
-
     # Add the migration
     Write-Host "Adding migration..."
     dotnet ef migrations add $MigrationName --context LlmDbContext --output-dir Data/Migrations

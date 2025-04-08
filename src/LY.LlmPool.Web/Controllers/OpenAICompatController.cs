@@ -1,5 +1,7 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
+using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,60 +11,58 @@ namespace LY.LlmPool.Web.Controllers;
 [Route("v1")]
 public class OpenAICompatController : ControllerBase
 {
-    private readonly ILogger<OpenAICompatController> _logger;
     private readonly LlmPoolService _llmPoolService;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<OpenAICompatController> _logger;
 
     public OpenAICompatController(
-        ILogger<OpenAICompatController> logger,
         LlmPoolService llmPoolService,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        ILogger<OpenAICompatController> logger)
     {
-        _logger = logger;
         _llmPoolService = llmPoolService;
         _httpClientFactory = httpClientFactory;
+        _logger = logger;
     }
 
     [HttpPost("chat/completions")]
-    public async Task<IActionResult> ChatCompletions(
-        [FromBody] JsonDocument requestBody,
-        [FromQuery] string? modelType = null,
-        CancellationToken cancellationToken = default)
+    public async Task ChatCompletions()
     {
-        var config = await _llmPoolService.GetAvailableConfigAsync(modelType ?? "");
+        var requestPath = "/v1/chat/completions";
+        var config = await _llmPoolService.GetAvailableConfigAsync(requestPath);
+        
         if (config == null)
         {
-            return StatusCode(503, new { error = new { message = "No available LLM configuration found." } });
+            Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+            await Response.WriteAsJsonAsync(new { error = "No available model found" });
+            return;
         }
 
         try
         {
-            var httpClient = _httpClientFactory.CreateClient();
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/v1/chat/completions")
-            {
-                Content = new StringContent(requestBody.RootElement.ToString(), Encoding.UTF8, "application/json")
-            };
+            var client = _httpClientFactory.CreateClient();
+            var request = await CreateProxyRequest(config);
 
-            request.Headers.Add("Authorization", $"Bearer {config.ApiKey}");
-            foreach (var header in config.AdditionalHeaders)
+            // 设置响应头
+            Response.Headers["Transfer-Encoding"] = "chunked";
+            if (Request.Headers.Accept.Any(x => x.Contains("text/event-stream")))
             {
-                request.Headers.Add(header.Key, header.Value);
+                Response.Headers["Content-Type"] = "text/event-stream";
+            }
+            else
+            {
+                Response.Headers["Content-Type"] = "application/json";
             }
 
-            var response = await httpClient.SendAsync(request, cancellationToken);
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("LLM request failed: {StatusCode} {Content}", response.StatusCode, content);
-            }
-
-            return StatusCode((int)response.StatusCode, JsonDocument.Parse(content));
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            await stream.CopyToAsync(Response.Body);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing LLM request");
-            return StatusCode(500, new { error = new { message = "Internal server error" } });
+            _logger.LogError(ex, "Error processing request");
+            Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+            await Response.WriteAsJsonAsync(new { error = "Internal server error" });
         }
         finally
         {
@@ -70,14 +70,40 @@ public class OpenAICompatController : ControllerBase
         }
     }
 
+    private async Task<HttpRequestMessage> CreateProxyRequest(LlmConfig config)
+    {
+        // 创建新的请求
+        var proxyRequest = new HttpRequestMessage();
+        var requestContent = await new StreamReader(Request.Body).ReadToEndAsync();
+        
+        // 复制原始请求的属性
+        proxyRequest.Method = new HttpMethod(Request.Method);
+        proxyRequest.RequestUri = new Uri($"{config.BaseUrl.TrimEnd('/')}/v1/chat/completions");
+        
+        // 设置请求内容
+        if (!string.IsNullOrEmpty(requestContent))
+        {
+            proxyRequest.Content = new StringContent(requestContent, Encoding.UTF8, "application/json");
+        }
+
+        // 设置认证头
+        proxyRequest.Headers.Add("Authorization", $"Bearer {config.ApiKey}");
+
+        // 添加额外的请求头
+        foreach (var header in config.AdditionalHeaders)
+        {
+            proxyRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        return proxyRequest;
+    }
+
     [HttpPost("{*path}")]
     public async Task<IActionResult> ForwardRequest(
-        [FromBody] JsonDocument requestBody,
         [FromRoute] string path,
-        [FromQuery] string? modelType = null,
         CancellationToken cancellationToken = default)
     {
-        var config = await _llmPoolService.GetAvailableConfigAsync(modelType ?? "");
+        var config = await _llmPoolService.GetAvailableConfigAsync($"/v1/{path}");
         if (config == null)
         {
             return StatusCode(503, new { error = new { message = "No available LLM configuration found." } });
@@ -86,16 +112,7 @@ public class OpenAICompatController : ControllerBase
         try
         {
             var httpClient = _httpClientFactory.CreateClient();
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/v1/{path}")
-            {
-                Content = new StringContent(requestBody.RootElement.ToString(), Encoding.UTF8, "application/json")
-            };
-
-            request.Headers.Add("Authorization", $"Bearer {config.ApiKey}");
-            foreach (var header in config.AdditionalHeaders)
-            {
-                request.Headers.Add(header.Key, header.Value);
-            }
+            var request = await CreateProxyRequest(config);
 
             var response = await httpClient.SendAsync(request, cancellationToken);
             var content = await response.Content.ReadAsStringAsync(cancellationToken);

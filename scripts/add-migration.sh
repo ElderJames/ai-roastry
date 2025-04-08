@@ -22,11 +22,6 @@ if ! dotnet tool list --global | grep "dotnet-ef" > /dev/null; then
     dotnet tool install --global dotnet-ef
 fi
 
-# Add required packages
-echo "Ensuring required packages are installed..."
-dotnet add package Microsoft.EntityFrameworkCore.Design
-dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
-
 # Add the migration
 echo "Adding migration..."
 dotnet ef migrations add "$MIGRATION_NAME" --context LlmDbContext --output-dir Data/Migrations

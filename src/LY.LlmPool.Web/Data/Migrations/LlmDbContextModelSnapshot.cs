@@ -17,7 +17,7 @@ namespace LY.LlmPool.Web.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.3")
+                .HasAnnotation("ProductVersion", "8.0.0")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -32,13 +32,11 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.Property<string>("ApiKey")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("text");
 
                     b.Property<string>("BaseUrl")
                         .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasColumnType("text");
 
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
@@ -54,8 +52,7 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.Property<string>("Model")
                         .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasColumnType("text");
 
                     b.Property<string>("ModelTypeId")
                         .IsRequired()
@@ -63,10 +60,9 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasColumnType("text");
 
-                    b.Property<DateTime?>("UpdatedAt")
+                    b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
@@ -77,6 +73,80 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("Configs");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmEndpoint", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Path")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.HasIndex("Path")
+                        .IsUnique();
+
+                    b.ToTable("Endpoints");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmEndpointConfig", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("EndpointId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("LlmConfigId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("LlmConfigId1")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LlmConfigId");
+
+                    b.HasIndex("LlmConfigId1");
+
+                    b.HasIndex("EndpointId", "LlmConfigId")
+                        .IsUnique();
+
+                    b.ToTable("EndpointConfigs");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmModelType", b =>
@@ -128,6 +198,39 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("ModelType");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmEndpointConfig", b =>
+                {
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmEndpoint", "Endpoint")
+                        .WithMany("EndpointConfigs")
+                        .HasForeignKey("EndpointId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmConfig", "LlmConfig")
+                        .WithMany()
+                        .HasForeignKey("LlmConfigId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmConfig", null)
+                        .WithMany("EndpointConfigs")
+                        .HasForeignKey("LlmConfigId1");
+
+                    b.Navigation("Endpoint");
+
+                    b.Navigation("LlmConfig");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmConfig", b =>
+                {
+                    b.Navigation("EndpointConfigs");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmEndpoint", b =>
+                {
+                    b.Navigation("EndpointConfigs");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmModelType", b =>

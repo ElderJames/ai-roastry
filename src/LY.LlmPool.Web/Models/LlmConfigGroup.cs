@@ -1,6 +1,6 @@
 using LY.LlmPool.Web.Data.Entities;
 
-namespace LY.LlmPool.Web.Data;
+namespace LY.LlmPool.Web.Models;
 
 public class LlmConfigGroup
 {

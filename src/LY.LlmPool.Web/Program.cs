@@ -21,6 +21,8 @@ builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuth
 
 // Add AntDesign services
 builder.Services.AddAntDesign();
+builder.Services.AddHttpClient();
+builder.Services.AddControllers();
 
 builder.Services.AddAuthentication(options =>
     {
@@ -31,7 +33,7 @@ builder.Services.AddAuthentication(options =>
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseNpgsql(connectionString));
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
 builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.RequireConfirmedAccount = true)
@@ -44,9 +46,8 @@ builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSe
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
 builder.Services.AddHttpClient();
-builder.Services.AddControllers();
 
-// Configure DbContext
+// Add database context
 builder.Services.AddDbContext<LlmDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 

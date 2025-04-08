@@ -1,0 +1,234 @@
+@page "/endpoint-config"
+@using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Data.Entities
+@using AntDesign
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+
+<PageTitle>Endpoint Configuration</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>Endpoint Configuration</div>
+            <div>
+                <Button Type="@ButtonType.Primary" OnClick="AddNewEndpoint">
+                    <Icon Type="plus"/>
+                    Add New Endpoint
+                </Button>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Row Gutter="16">
+            @foreach (var endpoint in _endpoints)
+            {
+                <AntDesign.Col Span="8" Class="mb-4">
+                    <Card>
+                        <TitleTemplate>
+                            <Space>
+                                <SpaceItem>
+                                    <Icon Type="api"  />
+                                </SpaceItem>
+                                <SpaceItem>
+                                    @endpoint.Name
+                                </SpaceItem>
+                            </Space>
+                        </TitleTemplate>
+                        <Extra>
+                            <Tag Color="@(endpoint.IsEnabled ? "green" : "red")">
+                                @(endpoint.IsEnabled ? "Enabled" : "Disabled")
+                            </Tag>
+                        </Extra>
+                        <ChildContent>
+                            <p>@endpoint.Description</p>
+                            <p>Path: <code>@endpoint.Path</code></p>
+                            <div class="mb-2">
+                                <Text Strong>Models:</Text>
+                                <div>
+                                    @foreach (var config in endpoint.EndpointConfigs.OrderBy(x => x.Priority))
+                                    {
+                                        <Tag Class="mb-1">@config.LlmConfig?.Name</Tag>
+                                    }
+                                </div>
+                            </div>
+                            <div class="mt-3">
+                                <Space>
+                                    <SpaceItem>
+                                        <Button Type="@ButtonType.Primary" OnClick="() => EditEndpoint(endpoint)">
+                                            <Icon Type="edit"  />
+                                            Edit
+                                        </Button>
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Popconfirm Title="Are you sure to delete this endpoint?"
+                                                  OkText="Yes"
+                                                  CancelText="No"
+                                                  OnConfirm="() => DeleteEndpoint(endpoint)">
+                                            <Button Danger>
+                                                <Icon Type="delete"  />
+                                                Delete
+                                            </Button>
+                                        </Popconfirm>
+                                    </SpaceItem>
+                                </Space>
+                            </div>
+                        </ChildContent>
+                    </Card>
+                </AntDesign.Col>
+            }
+        </Row>
+    </ChildContent>
+</Card>
+
+<Modal Title="@(_editingEndpoint.Id == null ? "Add New Endpoint" : "Edit Endpoint")"
+       Visible="@_showDialog"
+       OnOk="SaveEndpoint"
+       OnCancel="CloseDialog"
+       Width="800">
+    <Form Model="@_editingEndpoint"
+          LabelCol="new ColLayoutParam { Span = 8 }"
+          WrapperCol="new ColLayoutParam { Span = 16 }">
+        <FormItem Label="Name" Required>
+            <Input @bind-Value="@_editingEndpoint.Name" />
+        </FormItem>
+        <FormItem Label="Description">
+            <TextArea @bind-Value="@_editingEndpoint.Description" />
+        </FormItem>
+        <FormItem Label="Path" Required>
+            <Input @bind-Value="@_editingEndpoint.Path" Placeholder="/v1/chat/completions" />
+        </FormItem>
+        <FormItem Label="Enabled">
+            <Switch @bind-Value="@_editingEndpoint.IsEnabled" />
+        </FormItem>
+        <FormItem Label="Models" Required>
+            <div class="mb-2">
+                <Button Type="@ButtonType.Primary" OnClick="AddModel">
+                    <Icon Type="plus" />
+                    Add Model
+                </Button>
+            </div>
+            <Table TItem="LlmEndpointConfig"
+                   DataSource="@_editingEndpoint.EndpointConfigs.OrderBy(x => x.Priority)"
+                   Size="TableSize.Small"
+                   Context="configItem"
+                   Bordered>
+                <Column Title="Model" TData="string">
+                    <Select TItem="LlmConfig"
+                            TItemValue="string"
+                            DataSource="@_availableConfigs"
+                            @bind-Value="@configItem.LlmConfigId"
+                            ValueName="@nameof(LlmConfig.Id)"
+                            LabelName="@nameof(LlmConfig.Name)"
+                            Style="width: 100%;">
+                        <ItemTemplate Context="item">
+                            @item.Name
+                        </ItemTemplate>
+                    </Select>
+                </Column>
+                <Column Title="Priority" TData="int">
+                    <AntDesign.InputNumber @bind-Value="@configItem.Priority" Min="0" />
+                </Column>
+                <ActionColumn Title="Action">
+                    <Button Danger OnClick="() => RemoveModel(configItem)">
+                        <Icon Type="delete" />
+                    </Button>
+                </ActionColumn>
+            </Table>
+        </FormItem>
+    </Form>
+</Modal>
+
+@code {
+    private List<LlmEndpoint> _endpoints = new();
+    private List<LlmConfig> _availableConfigs = new();
+    private bool _showDialog;
+    private LlmEndpoint _editingEndpoint = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _endpoints = await LlmPoolService.GetEndpointsAsync();
+        _availableConfigs = await LlmPoolService.GetConfigsAsync();
+    }
+
+    private void AddNewEndpoint()
+    {
+        _editingEndpoint = new LlmEndpoint();
+        _showDialog = true;
+    }
+
+    private void EditEndpoint(LlmEndpoint endpoint)
+    {
+        _editingEndpoint = new LlmEndpoint
+        {
+            Id = endpoint.Id,
+            Name = endpoint.Name,
+            Description = endpoint.Description,
+            Path = endpoint.Path,
+            IsEnabled = endpoint.IsEnabled,
+            EndpointConfigs = endpoint.EndpointConfigs.ToList()
+        };
+        _showDialog = true;
+    }
+
+    private async Task DeleteEndpoint(LlmEndpoint endpoint)
+    {
+        await LlmPoolService.DeleteEndpointAsync(endpoint.Id);
+        await LoadDataAsync();
+    }
+
+    private async Task SaveEndpoint()
+    {
+        if (string.IsNullOrWhiteSpace(_editingEndpoint.Name))
+        {
+            await _message.Error("Name is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editingEndpoint.Path))
+        {
+            await _message.Error("Path is required");
+            return;
+        }
+        if (!_editingEndpoint.EndpointConfigs.Any())
+        {
+            await _message.Error("At least one model is required");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_editingEndpoint.Id))
+        {
+            await LlmPoolService.AddEndpointAsync(_editingEndpoint);
+        }
+        else
+        {
+            await LlmPoolService.UpdateEndpointAsync(_editingEndpoint);
+        }
+
+        CloseDialog();
+        await LoadDataAsync();
+    }
+
+    private void CloseDialog()
+    {
+        _showDialog = false;
+        _editingEndpoint = new LlmEndpoint();
+    }
+
+    private void AddModel()
+    {
+        _editingEndpoint.EndpointConfigs.Add(new LlmEndpointConfig
+        {
+            Priority = _editingEndpoint.EndpointConfigs.Count
+        });
+    }
+
+    private void RemoveModel(LlmEndpointConfig config)
+    {
+        _editingEndpoint.EndpointConfigs.Remove(config);
+    }
+} 

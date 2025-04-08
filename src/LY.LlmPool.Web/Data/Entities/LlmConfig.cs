@@ -10,22 +10,21 @@ public class LlmConfig
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     [Required]
-    [MaxLength(50)]
     public string Name { get; set; } = string.Empty;
 
     [MaxLength(200)]
     public string? Description { get; set; }
 
     [Required]
-    [MaxLength(200)]
+    public string ModelTypeId { get; set; } = string.Empty;
+
+    [Required]
     public string BaseUrl { get; set; } = string.Empty;
 
     [Required]
-    [MaxLength(200)]
     public string ApiKey { get; set; } = string.Empty;
 
     [Required]
-    [MaxLength(50)]
     public string Model { get; set; } = string.Empty;
 
     public bool IsEnabled { get; set; } = true;
@@ -33,15 +32,13 @@ public class LlmConfig
     [NotMapped]
     public bool IsBusy { get; set; }
 
-    [Required]
-    public string ModelTypeId { get; set; } = string.Empty;
-
-    [ForeignKey(nameof(ModelTypeId))]
-    public virtual LlmModelType? ModelType { get; set; }
-
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-    public DateTime? UpdatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public virtual LlmModelType ModelType { get; set; } = null!;
+
+    public virtual ICollection<LlmEndpointConfig> EndpointConfigs { get; set; } = new List<LlmEndpointConfig>();
 
     [Column(TypeName = "jsonb")]
     public string? AdditionalHeadersJson { get; set; }
