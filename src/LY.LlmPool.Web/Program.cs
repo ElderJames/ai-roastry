@@ -1,9 +1,11 @@
 using LY.LlmPool.Web.Components;
 using LY.LlmPool.Web.Components.Account;
-using LY.LlmPool.Web.Data;
+using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using AntDesign;
+using LY.LlmPool.Web.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +17,9 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityUserAccessor>();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
+
+// Add AntDesign services
+builder.Services.AddAntDesign();
 
 builder.Services.AddAuthentication(options =>
     {
@@ -34,6 +39,13 @@ builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.Requ
     .AddDefaultTokenProviders();
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+
+// Add LLM Pool services
+builder.Services.Configure<LlmPoolOptions>(
+    builder.Configuration.GetSection(LlmPoolOptions.SectionName));
+builder.Services.AddSingleton<LlmPoolService>();
+builder.Services.AddHttpClient();
+builder.Services.AddControllers();
 
 var app = builder.Build();
 
@@ -59,5 +71,8 @@ app.MapRazorComponents<App>()
 
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
+
+// Map controllers
+app.MapControllers();
 
 app.Run();

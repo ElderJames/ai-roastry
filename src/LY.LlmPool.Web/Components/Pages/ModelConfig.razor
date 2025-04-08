@@ -1,0 +1,166 @@
+@page "/model-config"
+@using LY.LlmPool.Web.Data
+@using LY.LlmPool.Web.Services
+@inject LlmPoolService LlmPoolService
+@inject IConfiguration Configuration
+
+<PageTitle>LLM Configuration</PageTitle>
+
+<Card>
+    <TitleTemplate>
+       LLM Configuration
+    </TitleTemplate>
+    <Extra>
+        <Button Type="@ButtonType.Primary" OnClick="AddNewConfig">
+            <Icon Type="plus" Theme="outline" />
+            Add New LLM
+        </Button>
+    </Extra>
+    <ChildContent>
+        @foreach (var group in _llmGroups)
+        {
+            <Card Class="mb-4">
+                <TitleTemplate>
+                    @group.Type.ToString()
+                </TitleTemplate>
+                <ChildContent>
+                    <Row Gutter="16">
+                        @foreach (var config in group.Configs)
+                        {
+                            <AntDesign.Col Span="8">
+                                <Card>
+                                    <ChildContent>
+                                        <h5>@config.Name</h5>
+                                        <p>@config.Description</p>
+                                        <div class="mb-2">
+                                            <Tag Color="@(config.IsEnabled ? (config.IsBusy ? "orange" : "green") : "red")">
+                                                @(config.IsEnabled ? (config.IsBusy ? "Busy" : "Available") : "Disabled")
+                                            </Tag>
+                                        </div>
+                                        <Space>
+                                            <SpaceItem>
+                                                <Button Type="@ButtonType.Primary" OnClick="() => EditConfig(config)">
+                                                    <Icon Type="edit" Theme="outline" />
+                                                    Edit
+                                                </Button>
+                                            </SpaceItem>
+                                            <SpaceItem>
+                                                <Popconfirm Title="Are you sure to delete this LLM?"
+                                                          OkText="Yes"
+                                                          CancelText="No"
+                                                          OnConfirm="() => DeleteConfig(config)">
+                                                    <Button Danger>
+                                                        <Icon Type="delete" Theme="outline" />
+                                                        Delete
+                                                    </Button>
+                                                </Popconfirm>
+                                            </SpaceItem>
+                                        </Space>
+                                    </ChildContent>
+                                </Card>
+                            </AntDesign.Col>
+                        }
+                    </Row>
+                </ChildContent>
+            </Card>
+        }
+    </ChildContent>
+</Card>
+
+<Modal Title="@(_editingConfig.Id == null ? "Add New LLM" : "Edit LLM")"
+       Visible="@_showDialog"
+       OnOk="SaveConfig"
+       OnCancel="CloseDialog">
+    <Form Model="@_editingConfig"
+          LabelCol="new ColLayoutParam { Span = 8 }"
+          WrapperCol="new ColLayoutParam { Span = 16 }">
+        <FormItem Label="Name">
+            <Input @bind-Value="@_editingConfig.Name" />
+        </FormItem>
+        <FormItem Label="Description">
+            <TextArea @bind-Value="@_editingConfig.Description" />
+        </FormItem>
+        <FormItem Label="Type">
+            <Select TItem="LlmType" TItemValue="LlmType"
+                   @bind-Value="@_editingConfig.Type"
+                   Style="width: 100%;">
+                @foreach (var type in Enum.GetValues<LlmType>())
+                {
+                    <SelectOption TItem="LlmType" TItemValue="LlmType" 
+                                Value="@type" 
+                                Label="@type.ToString()" />
+                }
+            </Select>
+        </FormItem>
+        <FormItem Label="Base URL">
+            <Input @bind-Value="@_editingConfig.BaseUrl" />
+        </FormItem>
+        <FormItem Label="API Key">
+            <Input @bind-Value="@_editingConfig.ApiKey" Type="password" />
+        </FormItem>
+        <FormItem Label="Model">
+            <Input @bind-Value="@_editingConfig.Model" />
+        </FormItem>
+        <FormItem Label="Enabled">
+            <Switch @bind-Value="@_editingConfig.IsEnabled" />
+        </FormItem>
+    </Form>
+</Modal>
+
+@code {
+    private List<LlmConfigGroup> _llmGroups = new();
+    private bool _showDialog;
+    private LlmConfig _editingConfig = new();
+
+    protected override void OnInitialized()
+    {
+        LoadConfigs();
+    }
+
+    private void LoadConfigs()
+    {
+        _llmGroups = LlmPoolService.GetLlmGroups().ToList();
+    }
+
+    private void AddNewConfig()
+    {
+        _editingConfig = new LlmConfig();
+        _showDialog = true;
+    }
+
+    private void EditConfig(LlmConfig config)
+    {
+        _editingConfig = new LlmConfig
+        {
+            Id = config.Id,
+            Name = config.Name,
+            Description = config.Description,
+            Type = config.Type,
+            BaseUrl = config.BaseUrl,
+            ApiKey = config.ApiKey,
+            Model = config.Model,
+            IsEnabled = config.IsEnabled,
+            AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders)
+        };
+        _showDialog = true;
+    }
+
+    private void DeleteConfig(LlmConfig config)
+    {
+        LlmPoolService.RemoveConfig(config.Id);
+        LoadConfigs();
+    }
+
+    private void SaveConfig()
+    {
+        LlmPoolService.AddOrUpdateConfig(_editingConfig);
+        CloseDialog();
+        LoadConfigs();
+    }
+
+    private void CloseDialog()
+    {
+        _showDialog = false;
+        _editingConfig = new LlmConfig();
+    }
+} 
