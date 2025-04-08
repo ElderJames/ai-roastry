@@ -1,0 +1,81 @@
+@using AntDesign
+
+<Space>
+    <SpaceItem>
+        <Input @bind-Value="_value" TValue="string"
+               Placeholder="Enter icon name or select"
+               OnChange="HandleValueChange" />
+    </SpaceItem>
+    <SpaceItem>
+        <Dropdown>
+            <Overlay>
+                <Menu>
+                    @foreach (var group in _iconGroups)
+                    {
+                        <SubMenu Title="@group.Key">
+                            <div style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; padding: 8px;">
+                                @foreach (var icon in group.Value)
+                                {
+                                    <Tooltip Title="@icon">
+                                        <Button Type="@ButtonType.Text"
+                                                Style="width: 32px; height: 32px;"
+                                                OnClick="() => SelectIcon(icon)">
+                                            <Icon Type="@icon" />
+                                        </Button>
+                                    </Tooltip>
+                                }
+                            </div>
+                        </SubMenu>
+                    }
+                </Menu>
+            </Overlay>
+            <ChildContent>
+                <Button>
+                    <Icon Type="@(string.IsNullOrEmpty(Value) ? "question" : Value)" />
+                    <Icon Type="down" />
+                </Button>
+            </ChildContent>
+        </Dropdown>
+    </SpaceItem>
+</Space>
+
+@code {
+    private string _value = string.Empty;
+    private readonly Dictionary<string, List<string>> _iconGroups = new()
+    {
+        ["Direction"] = new() { "up", "down", "left", "right", "arrow-up", "arrow-down", "arrow-left", "arrow-right" },
+        ["Suggestion"] = new() { "question", "plus", "minus", "check", "close", "info", "exclamation", "search" },
+        ["Edit"] = new() { "edit", "form", "copy", "scissor", "delete", "snippets", "diff", "highlight" },
+        ["Data"] = new() { "area-chart", "pie-chart", "bar-chart", "dot-chart", "line-chart", "radar-chart", "heat-map", "fall" },
+        ["Brand"] = new() { "android", "apple", "windows", "ie", "chrome", "github", "aliwangwang", "dingding" },
+        ["Application"] = new() { "account-book", "api", "appstore", "audio", "bank", "bell", "book", "build" },
+        ["Device"] = new() { "mobile", "tablet", "desktop", "laptop", "camera", "printer", "car", "wifi" },
+        ["Common"] = new() { "lock", "unlock", "bars", "cloud", "link", "disconnect", "heart", "star" }
+    };
+
+    [Parameter]
+    public string Value { get; set; } = string.Empty;
+
+    [Parameter]
+    public EventCallback<string> ValueChanged { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        _value = Value;
+    }
+
+    private async Task HandleValueChange(string value)
+    {
+        Value = value;
+        if (ValueChanged.HasDelegate)
+        {
+            await ValueChanged.InvokeAsync(value);
+        }
+    }
+
+    private async Task SelectIcon(string icon)
+    {
+        _value = icon;
+        await HandleValueChange(icon);
+    }
+} 

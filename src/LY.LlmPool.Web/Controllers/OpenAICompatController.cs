@@ -1,7 +1,5 @@
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,88 +9,112 @@ namespace LY.LlmPool.Web.Controllers;
 [Route("v1")]
 public class OpenAICompatController : ControllerBase
 {
+    private readonly ILogger<OpenAICompatController> _logger;
     private readonly LlmPoolService _llmPoolService;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ILogger<OpenAICompatController> _logger;
 
     public OpenAICompatController(
+        ILogger<OpenAICompatController> logger,
         LlmPoolService llmPoolService,
-        IHttpClientFactory httpClientFactory,
-        ILogger<OpenAICompatController> logger)
+        IHttpClientFactory httpClientFactory)
     {
+        _logger = logger;
         _llmPoolService = llmPoolService;
         _httpClientFactory = httpClientFactory;
-        _logger = logger;
     }
 
     [HttpPost("chat/completions")]
     public async Task<IActionResult> ChatCompletions(
         [FromBody] JsonDocument requestBody,
-        [FromHeader(Name = "X-LLM-Type")] string? llmType = null,
+        [FromQuery] string? modelType = null,
         CancellationToken cancellationToken = default)
     {
-        LlmType? targetType = null;
-        if (!string.IsNullOrEmpty(llmType) && Enum.TryParse<LlmType>(llmType, true, out var type))
+        var config = await _llmPoolService.GetAvailableConfigAsync(modelType ?? "");
+        if (config == null)
         {
-            targetType = type;
-        }
-
-        var llm = await _llmPoolService.GetAvailableLlmAsync(targetType, cancellationToken);
-        if (llm == null)
-        {
-            return StatusCode(503, new { error = new { message = "No available LLM found" } });
+            return StatusCode(503, new { error = new { message = "No available LLM configuration found." } });
         }
 
         try
         {
-            var client = _httpClientFactory.CreateClient();
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{llm.BaseUrl.TrimEnd('/')}/v1/chat/completions");
-            
-            // Copy original request headers
-            foreach (var header in Request.Headers)
+            var httpClient = _httpClientFactory.CreateClient();
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/v1/chat/completions")
             {
-                if (!header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase) &&
-                    !header.Key.StartsWith("X-", StringComparison.OrdinalIgnoreCase))
-                {
-                    request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
-                }
+                Content = new StringContent(requestBody.RootElement.ToString(), Encoding.UTF8, "application/json")
+            };
+
+            request.Headers.Add("Authorization", $"Bearer {config.ApiKey}");
+            foreach (var header in config.AdditionalHeaders)
+            {
+                request.Headers.Add(header.Key, header.Value);
             }
 
-            // Set API key
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", llm.ApiKey);
+            var response = await httpClient.SendAsync(request, cancellationToken);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
-            // Add additional headers
-            //foreach (var (key, value) in llm.AdditionalHeaders)
-            //{
-            //    request.Headers.TryAddWithoutValidation(key, value);
-            //}
-
-            // Forward request body
-            var json = requestBody.RootElement.GetRawText();
-            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            
-            // Stream the response
-            Response.Headers.Append("Transfer-Encoding", "chunked");
-            foreach (var header in response.Headers)
+            if (!response.IsSuccessStatusCode)
             {
-                Response.Headers.Append(header.Key, header.Value.ToArray());
+                _logger.LogWarning("LLM request failed: {StatusCode} {Content}", response.StatusCode, content);
             }
 
-            Response.StatusCode = (int)response.StatusCode;
-            
-            await response.Content.CopyToAsync(Response.Body, cancellationToken);
-            return new EmptyResult();
+            return StatusCode((int)response.StatusCode, JsonDocument.Parse(content));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing request for LLM {LlmId}", llm.Id);
+            _logger.LogError(ex, "Error processing LLM request");
             return StatusCode(500, new { error = new { message = "Internal server error" } });
         }
         finally
         {
-            await _llmPoolService.ReleaseLlm(llm.Id);
+            _llmPoolService.ReleaseConfig(config.Id);
+        }
+    }
+
+    [HttpPost("{*path}")]
+    public async Task<IActionResult> ForwardRequest(
+        [FromBody] JsonDocument requestBody,
+        [FromRoute] string path,
+        [FromQuery] string? modelType = null,
+        CancellationToken cancellationToken = default)
+    {
+        var config = await _llmPoolService.GetAvailableConfigAsync(modelType ?? "");
+        if (config == null)
+        {
+            return StatusCode(503, new { error = new { message = "No available LLM configuration found." } });
+        }
+
+        try
+        {
+            var httpClient = _httpClientFactory.CreateClient();
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/v1/{path}")
+            {
+                Content = new StringContent(requestBody.RootElement.ToString(), Encoding.UTF8, "application/json")
+            };
+
+            request.Headers.Add("Authorization", $"Bearer {config.ApiKey}");
+            foreach (var header in config.AdditionalHeaders)
+            {
+                request.Headers.Add(header.Key, header.Value);
+            }
+
+            var response = await httpClient.SendAsync(request, cancellationToken);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("LLM request failed: {StatusCode} {Content}", response.StatusCode, content);
+            }
+
+            return StatusCode((int)response.StatusCode, JsonDocument.Parse(content));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing LLM request");
+            return StatusCode(500, new { error = new { message = "Internal server error" } });
+        }
+        finally
+        {
+            _llmPoolService.ReleaseConfig(config.Id);
         }
     }
 } 

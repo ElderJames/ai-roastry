@@ -1,104 +1,178 @@
 @page "/model-config"
 @using LY.LlmPool.Web.Data
+@using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Services
 @inject LlmPoolService LlmPoolService
-@inject IConfiguration Configuration
+@inject MessageService _message
 
-<PageTitle>LLM Configuration</PageTitle>
+<PageTitle>Model Configuration</PageTitle>
 
 <Card>
     <TitleTemplate>
-       LLM Configuration
+        <div class="d-flex justify-content-between align-items-center">
+            <div>Model Configuration</div>
+            <div>
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="ShowModelTypeModal">
+                            <Icon Type="setting" Theme="outline" />
+                            Manage Model Types
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="AddNewConfig">
+                            <Icon Type="plus" Theme="outline" />
+                            Add New Model
+                        </Button>
+                    </SpaceItem>
+                </Space>
+            </div>
+        </div>
     </TitleTemplate>
-    <Extra>
-        <Button Type="@ButtonType.Primary" OnClick="AddNewConfig">
-            <Icon Type="plus" Theme="outline" />
-            Add New LLM
-        </Button>
-    </Extra>
     <ChildContent>
-        @foreach (var group in _llmGroups)
+        @if (_modelTypes.Count > 0)
         {
-            <Card Class="mb-4">
-                <TitleTemplate>
-                    @group.Type.ToString()
-                </TitleTemplate>
-                <ChildContent>
-                    <Row Gutter="16">
-                        @foreach (var config in group.Configs)
-                        {
-                            <AntDesign.Col Span="8">
-                                <Card>
-                                    <ChildContent>
-                                        <h5>@config.Name</h5>
-                                        <p>@config.Description</p>
-                                        <div class="mb-2">
+            <Tabs>
+                @foreach (var modelType in _modelTypes)
+                {
+                    <TabPane Key="@modelType.Id" Tab="@modelType.Name">
+                        <Row Gutter="16">
+                            @{
+                                var configs = _llmGroups
+                                .FirstOrDefault(g => g.ModelTypeId == modelType.Id)?.Configs ?? new List<LlmConfig>();
+                            }
+                            @foreach (var config in configs)
+                            {
+                                <AntDesign.Col Span="8" Class="mb-4">
+                                    <Card>
+                                        <TitleTemplate>
+                                            <Space>
+                                                <SpaceItem>
+                                                    <Icon Type="@modelType.Icon" />
+                                                </SpaceItem>
+                                                <SpaceItem>
+                                                    @config.Name
+                                                </SpaceItem>
+                                            </Space>
+                                        </TitleTemplate>
+                                        <Extra>
                                             <Tag Color="@(config.IsEnabled ? (config.IsBusy ? "orange" : "green") : "red")">
                                                 @(config.IsEnabled ? (config.IsBusy ? "Busy" : "Available") : "Disabled")
                                             </Tag>
-                                        </div>
-                                        <Space>
-                                            <SpaceItem>
-                                                <Button Type="@ButtonType.Primary" OnClick="() => EditConfig(config)">
-                                                    <Icon Type="edit" Theme="outline" />
-                                                    Edit
-                                                </Button>
-                                            </SpaceItem>
-                                            <SpaceItem>
-                                                <Popconfirm Title="Are you sure to delete this LLM?"
-                                                          OkText="Yes"
-                                                          CancelText="No"
-                                                          OnConfirm="() => DeleteConfig(config)">
-                                                    <Button Danger>
-                                                        <Icon Type="delete" Theme="outline" />
-                                                        Delete
-                                                    </Button>
-                                                </Popconfirm>
-                                            </SpaceItem>
-                                        </Space>
-                                    </ChildContent>
-                                </Card>
-                            </AntDesign.Col>
-                        }
-                    </Row>
-                </ChildContent>
-            </Card>
+                                        </Extra>
+                                        <ChildContent>
+                                            <p>@config.Description</p>
+                                            <div class="mt-3">
+                                                <Space>
+                                                    <SpaceItem>
+                                                        <Button Type="@ButtonType.Primary" OnClick="() => EditConfig(config)">
+                                                            <Icon Type="edit" Theme="outline" />
+                                                            Edit
+                                                        </Button>
+                                                    </SpaceItem>
+                                                    <SpaceItem>
+                                                        <Popconfirm Title="Are you sure to delete this model?"
+                                                                    OkText="Yes"
+                                                                    CancelText="No"
+                                                                    OnConfirm="() => DeleteConfig(config)">
+                                                            <Button Danger>
+                                                                <Icon Type="delete" Theme="outline" />
+                                                                Delete
+                                                            </Button>
+                                                        </Popconfirm>
+                                                    </SpaceItem>
+                                                </Space>
+                                            </div>
+                                        </ChildContent>
+                                    </Card>
+                                </AntDesign.Col>
+                            }
+                        </Row>
+                    </TabPane>
+                }
+
+            </Tabs>
         }
     </ChildContent>
 </Card>
 
-<Modal Title="@(_editingConfig.Id == null ? "Add New LLM" : "Edit LLM")"
-       Visible="@_showDialog"
+<Modal Title="Manage Model Types"
+       Visible="@_showModelTypeDialog"
+       OnOk="SaveModelTypes"
+       OnCancel="CloseModelTypeDialog"
+       Width="800">
+    <Table TItem="LlmModelType"
+           DataSource="@_modelTypes"
+           Size="TableSize.Small">
+        <Column Title="Name" TData="string">
+            <Input @bind-Value="@context.Name" />
+        </Column>
+        <Column Title="Description" TData="string">
+            <Input @bind-Value="@context.Description" />
+        </Column>
+        <Column Title="Icon" TData="string" Width="200">
+            <IconSelectorInput @bind-Value="@context.Icon" />
+        </Column>
+        <Column Title="Default Endpoint" TData="string">
+            <Input @bind-Value="@context.DefaultEndpoint" Placeholder="https://api.example.com" />
+        </Column>
+        <ActionColumn Title="Action" Width="100">
+            <Space>
+                <SpaceItem>
+                    <Button Danger OnClick="() => RemoveModelType(context)">
+                        <Icon Type="delete" Theme="outline" />
+                    </Button>
+                </SpaceItem>
+            </Space>
+        </ActionColumn>
+    </Table>
+    <div class="mt-3">
+        <Button Type="@ButtonType.Primary" OnClick="AddModelType">
+            <Icon Type="plus" Theme="outline" />
+            Add Model Type
+        </Button>
+    </div>
+</Modal>
+
+<Modal Title="@(_editingConfig.Id == null ? "Add New Model" : "Edit Model")"
+       Visible="@_showConfigDialog"
        OnOk="SaveConfig"
-       OnCancel="CloseDialog">
+       OnCancel="CloseConfigDialog">
     <Form Model="@_editingConfig"
           LabelCol="new ColLayoutParam { Span = 8 }"
           WrapperCol="new ColLayoutParam { Span = 16 }">
-        <FormItem Label="Name">
+        <FormItem Label="Name" Required>
             <Input @bind-Value="@_editingConfig.Name" />
         </FormItem>
         <FormItem Label="Description">
             <TextArea @bind-Value="@_editingConfig.Description" />
         </FormItem>
-        <FormItem Label="Type">
-            <Select TItem="LlmType" TItemValue="LlmType"
-                   @bind-Value="@_editingConfig.Type"
-                   Style="width: 100%;">
-                @foreach (var type in Enum.GetValues<LlmType>())
-                {
-                    <SelectOption TItem="LlmType" TItemValue="LlmType" 
-                                Value="@type" 
-                                Label="@type.ToString()" />
-                }
+        <FormItem Label="Model Type" Required>
+            <Select DataSource="@_modelTypes" TItem="LlmModelType" TItemValue="string"
+                    @bind-Value="@_editingConfig.ModelTypeId"
+                    ValueName="@nameof(LlmModelType.Id)"
+                    LabelName="@nameof(LlmModelType.Name)"
+                    OnSelectedItemChanged="OnModelTypeChanged"
+                    Style="width: 100%;">
+                <ItemTemplate Context="item">
+                    <Space>
+                        <SpaceItem>
+                            <Icon Type="@item.Icon" />
+                        </SpaceItem>
+                        <SpaceItem>
+                            @item.Name
+                        </SpaceItem>
+                    </Space>
+                </ItemTemplate>
             </Select>
         </FormItem>
-        <FormItem Label="Base URL">
+        <FormItem Label="Base URL" Required>
             <Input @bind-Value="@_editingConfig.BaseUrl" />
         </FormItem>
-        <FormItem Label="API Key">
+        <FormItem Label="API Key" Required>
             <Input @bind-Value="@_editingConfig.ApiKey" Type="password" />
         </FormItem>
-        <FormItem Label="Model">
+        <FormItem Label="Model" Required>
             <Input @bind-Value="@_editingConfig.Model" />
         </FormItem>
         <FormItem Label="Enabled">
@@ -108,24 +182,110 @@
 </Modal>
 
 @code {
+    private List<LlmModelType> _modelTypes = new();
     private List<LlmConfigGroup> _llmGroups = new();
-    private bool _showDialog;
+    private bool _showConfigDialog;
+    private bool _showModelTypeDialog;
     private LlmConfig _editingConfig = new();
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        LoadConfigs();
+        await LoadModelTypesAsync();
+        await LoadConfigsAsync();
     }
 
-    private void LoadConfigs()
+    private async Task LoadModelTypesAsync()
     {
-        _llmGroups = LlmPoolService.GetLlmGroups().ToList();
+        _modelTypes = await LlmPoolService.GetModelTypesAsync();
+    }
+
+    private async Task LoadConfigsAsync()
+    {
+        _llmGroups = await LlmPoolService.GetLlmGroupsAsync();
+    }
+
+    private void ShowModelTypeModal()
+    {
+        _showModelTypeDialog = true;
+    }
+
+    private void AddModelType()
+    {
+        _modelTypes.Add(new LlmModelType { Icon = "api" });
+    }
+
+    private async Task RemoveModelType(LlmModelType modelType)
+    {
+        try
+        {
+            await LlmPoolService.DeleteModelTypeAsync(modelType.Id);
+            _modelTypes.Remove(modelType);
+        }
+        catch (InvalidOperationException ex)
+        {
+            await _message.Error(ex.Message);
+        }
+    }
+
+    private async Task SaveModelTypes()
+    {
+        var hasError = false;
+        foreach (var modelType in _modelTypes)
+        {
+            if (string.IsNullOrWhiteSpace(modelType.Name))
+            {
+                await _message.Error("Model type name is required");
+                hasError = true;
+                break;
+            }
+        }
+
+        if (hasError) return;
+
+        foreach (var modelType in _modelTypes)
+        {
+            if (string.IsNullOrEmpty(modelType.Id))
+            {
+                await LlmPoolService.AddModelTypeAsync(modelType);
+            }
+            else
+            {
+                await LlmPoolService.UpdateModelTypeAsync(modelType);
+            }
+        }
+
+        CloseModelTypeDialog();
+        await LoadModelTypesAsync();
+        await LoadConfigsAsync();
+    }
+
+    private void CloseModelTypeDialog()
+    {
+        _showModelTypeDialog = false;
     }
 
     private void AddNewConfig()
     {
-        _editingConfig = new LlmConfig();
-        _showDialog = true;
+        if (!_modelTypes.Any())
+        {
+            _message.Warning("Please create model types first");
+            ShowModelTypeModal();
+            return;
+        }
+
+        _editingConfig = new LlmConfig
+        {
+            ModelTypeId = _modelTypes.First().Id
+        };
+
+        // 自动填充默认endpoint
+        var selectedModelType = _modelTypes.First();
+        if (!string.IsNullOrEmpty(selectedModelType.DefaultEndpoint))
+        {
+            _editingConfig.BaseUrl = selectedModelType.DefaultEndpoint;
+        }
+
+        _showConfigDialog = true;
     }
 
     private void EditConfig(LlmConfig config)
@@ -135,32 +295,74 @@
             Id = config.Id,
             Name = config.Name,
             Description = config.Description,
-            Type = config.Type,
+            ModelTypeId = config.ModelTypeId,
             BaseUrl = config.BaseUrl,
             ApiKey = config.ApiKey,
             Model = config.Model,
             IsEnabled = config.IsEnabled,
             AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders)
         };
-        _showDialog = true;
+        _showConfigDialog = true;
     }
 
-    private void DeleteConfig(LlmConfig config)
+    private async Task DeleteConfig(LlmConfig config)
     {
-        LlmPoolService.RemoveConfig(config.Id);
-        LoadConfigs();
+        await LlmPoolService.DeleteConfigAsync(config.Id);
+        await LoadConfigsAsync();
     }
 
-    private void SaveConfig()
+    private async Task SaveConfig()
     {
-        LlmPoolService.AddOrUpdateConfig(_editingConfig);
-        CloseDialog();
-        LoadConfigs();
+        if (string.IsNullOrWhiteSpace(_editingConfig.Name))
+        {
+            await _message.Error("Name is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editingConfig.ModelTypeId))
+        {
+            await _message.Error("Model Type is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editingConfig.BaseUrl))
+        {
+            await _message.Error("Base URL is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editingConfig.ApiKey))
+        {
+            await _message.Error("API Key is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editingConfig.Model))
+        {
+            await _message.Error("Model is required");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_editingConfig.Id))
+        {
+            await LlmPoolService.AddConfigAsync(_editingConfig);
+        }
+        else
+        {
+            await LlmPoolService.UpdateConfigAsync(_editingConfig);
+        }
+
+        CloseConfigDialog();
+        await LoadConfigsAsync();
     }
 
-    private void CloseDialog()
+    private void CloseConfigDialog()
     {
-        _showDialog = false;
+        _showConfigDialog = false;
         _editingConfig = new LlmConfig();
+    }
+
+    private void OnModelTypeChanged(LlmModelType item)
+    {
+        if (item is LlmModelType modelType && !string.IsNullOrEmpty(modelType.DefaultEndpoint))
+        {
+            _editingConfig.BaseUrl = modelType.DefaultEndpoint;
+        }
     }
 } 
