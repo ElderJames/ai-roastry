@@ -51,7 +51,7 @@ public class OpenAICompatController : ControllerBase
         try
         {
             var client = _httpClientFactory.CreateClient();
-            var request = await CreateProxyRequest(config);
+            var proxyRequest = await CreateProxyRequest(config);
 
             // 设置响应头
             Response.Headers["Transfer-Encoding"] = "chunked";
@@ -64,7 +64,7 @@ public class OpenAICompatController : ControllerBase
                 Response.Headers["Content-Type"] = "application/json";
             }
 
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            using var response = await client.SendAsync(proxyRequest, HttpCompletionOption.ResponseHeadersRead);
             await using var stream = await response.Content.ReadAsStreamAsync();
             await stream.CopyToAsync(Response.Body);
         }
@@ -106,52 +106,5 @@ public class OpenAICompatController : ControllerBase
         }
 
         return proxyRequest;
-    }
-
-    [HttpPost("{*path}")]
-    public async Task<IActionResult> ForwardRequest(
-        [FromRoute] string path,
-        CancellationToken cancellationToken = default)
-    {
-        // 从请求头中获取API Key
-        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) || 
-            string.IsNullOrEmpty(authHeader) || 
-            !authHeader.ToString().StartsWith("Bearer "))
-        {
-            return Unauthorized(new { error = new { message = "Missing or invalid API key" } });
-        }
-
-        var apiKey = authHeader.ToString().Replace("Bearer ", "");
-        var config = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey);
-        
-        if (config == null)
-        {
-            return StatusCode(503, new { error = new { message = "No available LLM configuration found or invalid API key." } });
-        }
-
-        try
-        {
-            var httpClient = _httpClientFactory.CreateClient();
-            var request = await CreateProxyRequest(config);
-
-            var response = await httpClient.SendAsync(request, cancellationToken);
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("LLM request failed: {StatusCode} {Content}", response.StatusCode, content);
-            }
-
-            return StatusCode((int)response.StatusCode, JsonDocument.Parse(content));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error processing LLM request");
-            return StatusCode(500, new { error = new { message = "Internal server error" } });
-        }
-        finally
-        {
-            _llmPoolService.ReleaseConfig(config.Id);
-        }
     }
 } 

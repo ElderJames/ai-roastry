@@ -4,9 +4,9 @@ using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using AntDesign;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,7 +22,22 @@ builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuth
 // Add AntDesign services
 builder.Services.AddAntDesign();
 builder.Services.AddHttpClient();
-builder.Services.AddControllers();
+
+// Add OpenAPI support
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, context, cancellationToken) =>
+    {
+        document.Info = new()
+        {
+            Title = "LLM Pool API",
+            Version = "v1",
+            Description = "LLM Pool Web API documentation"
+        };
+        return Task.CompletedTask;
+    });
+});
 
 builder.Services.AddAuthentication(options =>
     {
@@ -45,34 +60,47 @@ builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSe
 
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
-builder.Services.AddHttpClient();
 
 // Add database context
 builder.Services.AddDbContext<LlmDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddControllers();
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
-    app.UseExceptionHandler("/Error");
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
 
 app.UseHttpsRedirection();
-
 app.UseStaticFiles();
 app.UseAntiforgery();
 
+// Add routing middleware
+app.UseRouting();
+
+// Add authentication & authorization
+app.UseAuthentication();
+app.UseAntiforgery();
+app.UseAuthorization();
+
+// Configure OpenAPI
+app.MapOpenApi();
+app.MapScalarApiReference();
+
+// Map endpoints
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
 
-// Map controllers
+// Map controllers - this needs to be after UseRouting and before UseEndpoints
 app.MapControllers();
 
 // Apply database migrations and seed initial data if needed

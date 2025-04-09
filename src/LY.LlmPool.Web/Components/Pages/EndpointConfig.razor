@@ -14,7 +14,7 @@
             <div>Endpoint Configuration</div>
             <div>
                 <Button Type="@ButtonType.Primary" OnClick="AddNewEndpoint">
-                    <Icon Type="plus" Theme="outline" />
+                    <Icon Type="plus" />
                     Add New Endpoint
                 </Button>
             </div>
@@ -27,7 +27,7 @@
             <Column @bind-Field="@context.Name" Title="Name">
                 <Space>
                     <SpaceItem>
-                        <Icon Type="api" Theme="outline" />
+                        <Icon Type="api" />
                     </SpaceItem>
                     <SpaceItem>
                         @context.Name
@@ -38,11 +38,11 @@
             <Column Title="Endpoint" TData="string">
                 <div>
                     <div>
-                        <Text Type="secondary">Base URL:</Text>
+                        <Text Type="@TextElementType.Secondary">Base URL:</Text>
                         <Text Copyable CopyConfig="copyableConfig">@($"{_baseUrl}")</Text>
                     </div>
                     <div>
-                        <Text Type="secondary">Chat:</Text>
+                        <Text Type="@TextElementType.Secondary">Chat:</Text>
                         <Text Copyable CopyConfig="copyableConfig">@($"{_baseUrl}/v1/chat/completions")</Text>
                     </div>
                 </div>
@@ -65,7 +65,7 @@
                 <Space>
                     <SpaceItem>
                         <Button Type="@ButtonType.Primary" OnClick="() => EditEndpoint(context)">
-                            <Icon Type="edit" Theme="outline" />
+                            <Icon Type="edit" />
                         </Button>
                     </SpaceItem>
                     <SpaceItem>
@@ -74,7 +74,7 @@
                         CancelText="No"
                         OnConfirm="() => DeleteEndpoint(context)">
                             <Button Danger>
-                                <Icon Type="delete" Theme="outline" />
+                                <Icon Type="delete" />
                             </Button>
                         </Popconfirm>
                     </SpaceItem>
@@ -104,7 +104,7 @@ Width="800">
         <FormItem Label="Models" Required>
             <div class="mb-2">
                 <Button Type="@ButtonType.Primary" OnClick="AddModel">
-                    <Icon Type="plus" Theme="outline" />
+                    <Icon Type="plus" />
                     Add Model
                 </Button>
             </div>
@@ -131,7 +131,7 @@ Width="800">
                 </Column>
                 <ActionColumn Title="Action">
                     <Button Danger OnClick="() => RemoveModel(configItem)">
-                        <Icon Type="delete" Theme="outline" />
+                        <Icon Type="delete" />
                     </Button>
                 </ActionColumn>
             </Table>
