@@ -4,6 +4,7 @@
 @using AntDesign
 @inject LlmPoolService LlmPoolService
 @inject MessageService _message
+@inject NavigationManager NavigationManager
 
 <PageTitle>Endpoint Configuration</PageTitle>
 
@@ -13,81 +14,84 @@
             <div>Endpoint Configuration</div>
             <div>
                 <Button Type="@ButtonType.Primary" OnClick="AddNewEndpoint">
-                    <Icon Type="plus"/>
+                    <Icon Type="plus" Theme="outline" />
                     Add New Endpoint
                 </Button>
             </div>
         </div>
     </TitleTemplate>
     <ChildContent>
-        <Row Gutter="16">
-            @foreach (var endpoint in _endpoints)
-            {
-                <AntDesign.Col Span="8" Class="mb-4">
-                    <Card>
-                        <TitleTemplate>
-                            <Space>
-                                <SpaceItem>
-                                    <Icon Type="api"  />
-                                </SpaceItem>
-                                <SpaceItem>
-                                    @endpoint.Name
-                                </SpaceItem>
-                            </Space>
-                        </TitleTemplate>
-                        <Extra>
-                            <Tag Color="@(endpoint.IsEnabled ? "green" : "red")">
-                                @(endpoint.IsEnabled ? "Enabled" : "Disabled")
-                            </Tag>
-                        </Extra>
-                        <ChildContent>
-                            <p>@endpoint.Description</p>
-                            <div class="mb-2">
-                                <Text Strong>Models:</Text>
-                                <div>
-                                    @foreach (var config in endpoint.EndpointConfigs.OrderBy(x => x.Priority))
-                                    {
-                                        <Tag Class="mb-1">@config.LlmConfig?.Name</Tag>
-                                    }
-                                </div>
-                            </div>
-                            <div class="mt-3">
-                                <Space>
-                                    <SpaceItem>
-                                        <Button Type="@ButtonType.Primary" OnClick="() => EditEndpoint(endpoint)">
-                                            <Icon Type="edit"  />
-                                            Edit
-                                        </Button>
-                                    </SpaceItem>
-                                    <SpaceItem>
-                                        <Popconfirm Title="Are you sure to delete this endpoint?"
-                                                  OkText="Yes"
-                                                  CancelText="No"
-                                                  OnConfirm="() => DeleteEndpoint(endpoint)">
-                                            <Button Danger>
-                                                <Icon Type="delete"  />
-                                                Delete
-                                            </Button>
-                                        </Popconfirm>
-                                    </SpaceItem>
-                                </Space>
-                            </div>
-                        </ChildContent>
-                    </Card>
-                </AntDesign.Col>
-            }
-        </Row>
+        <Table TItem="LlmEndpoint"
+        DataSource="@_endpoints"
+        Loading="_loading">
+            <Column @bind-Field="@context.Name" Title="Name">
+                <Space>
+                    <SpaceItem>
+                        <Icon Type="api" Theme="outline" />
+                    </SpaceItem>
+                    <SpaceItem>
+                        @context.Name
+                    </SpaceItem>
+                </Space>
+            </Column>
+            <Column @bind-Field="@context.Description" Title="Description" />
+            <Column Title="Endpoint" TData="string">
+                <div>
+                    <div>
+                        <Text Type="secondary">Base URL:</Text>
+                        <Text Copyable CopyConfig="copyableConfig">@($"{_baseUrl}")</Text>
+                    </div>
+                    <div>
+                        <Text Type="secondary">Chat:</Text>
+                        <Text Copyable CopyConfig="copyableConfig">@($"{_baseUrl}/v1/chat/completions")</Text>
+                    </div>
+                </div>
+            </Column>
+            <Column Title="API Key" TData="string">
+                <Text Copyable CopyConfig="copyableConfig">@context.Id</Text>
+            </Column>
+            <Column Title="Models" TData="string">
+                @foreach (var config in context.EndpointConfigs.OrderBy(x => x.Priority))
+                {
+                    <Tag Class="mb-1">@config.LlmConfig?.Name</Tag>
+                }
+            </Column>
+            <Column Title="Status" TData="string">
+                <Tag Color="@(context.IsEnabled ? "green" : "red")">
+                    @(context.IsEnabled ? "Enabled" : "Disabled")
+                </Tag>
+            </Column>
+            <ActionColumn Title="Action">
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="() => EditEndpoint(context)">
+                            <Icon Type="edit" Theme="outline" />
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="Are you sure to delete this endpoint?"
+                        OkText="Yes"
+                        CancelText="No"
+                        OnConfirm="() => DeleteEndpoint(context)">
+                            <Button Danger>
+                                <Icon Type="delete" Theme="outline" />
+                            </Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
     </ChildContent>
 </Card>
 
 <Modal Title="@(_editingEndpoint.Id == null ? "Add New Endpoint" : "Edit Endpoint")"
-       Visible="@_showDialog"
-       OnOk="SaveEndpoint"
-       OnCancel="CloseDialog"
-       Width="800">
+Visible="@_showDialog"
+OnOk="SaveEndpoint"
+OnCancel="CloseDialog"
+Width="800">
     <Form Model="@_editingEndpoint"
-          LabelCol="new ColLayoutParam { Span = 8 }"
-          WrapperCol="new ColLayoutParam { Span = 16 }">
+    LabelCol="new ColLayoutParam { Span = 8 }"
+    WrapperCol="new ColLayoutParam { Span = 16 }">
         <FormItem Label="Name" Required>
             <Input @bind-Value="@_editingEndpoint.Name" />
         </FormItem>
@@ -100,23 +104,23 @@
         <FormItem Label="Models" Required>
             <div class="mb-2">
                 <Button Type="@ButtonType.Primary" OnClick="AddModel">
-                    <Icon Type="plus" />
+                    <Icon Type="plus" Theme="outline" />
                     Add Model
                 </Button>
             </div>
             <Table TItem="LlmEndpointConfig"
-                   DataSource="@_editingEndpoint.EndpointConfigs.OrderBy(x => x.Priority)"
-                   Size="TableSize.Small"
-                   Context="configItem"
-                   Bordered>
+            DataSource="@_editingEndpoint.EndpointConfigs.OrderBy(x => x.Priority)"
+            Size="TableSize.Small"
+            Context="configItem"
+            Bordered>
                 <Column Title="Model" TData="string">
                     <Select TItem="LlmConfig"
-                            TItemValue="string"
-                            DataSource="@_availableConfigs"
-                            @bind-Value="@configItem.LlmConfigId"
-                            ValueName="@nameof(LlmConfig.Id)"
-                            LabelName="@nameof(LlmConfig.Name)"
-                            Style="width: 100%;">
+                    TItemValue="string"
+                    DataSource="@_availableConfigs"
+                    @bind-Value="@configItem.LlmConfigId"
+                    ValueName="@nameof(LlmConfig.Id)"
+                    LabelName="@nameof(LlmConfig.Name)"
+                    Style="width: 100%;">
                         <ItemTemplate Context="item">
                             @item.Name
                         </ItemTemplate>
@@ -127,7 +131,7 @@
                 </Column>
                 <ActionColumn Title="Action">
                     <Button Danger OnClick="() => RemoveModel(configItem)">
-                        <Icon Type="delete" />
+                        <Icon Type="delete" Theme="outline" />
                     </Button>
                 </ActionColumn>
             </Table>
@@ -139,17 +143,30 @@
     private List<LlmEndpoint> _endpoints = new();
     private List<LlmConfig> _availableConfigs = new();
     private bool _showDialog;
+    private bool _loading;
     private LlmEndpoint _editingEndpoint = new();
+    private TypographyCopyableConfig? copyableConfig;
+
+    private string _baseUrl => NavigationManager.BaseUri.TrimEnd('/');
 
     protected override async Task OnInitializedAsync()
     {
         await LoadDataAsync();
+        copyableConfig = new() { OnCopy = () => { _ = _message.Success("已复制"); } };
     }
 
     private async Task LoadDataAsync()
     {
-        _endpoints = await LlmPoolService.GetEndpointsAsync();
-        _availableConfigs = await LlmPoolService.GetConfigsAsync();
+        _loading = true;
+        try
+        {
+            _endpoints = await LlmPoolService.GetEndpointsAsync();
+            _availableConfigs = await LlmPoolService.GetConfigsAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
     private void AddNewEndpoint()
