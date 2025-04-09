@@ -7,7 +7,7 @@ namespace LY.LlmPool.Web.Data.Entities;
 public class LlmConfig
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string? Id { get; set; }
 
     [Required]
     public string Name { get; set; } = string.Empty;

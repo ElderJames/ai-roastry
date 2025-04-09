@@ -118,6 +118,7 @@ public class LlmPoolService
 
     public async Task<LlmConfig> AddConfigAsync(LlmConfig config)
     {
+        config.Id = Guid.NewGuid().ToString("N");
         _dbContext.Configs.Add(config);
         await _dbContext.SaveChangesAsync();
         _configLocks[config.Id] = new SemaphoreSlim(1, 1);
@@ -177,16 +178,9 @@ public class LlmPoolService
             .ToListAsync();
     }
 
-    public async Task<LlmEndpoint?> GetEndpointByPathAsync(string path)
-    {
-        return await _dbContext.Endpoints
-            .Include(x => x.EndpointConfigs)
-            .ThenInclude(x => x.LlmConfig)
-            .FirstOrDefaultAsync(x => x.Path == path && x.IsEnabled);
-    }
-
     public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
     {
+        endpoint.Id = Guid.NewGuid().ToString("N");
         _dbContext.Endpoints.Add(endpoint);
         await _dbContext.SaveChangesAsync();
         return endpoint;
@@ -205,7 +199,6 @@ public class LlmPoolService
 
         existing.Name = endpoint.Name;
         existing.Description = endpoint.Description;
-        existing.Path = endpoint.Path;
         existing.IsEnabled = endpoint.IsEnabled;
         existing.UpdatedAt = DateTime.UtcNow;
 
@@ -233,12 +226,12 @@ public class LlmPoolService
 
     #region Load Balancing
 
-    public async Task<LlmConfig?> GetAvailableConfigAsync(string path)
+    public async Task<LlmConfig?> GetAvailableConfigByKeyAsync(string key)
     {
         var endpoint = await _dbContext.Endpoints
             .Include(e => e.EndpointConfigs)
             .ThenInclude(c => c.LlmConfig)
-            .FirstOrDefaultAsync(e => e.Path == path && e.IsEnabled);
+            .FirstOrDefaultAsync(e => e.Id == key && e.IsEnabled);
 
         if (endpoint == null)
         {

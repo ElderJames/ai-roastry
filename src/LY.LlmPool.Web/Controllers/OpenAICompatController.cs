@@ -28,13 +28,23 @@ public class OpenAICompatController : ControllerBase
     [HttpPost("chat/completions")]
     public async Task ChatCompletions()
     {
-        var requestPath = "/v1/chat/completions";
-        var config = await _llmPoolService.GetAvailableConfigAsync(requestPath);
+        // 从请求头中获取API Key
+        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) || 
+            string.IsNullOrEmpty(authHeader) || 
+            !authHeader.ToString().StartsWith("Bearer "))
+        {
+            Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+            await Response.WriteAsJsonAsync(new { error = "Missing or invalid API key" });
+            return;
+        }
+
+        var apiKey = authHeader.ToString().Replace("Bearer ", "");
+        var config = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey);
         
         if (config == null)
         {
             Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-            await Response.WriteAsJsonAsync(new { error = "No available model found" });
+            await Response.WriteAsJsonAsync(new { error = "No available model found or invalid API key" });
             return;
         }
 
@@ -103,10 +113,20 @@ public class OpenAICompatController : ControllerBase
         [FromRoute] string path,
         CancellationToken cancellationToken = default)
     {
-        var config = await _llmPoolService.GetAvailableConfigAsync($"/v1/{path}");
+        // 从请求头中获取API Key
+        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) || 
+            string.IsNullOrEmpty(authHeader) || 
+            !authHeader.ToString().StartsWith("Bearer "))
+        {
+            return Unauthorized(new { error = new { message = "Missing or invalid API key" } });
+        }
+
+        var apiKey = authHeader.ToString().Replace("Bearer ", "");
+        var config = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey);
+        
         if (config == null)
         {
-            return StatusCode(503, new { error = new { message = "No available LLM configuration found." } });
+            return StatusCode(503, new { error = new { message = "No available LLM configuration found or invalid API key." } });
         }
 
         try

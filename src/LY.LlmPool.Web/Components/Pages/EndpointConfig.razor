@@ -42,7 +42,6 @@
                         </Extra>
                         <ChildContent>
                             <p>@endpoint.Description</p>
-                            <p>Path: <code>@endpoint.Path</code></p>
                             <div class="mb-2">
                                 <Text Strong>Models:</Text>
                                 <div>
@@ -94,9 +93,6 @@
         </FormItem>
         <FormItem Label="Description">
             <TextArea @bind-Value="@_editingEndpoint.Description" />
-        </FormItem>
-        <FormItem Label="Path" Required>
-            <Input @bind-Value="@_editingEndpoint.Path" Placeholder="/v1/chat/completions" />
         </FormItem>
         <FormItem Label="Enabled">
             <Switch @bind-Value="@_editingEndpoint.IsEnabled" />
@@ -169,7 +165,6 @@
             Id = endpoint.Id,
             Name = endpoint.Name,
             Description = endpoint.Description,
-            Path = endpoint.Path,
             IsEnabled = endpoint.IsEnabled,
             EndpointConfigs = endpoint.EndpointConfigs.ToList()
         };
@@ -187,11 +182,6 @@
         if (string.IsNullOrWhiteSpace(_editingEndpoint.Name))
         {
             await _message.Error("Name is required");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(_editingEndpoint.Path))
-        {
-            await _message.Error("Path is required");
             return;
         }
         if (!_editingEndpoint.EndpointConfigs.Any())

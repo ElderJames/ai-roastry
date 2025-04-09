@@ -10,10 +10,10 @@ public class LlmDbContext : DbContext
     {
     }
 
-    public DbSet<LlmModelType> ModelTypes => Set<LlmModelType>();
-    public DbSet<LlmConfig> Configs => Set<LlmConfig>();
-    public DbSet<LlmEndpoint> Endpoints => Set<LlmEndpoint>();
-    public DbSet<LlmEndpointConfig> EndpointConfigs => Set<LlmEndpointConfig>();
+    public DbSet<LlmModelType> ModelTypes { get; set; } = null!;
+    public DbSet<LlmConfig> Configs { get; set; } = null!;
+    public DbSet<LlmEndpoint> Endpoints { get; set; } = null!;
+    public DbSet<LlmEndpointConfig> EndpointConfigs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -42,7 +42,6 @@ public class LlmDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.Name).IsUnique();
-            entity.HasIndex(e => e.Path).IsUnique();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 

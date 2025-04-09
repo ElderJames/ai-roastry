@@ -5,15 +5,14 @@ namespace LY.LlmPool.Web.Data.Entities;
 public class LlmEndpoint
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Id { get; set; }
 
     [Required]
+    [MaxLength(50)]
     public string Name { get; set; } = string.Empty;
 
+    [MaxLength(200)]
     public string? Description { get; set; }
-
-    [Required]
-    public string Path { get; set; } = string.Empty;
 
     public bool IsEnabled { get; set; } = true;
 
