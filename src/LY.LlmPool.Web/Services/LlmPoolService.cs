@@ -9,13 +9,13 @@ namespace LY.LlmPool.Web.Services;
 
 public class LlmPoolService
 {
-    private readonly LlmDbContext _dbContext;
+    private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
     private readonly ILogger<LlmPoolService> _logger;
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
 
-    public LlmPoolService(LlmDbContext dbContext, ILogger<LlmPoolService> logger)
+    public LlmPoolService(IDbContextFactory<LlmDbContext> dbContextFactory, ILogger<LlmPoolService> logger)
     {
-        _dbContext = dbContext;
+        _dbContextFactory = dbContextFactory;
         _logger = logger;
     }
 
@@ -23,7 +23,8 @@ public class LlmPoolService
 
     public async Task<List<LlmModelType>> GetModelTypesAsync()
     {
-        return await _dbContext.ModelTypes
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.ModelTypes
             .AsNoTracking()
             .OrderBy(x => x.Name)
             .ToListAsync();
@@ -31,19 +32,22 @@ public class LlmPoolService
 
     public async Task<LlmModelType?> GetModelTypeByIdAsync(string id)
     {
-        return await _dbContext.ModelTypes.FindAsync(id);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.ModelTypes.FindAsync(id);
     }
 
     public async Task<LlmModelType> AddModelTypeAsync(LlmModelType modelType)
     {
-        _dbContext.ModelTypes.Add(modelType);
-        await _dbContext.SaveChangesAsync();
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        dbContext.ModelTypes.Add(modelType);
+        await dbContext.SaveChangesAsync();
         return modelType;
     }
 
     public async Task<LlmModelType> UpdateModelTypeAsync(LlmModelType modelType)
     {
-        var existing = await _dbContext.ModelTypes.FindAsync(modelType.Id);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.ModelTypes.FindAsync(modelType.Id);
         if (existing == null)
         {
             throw new KeyNotFoundException($"Model type with ID {modelType.Id} not found.");
@@ -55,13 +59,14 @@ public class LlmPoolService
         existing.DefaultEndpoint = modelType.DefaultEndpoint;
         existing.UpdatedAt = DateTime.UtcNow;
 
-        await _dbContext.SaveChangesAsync();
+        await dbContext.SaveChangesAsync();
         return existing;
     }
 
     public async Task DeleteModelTypeAsync(string id)
     {
-        var modelType = await _dbContext.ModelTypes
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var modelType = await dbContext.ModelTypes
             .Include(x => x.Configs)
             .FirstOrDefaultAsync(x => x.Id == id);
 
@@ -75,8 +80,8 @@ public class LlmPoolService
             throw new InvalidOperationException("Cannot delete model type that has configurations.");
         }
 
-        _dbContext.ModelTypes.Remove(modelType);
-        await _dbContext.SaveChangesAsync();
+        dbContext.ModelTypes.Remove(modelType);
+        await dbContext.SaveChangesAsync();
     }
 
     #endregion
@@ -85,7 +90,8 @@ public class LlmPoolService
 
     public async Task<List<LlmConfigGroup>> GetLlmGroupsAsync()
     {
-        var configs = await _dbContext.Configs
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var configs = await dbContext.Configs
             .Include(x => x.ModelType)
             .AsNoTracking()
             .ToListAsync();
@@ -102,7 +108,8 @@ public class LlmPoolService
 
     public async Task<List<LlmConfig>> GetConfigsAsync()
     {
-        return await _dbContext.Configs
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Configs
             .Include(x => x.ModelType)
             .AsNoTracking()
             .OrderBy(x => x.Name)
@@ -111,23 +118,26 @@ public class LlmPoolService
 
     public async Task<LlmConfig?> GetConfigByIdAsync(string id)
     {
-        return await _dbContext.Configs
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Configs
             .Include(x => x.ModelType)
             .FirstOrDefaultAsync(x => x.Id == id);
     }
 
     public async Task<LlmConfig> AddConfigAsync(LlmConfig config)
     {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         config.Id = Guid.NewGuid().ToString("N");
-        _dbContext.Configs.Add(config);
-        await _dbContext.SaveChangesAsync();
+        dbContext.Configs.Add(config);
+        await dbContext.SaveChangesAsync();
         _configLocks[config.Id] = new SemaphoreSlim(1, 1);
         return config;
     }
 
     public async Task<LlmConfig> UpdateConfigAsync(LlmConfig config)
     {
-        var existing = await _dbContext.Configs.FindAsync(config.Id);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.Configs.FindAsync(config.Id);
         if (existing == null)
         {
             throw new KeyNotFoundException($"Configuration with ID {config.Id} not found.");
@@ -143,20 +153,21 @@ public class LlmPoolService
         existing.AdditionalHeaders = config.AdditionalHeaders;
         existing.UpdatedAt = DateTime.UtcNow;
 
-        await _dbContext.SaveChangesAsync();
+        await dbContext.SaveChangesAsync();
         return existing;
     }
 
     public async Task DeleteConfigAsync(string id)
     {
-        var config = await _dbContext.Configs.FindAsync(id);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var config = await dbContext.Configs.FindAsync(id);
         if (config == null)
         {
             throw new KeyNotFoundException($"Configuration with ID {id} not found.");
         }
 
-        _dbContext.Configs.Remove(config);
-        await _dbContext.SaveChangesAsync();
+        dbContext.Configs.Remove(config);
+        await dbContext.SaveChangesAsync();
 
         if (_configLocks.ContainsKey(id))
         {
@@ -170,7 +181,8 @@ public class LlmPoolService
 
     public async Task<List<LlmEndpoint>> GetEndpointsAsync()
     {
-        return await _dbContext.Endpoints
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Endpoints
             .Include(x => x.EndpointConfigs)
             .ThenInclude(x => x.LlmConfig)
             .AsNoTracking()
@@ -180,15 +192,17 @@ public class LlmPoolService
 
     public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
     {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         endpoint.Id = Guid.NewGuid().ToString("N");
-        _dbContext.Endpoints.Add(endpoint);
-        await _dbContext.SaveChangesAsync();
+        dbContext.Endpoints.Add(endpoint);
+        await dbContext.SaveChangesAsync();
         return endpoint;
     }
 
     public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
     {
-        var existing = await _dbContext.Endpoints
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.Endpoints
             .Include(x => x.EndpointConfigs)
             .FirstOrDefaultAsync(x => x.Id == endpoint.Id);
 
@@ -203,23 +217,157 @@ public class LlmPoolService
         existing.UpdatedAt = DateTime.UtcNow;
 
         // Update configs
-        _dbContext.EndpointConfigs.RemoveRange(existing.EndpointConfigs);
-        _dbContext.EndpointConfigs.AddRange(endpoint.EndpointConfigs);
+        dbContext.EndpointConfigs.RemoveRange(existing.EndpointConfigs);
+        dbContext.EndpointConfigs.AddRange(endpoint.EndpointConfigs);
 
-        await _dbContext.SaveChangesAsync();
+        await dbContext.SaveChangesAsync();
         return existing;
     }
 
     public async Task DeleteEndpointAsync(string id)
     {
-        var endpoint = await _dbContext.Endpoints.FindAsync(id);
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var endpoint = await dbContext.Endpoints.FindAsync(id);
         if (endpoint == null)
         {
             throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
         }
 
-        _dbContext.Endpoints.Remove(endpoint);
-        await _dbContext.SaveChangesAsync();
+        dbContext.Endpoints.Remove(endpoint);
+        await dbContext.SaveChangesAsync();
+    }
+
+    #endregion
+
+    #region Endpoint Call Records
+
+    public async Task<EndpointCallRecord> CreateCallRecordAsync(string endpointId, object? requestData = null, string? parentCallId = null)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var record = new EndpointCallRecord
+        {
+            EndpointId = endpointId,
+            RequestReceivedAt = DateTime.UtcNow,
+            ParentCallId = parentCallId,
+            RequestData = requestData
+        };
+        
+        dbContext.EndpointCallRecords.Add(record);
+        await dbContext.SaveChangesAsync();
+        return record;
+    }
+
+    public async Task<EndpointCallRecord> UpdateCallRecordAsync(EndpointCallRecord record)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.EndpointCallRecords.FindAsync(record.Id);
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"Call record with ID {record.Id} not found.");
+        }
+        
+        dbContext.Entry(existing).CurrentValues.SetValues(record);
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task<EndpointCallRecord?> GetCallRecordAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.EndpointCallRecords
+            .Include(x => x.Endpoint)
+            .Include(x => x.LlmConfig)
+            .Include(x => x.ParentCall)
+            .Include(x => x.ChildCalls)
+            .FirstOrDefaultAsync(x => x.Id == id);
+    }
+
+    public async Task<List<EndpointCallRecord>> GetCallRecordsAsync(
+        string? endpointId = null,
+        string? configId = null,
+        DateTime? startDate = null,
+        DateTime? endDate = null,
+        int? skip = null,
+        int? take = null)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var query = dbContext.EndpointCallRecords
+            .Include(x => x.Endpoint)
+            .Include(x => x.LlmConfig)
+            .AsNoTracking();
+
+        if (!string.IsNullOrEmpty(endpointId))
+        {
+            query = query.Where(x => x.EndpointId == endpointId);
+        }
+
+        if (!string.IsNullOrEmpty(configId))
+        {
+            query = query.Where(x => x.LlmConfigId == configId);
+        }
+
+        if (startDate.HasValue)
+        {
+            query = query.Where(x => x.RequestReceivedAt >= startDate.Value);
+        }
+
+        if (endDate.HasValue)
+        {
+            query = query.Where(x => x.RequestReceivedAt < endDate.Value);
+        }
+
+        query = query.OrderByDescending(x => x.RequestReceivedAt);
+
+        if (skip.HasValue)
+        {
+            query = query.Skip(skip.Value);
+        }
+
+        if (take.HasValue)
+        {
+            query = query.Take(take.Value);
+        }
+
+        return await query.ToListAsync();
+    }
+
+    public async Task<List<EndpointCallRecord>> GetCallChainAsync(string rootCallId)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var rootCall = await dbContext.EndpointCallRecords
+            .Include(x => x.Endpoint)
+            .Include(x => x.LlmConfig)
+            .FirstOrDefaultAsync(x => x.Id == rootCallId);
+        
+        if (rootCall == null)
+        {
+            return new List<EndpointCallRecord>();
+        }
+        
+        var calls = new List<EndpointCallRecord> { rootCall };
+        await LoadChildCalls(rootCallId, calls);
+        
+        return calls.OrderBy(x => x.RequestReceivedAt).ToList();
+    }
+
+    private async Task LoadChildCalls(string parentId, List<EndpointCallRecord> calls)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var childCalls = await dbContext.EndpointCallRecords
+            .Include(x => x.Endpoint)
+            .Include(x => x.LlmConfig)
+            .Where(x => x.ParentCallId == parentId)
+            .ToListAsync();
+        
+        if (childCalls.Any())
+        {
+            calls.AddRange(childCalls);
+            
+            foreach (var child in childCalls)
+            {
+                await LoadChildCalls(child.Id, calls);
+            }
+        }
     }
 
     #endregion
@@ -228,7 +376,8 @@ public class LlmPoolService
 
     public async Task<LlmConfig?> GetAvailableConfigByKeyAsync(string key)
     {
-        var endpoint = await _dbContext.Endpoints
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var endpoint = await dbContext.Endpoints
             .Include(e => e.EndpointConfigs)
             .ThenInclude(c => c.LlmConfig)
             .FirstOrDefaultAsync(e => e.Id == key && e.IsEnabled);

@@ -14,6 +14,7 @@ public class LlmDbContext : DbContext
     public DbSet<LlmConfig> Configs { get; set; } = null!;
     public DbSet<LlmEndpoint> Endpoints { get; set; } = null!;
     public DbSet<LlmEndpointConfig> EndpointConfigs { get; set; } = null!;
+    public DbSet<EndpointCallRecord> EndpointCallRecords { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -61,6 +62,32 @@ public class LlmDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => new { e.EndpointId, e.LlmConfigId }).IsUnique();
+        });
+
+        modelBuilder.Entity<EndpointCallRecord>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.RequestReceivedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            
+            entity.HasOne(e => e.Endpoint)
+                .WithMany()
+                .HasForeignKey(e => e.EndpointId)
+                .OnDelete(DeleteBehavior.Restrict);
+                
+            entity.HasOne(e => e.LlmConfig)
+                .WithMany()
+                .HasForeignKey(e => e.LlmConfigId)
+                .OnDelete(DeleteBehavior.SetNull);
+                
+            entity.HasOne(e => e.ParentCall)
+                .WithMany(e => e.ChildCalls)
+                .HasForeignKey(e => e.ParentCallId)
+                .OnDelete(DeleteBehavior.Restrict);
+                
+            entity.HasIndex(e => e.EndpointId);
+            entity.HasIndex(e => e.LlmConfigId);
+            entity.HasIndex(e => e.RequestReceivedAt);
+            entity.HasIndex(e => e.ParentCallId);
         });
     }
 } 

@@ -11,33 +11,27 @@ using Scalar.AspNetCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+// Add database contexts
+builder.Services.AddDbContextFactory<LlmDbContext>(options =>
+    options.UseNpgsql(connectionString));
+
+builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+    options.UseNpgsql(connectionString));
+
+builder.Services.AddDatabaseDeveloperPageExceptionFilter();
+
+// Add Identity services
+builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.RequireConfirmedAccount = true)
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddSignInManager()
+    .AddDefaultTokenProviders();
 
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityUserAccessor>();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
-
-// Add AntDesign services
-builder.Services.AddAntDesign();
-builder.Services.AddHttpClient();
-
-// Add OpenAPI support
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddOpenApi(options =>
-{
-    options.AddDocumentTransformer((document, context, cancellationToken) =>
-    {
-        document.Info = new()
-        {
-            Title = "LLM Pool API",
-            Version = "v1",
-            Description = "LLM Pool Web API documentation"
-        };
-        return Task.CompletedTask;
-    });
-});
 
 builder.Services.AddAuthentication(options =>
     {
@@ -46,26 +40,23 @@ builder.Services.AddAuthentication(options =>
     })
     .AddIdentityCookies();
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseNpgsql(connectionString));
-builder.Services.AddDatabaseDeveloperPageExceptionFilter();
-
-builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.RequireConfirmedAccount = true)
-    .AddEntityFrameworkStores<ApplicationDbContext>()
-    .AddSignInManager()
-    .AddDefaultTokenProviders();
-
-builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
-
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
 
-// Add database context
-builder.Services.AddDbContext<LlmDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+// Add HTTP client factory
+builder.Services.AddHttpClient();
+
+// Add Ant Design
+builder.Services.AddAntDesign();
+
+// Add Razor Pages and MVC
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
 
 builder.Services.AddControllers();
+
+// Add email sender
+builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 
 var app = builder.Build();
 

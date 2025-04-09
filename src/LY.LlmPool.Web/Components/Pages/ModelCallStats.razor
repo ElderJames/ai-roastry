@@ -1,0 +1,306 @@
+@page "/model-stats"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+
+<PageTitle>Model Statistics</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>Model Statistics</div>
+            <div>
+                <DatePicker TValue="DateTime?" 
+                           Value="@selectedDate"
+                           OnChange="OnDateChanged"
+                           Picker="DatePickerType.Date"
+                           DisabledDate="date => date > DateTime.UtcNow.Date" />
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        @if (loading)
+        {
+            <Spin />
+        }
+        else if (configs == null || !configs.Any())
+        {
+            <Empty />
+        }
+        else
+        {
+            <Row Gutter="16">
+                @foreach (var config in configs)
+                {
+                    <AntDesign.Col Span="8" Style="margin-bottom: 16px;">
+                        <Card Bordered>
+                            <TitleTemplate>
+                                <Space>
+                                    <SpaceItem>
+                                        <Icon Type="@(config.ModelType?.Icon ?? "api")" />
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        @config.Name
+                                    </SpaceItem>
+                                </Space>
+                            </TitleTemplate>
+                            <Extra>
+                                <Space>
+                                    <SpaceItem>
+                                        <Button Type="@ButtonType.Link" OnClick="() => ViewModelCalls(config.Id)">
+                                            View Model Calls
+                                        </Button>
+                                    </SpaceItem>
+                                    @foreach (var endpoint in GetEndpointsForModel(config.Id))
+                                    {
+                                        <SpaceItem>
+                                            <Button Type="@ButtonType.Link" OnClick="() => ViewEndpointCalls(endpoint.Id)">
+                                                View @endpoint.Name Calls
+                                            </Button>
+                                        </SpaceItem>
+                                    }
+                                </Space>
+                            </Extra>
+                            <ChildContent>
+                                <Statistic Title="Total Calls" Value="@GetCallCount(config.Id)" />
+
+                                <Divider />
+
+                                <Row>
+                                    <AntDesign.Col Span="12">
+                                        <Statistic Title="Success Rate" 
+                                        Value="@GetSuccessRate(config.Id)" 
+                                        Precision="2"
+                                        Suffix="%" 
+                                        ValueStyle="@($"color: {GetColorForSuccessRate(config.Id)}")" />
+                                    </AntDesign.Col>
+                                    <AntDesign.Col Span="12">
+                                        <Statistic Title="Avg. Response Time" 
+                                        Value="@GetAvgResponseTime(config.Id)" 
+                                        Precision="2"
+                                        Suffix="s" />
+                                    </AntDesign.Col>
+                                </Row>
+
+                                <Divider />
+
+                                <div class="call-timeline">
+                                    @{
+                                        var configCalls = GetCallsForModel(config.Id);
+                                        var hours = Enumerable.Range(0, 24);
+                                    }
+                                    <div class="hour-bars">
+                                        @foreach (var hour in hours)
+                                        {
+                                            var hourCalls = configCalls.Where(c => c.RequestReceivedAt.Hour == hour).Count();
+                                            var maxHourCalls = Math.Max(1, configCalls.GroupBy(c => c.RequestReceivedAt.Hour)
+                                                                              .Select(g => g.Count())
+                                                                              .DefaultIfEmpty(0)
+                                                                              .Max());
+                                            var heightPercent = hourCalls > 0 ? Math.Max(10, (hourCalls * 100) / maxHourCalls) : 0;
+                                            var bgColor = hourCalls > 0 ? "#1890ff" : "#f0f0f0";
+
+                                            <Tooltip Title="@($"{hour}:00 - {hour}:59: {hourCalls} calls")">
+                                                <div class="hour-bar" style="height: @(heightPercent)%; background-color: @bgColor;"></div>
+                                            </Tooltip>
+                                        }
+                                    </div>
+                                    <div class="hour-labels">
+                                        <div>0h</div>
+                                        <div>12h</div>
+                                        <div>23h</div>
+                                    </div>
+                                </div>
+                            </ChildContent>
+                        </Card>
+                    </AntDesign.Col>
+                }
+            </Row>
+        }
+    </ChildContent>
+</Card>
+
+<style>
+    .call-timeline {
+    margin-top: 8px;
+    height: 100px;
+    }
+
+    .hour-bars {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    height: 80px;
+    }
+
+    .hour-bar {
+    flex: 1;
+    margin: 0 1px;
+    border-radius: 2px 2px 0 0;
+    transition: all 0.3s;
+    cursor: pointer;
+    }
+
+    .hour-bar:hover {
+    background-color: #40a9ff !important;
+    }
+
+    .hour-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #999;
+    margin-top: 4px;
+    }
+</style>
+
+@code {
+    private List<LlmConfig> configs = new();
+    private List<EndpointCallRecord> callRecords = new();
+    private bool loading = true;
+    private DateTime selectedDate = DateTime.UtcNow.Date;
+    private Dictionary<string, int> callCountCache = new();
+    private Dictionary<string, double> successRateCache = new();
+    private Dictionary<string, double> avgResponseTimeCache = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task OnDateChanged(DateTimeChangedEventArgs<DateTime?> date)
+    {
+        if (date.Date.HasValue)
+        {
+            selectedDate = date.Date.Value.Date;
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        
+        try
+        {
+            // Clear caches
+            callCountCache.Clear();
+            successRateCache.Clear();
+            avgResponseTimeCache.Clear();
+            
+            // Set date range for the selected date
+            DateTime startDate = selectedDate.ToUniversalTime();
+            DateTime endDate = startDate.AddDays(1);
+            
+            // Load all data in parallel
+            var configsTask = LlmPoolService.GetConfigsAsync();
+            var callRecordsTask = LlmPoolService.GetCallRecordsAsync(
+                configId: null,
+                startDate: startDate,
+                endDate: endDate,
+                take: null
+            );
+            
+            await Task.WhenAll(configsTask, callRecordsTask);
+            
+            configs = await configsTask;
+            callRecords = await callRecordsTask;
+        }
+        catch (Exception ex)
+        {
+            await _message.Error($"Error loading model statistics: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+    
+    private List<EndpointCallRecord> GetCallsForModel(string configId)
+    {
+        return callRecords.Where(c => c.LlmConfigId == configId).ToList();
+    }
+    
+    private int GetCallCount(string configId)
+    {
+        if (!callCountCache.ContainsKey(configId))
+        {
+            callCountCache[configId] = GetCallsForModel(configId).Count;
+        }
+        
+        return callCountCache[configId];
+    }
+    
+    private double GetSuccessRate(string configId)
+    {
+        if (!successRateCache.ContainsKey(configId))
+        {
+            var calls = GetCallsForModel(configId);
+            
+            if (calls.Count == 0)
+            {
+                successRateCache[configId] = 0;
+            }
+            else
+            {
+                var successCount = calls.Count(c => c.IsSuccessful);
+                successRateCache[configId] = ((double)successCount / calls.Count) * 100;
+            }
+        }
+        
+        return successRateCache[configId];
+    }
+    
+    private double GetAvgResponseTime(string configId)
+    {
+        if (!avgResponseTimeCache.ContainsKey(configId))
+        {
+            var calls = GetCallsForModel(configId)
+                .Where(c => c.ModelProcessingTime.HasValue)
+                .ToList();
+            
+            if (calls.Count == 0)
+            {
+                avgResponseTimeCache[configId] = 0;
+            }
+            else
+            {
+                var totalSeconds = calls.Sum(c => c.ModelProcessingTime!.Value.TotalSeconds);
+                avgResponseTimeCache[configId] = totalSeconds / calls.Count;
+            }
+        }
+        
+        return avgResponseTimeCache[configId];
+    }
+    
+    private string GetColorForSuccessRate(string configId)
+    {
+        var rate = GetSuccessRate(configId);
+        
+        if (rate >= 95) return "#52c41a"; // Green
+        if (rate >= 80) return "#faad14"; // Amber
+        return "#f5222d"; // Red
+    }
+    
+    private List<LlmEndpoint> GetEndpointsForModel(string configId)
+    {
+        return callRecords
+            .Where(c => c.LlmConfigId == configId)
+            .Select(c => c.Endpoint)
+            .Where(e => e != null)
+            .DistinctBy(e => e.Id)
+            .ToList();
+    }
+
+    private void ViewEndpointCalls(string endpointId)
+    {
+        NavigationManager.NavigateTo($"/endpoint-calls?endpointId={endpointId}");
+    }
+
+    private void ViewModelCalls(string configId)
+    {
+        NavigationManager.NavigateTo($"/endpoint-calls?configId={configId}");
+    }
+} 

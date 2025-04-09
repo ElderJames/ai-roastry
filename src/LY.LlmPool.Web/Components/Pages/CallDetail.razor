@@ -1,0 +1,235 @@
+@page "/call-detail/{CallId}"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@using System.Text.Json
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+
+<PageTitle>Call Detail</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <Space>
+                    <SpaceItem>
+                        <Button OnClick="GoBack">
+                            <Icon Type="arrow-left" />
+                            Back
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>Call Record Details</SpaceItem>
+                </Space>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        @if (loading)
+        {
+            <Spin Tip="Loading..."></Spin>
+        }
+        else if (callRecord == null)
+        {
+            <Result Status="ResultStatus.Http404"
+                   Title="Not Found"
+                   SubTitle="Sorry, the call record you're looking for doesn't exist.">
+                <Extra>
+                    <Button Type="ButtonType.Primary" OnClick="GoBack">Go Back</Button>
+                </Extra>
+            </Result>
+        }
+        else
+        {
+            <Tabs DefaultActiveKey="details">
+                <TabPane Key="details" Tab="Call Details">
+                    <Descriptions Bordered Column="2">
+                        <DescriptionItem Title="Call ID">@callRecord.Id</DescriptionItem>
+                        <DescriptionItem Title="Request Time">@callRecord.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss.fff")</DescriptionItem>
+                        <DescriptionItem Title="Endpoint">@(callRecord.Endpoint?.Name ?? "Unknown")</DescriptionItem>
+                        <DescriptionItem Title="Model">@(callRecord.LlmConfig?.Name ?? "N/A")</DescriptionItem>
+                        <DescriptionItem Title="Wait Time">@callRecord.WaitTime.TotalMilliseconds.ToString("0.00") ms</DescriptionItem>
+                        <DescriptionItem Title="Model Call Started">
+                            @(callRecord.ModelCallStartedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
+                        </DescriptionItem>
+                        <DescriptionItem Title="Model Response Started">
+                            @(callRecord.ModelResponseStartedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
+                        </DescriptionItem>
+                        <DescriptionItem Title="Model Response Ended">
+                            @(callRecord.ModelResponseEndedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
+                        </DescriptionItem>
+                        <DescriptionItem Title="Status">
+                            <Tag Color="@(callRecord.IsSuccessful ? "green" : "red")">
+                                @(callRecord.IsSuccessful ? "Success" : "Failed")
+                            </Tag>
+                        </DescriptionItem>
+                        <DescriptionItem Title="Error Message">@(callRecord.ErrorMessage ?? "N/A")</DescriptionItem>
+                        <DescriptionItem Title="Model Processing Time">
+                            @if (callRecord.ModelProcessingTime.HasValue)
+                            {
+                                <span>@callRecord.ModelProcessingTime.Value.TotalSeconds.ToString("0.000") seconds</span>
+                            }
+                            else
+                            {
+                                <span>N/A</span>
+                            }
+                        </DescriptionItem>
+                        <DescriptionItem Title="Total Time">
+                            @if (callRecord.TotalTime.HasValue)
+                            {
+                                <span>@callRecord.TotalTime.Value.TotalSeconds.ToString("0.000") seconds </span>
+                            }
+                            else
+                            {
+                                <span>N/A</span>
+                            }
+                        </DescriptionItem>
+                    </Descriptions>
+                </TabPane>
+
+                <TabPane Key="request" Tab="Request Data">
+                    <pre class="code-pre">
+                        @(FormatJson(callRecord.RequestDataJson))
+                    </pre>
+                </TabPane>
+
+                <TabPane Key="response" Tab="Response Data">
+                    <pre class="code-pre">
+                        @(FormatJson(callRecord.ResponseDataJson))
+                    </pre>
+                </TabPane>
+
+                @if (callChain != null && callChain.Count > 1)
+                {
+                    <TabPane Key="chain" Tab="Call Chain">
+                        <Timeline Mode="TimelineMode.Left">
+                            @foreach (var call in callChain)
+                            {
+                                <TimelineItem>
+                                    <TimelineItemLabel>@call.RequestReceivedAt.ToString("HH:mm:ss.fff")</TimelineItemLabel>
+                                    <TimelineItemDot Color="@(call.IsSuccessful ? "green" : "red")"></TimelineItemDot>
+                                    <TimelineItemContent>
+                                        <Card Size="CardSize.Small" Style="margin-bottom: 8px;">
+                                            <div class="d-flex justify-content-between">
+                                                <div>
+                                                    <strong>@(call.Endpoint?.Name ?? "Unknown")</strong>
+                                                </div>
+                                                <div>
+                                                    @if (call.Id == CallId)
+                                                    {
+                                                        <Tag Color="TagColor.Blue">Current</Tag>
+                                                    }
+                                                    else
+                                                    {
+                                                        <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="() => ViewCallDetail(call.Id)">
+                                                            View Details
+                                                        </Button>
+                                                    }
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <small>Model: @(call.LlmConfig?.Name ?? "N/A")</small>
+                                            </div>
+                                            <div>
+                                                <small>Processing Time: @(call.ModelProcessingTime?.TotalSeconds.ToString("0.000") ?? "N/A") seconds</small>
+                                            </div>
+                                        </Card>
+                                    </TimelineItemContent>
+                                </TimelineItem>
+                            }
+                        </Timeline>
+                    </TabPane>
+                }
+            </Tabs>
+        }
+    </ChildContent>
+</Card>
+
+<style>
+    .code-pre {
+    max-height: 400px;
+    overflow: auto;
+    background-color: #f5f5f5;
+    padding: 12px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    white-space: pre-wrap;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public string CallId { get; set; } = string.Empty;
+
+    private EndpointCallRecord? callRecord;
+    private List<EndpointCallRecord>? callChain;
+    private bool loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        
+        try
+        {
+            // Load the call record
+            callRecord = await LlmPoolService.GetCallRecordAsync(CallId);
+            
+            if (callRecord != null)
+            {
+                // Load the call chain
+                callChain = await LlmPoolService.GetCallChainAsync(CallId);
+            }
+        }
+        catch (Exception ex)
+        {
+            await _message.Error($"Error loading call record: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/endpoint-calls");
+    }
+
+    private void ViewCallDetail(string id)
+    {
+        NavigationManager.NavigateTo($"/call-detail/{id}");
+    }
+
+    private string FormatJson(string? jsonStr)
+    {
+        if (string.IsNullOrEmpty(jsonStr))
+        {
+            return "No data available";
+        }
+
+        try
+        {
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true
+            };
+
+            var jsonElement = JsonSerializer.Deserialize<JsonElement>(jsonStr);
+            return JsonSerializer.Serialize(jsonElement, options);
+        }
+        catch
+        {
+            return jsonStr;
+        }
+    }
+} 

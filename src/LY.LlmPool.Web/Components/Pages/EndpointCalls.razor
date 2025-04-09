@@ -1,0 +1,262 @@
+@page "/endpoint-calls"
+@using AntDesign.TableModels
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@using System.Globalization
+@using Microsoft.AspNetCore.WebUtilities
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+
+<PageTitle>Endpoint Call Records</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>Endpoint Call Records</div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Form Layout="FormLayout.Inline" Model="@_filterModel">
+            <FormItem Label="Endpoint">
+                <Select TItem="LlmEndpoint" 
+                TItemValue="string" 
+                DataSource="@_endpoints" 
+                @bind-Value="@_filterModel.EndpointId"
+                ValueName="@nameof(LlmEndpoint.Id)"
+                LabelName="@nameof(LlmEndpoint.Name)"
+                Style="width: 180px;"
+                AllowClear 
+                Placeholder="All Endpoints">
+                </Select>
+            </FormItem>
+            <FormItem Label="LLM Model">
+                <Select TItem="LlmConfig" 
+                TItemValue="string" 
+                DataSource="@_configs" 
+                @bind-Value="@_filterModel.ConfigId"
+                ValueName="@nameof(LlmConfig.Id)"
+                LabelName="@nameof(LlmConfig.Name)"
+                Style="width: 180px;"
+                AllowClear 
+                Placeholder="All Models">
+                </Select>
+            </FormItem>
+            <FormItem Label="Date Range">
+                <RangePicker @bind-Value="@_dateRange" Style="width: 300px;" />
+            </FormItem>
+            <FormItem>
+                <Button Type="@ButtonType.Primary" OnClick="ApplyFilters">
+                    <Icon Type="search" />
+                    Search
+                </Button>
+            </FormItem>
+            <FormItem>
+                <Button OnClick="ResetFilters">
+                    <Icon Type="clear" />
+                    Reset
+                </Button>
+            </FormItem>
+        </Form>
+
+        <Divider />
+
+        <Table TItem="EndpointCallRecord"
+        DataSource="@_callRecords"
+        Loading="@_loading"
+        Total="@_totalRecords"
+        OnChange="HandleTableChange"
+        PageIndex="@_pageIndex"
+        PageSize="@_pageSize"
+        @bind-SelectedRows="@_selectedRows">
+
+            <Column Title="Request Time" 
+            Field="@context.RequestReceivedAt"
+            Sortable
+            TData="DateTime">
+                @context.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss")
+            </Column>
+
+            <Column Title="Endpoint" 
+            Field="@context.Endpoint?.Name"
+            TData="string" 
+            Sortable>
+                @(context.Endpoint?.Name ?? "Unknown")
+            </Column>
+
+            <Column Title="Model" 
+            Field="@context.LlmConfig?.Name"
+            TData="string"
+            Sortable>
+                @(context.LlmConfig?.Name ?? "N/A")
+            </Column>
+
+            <Column Title="Wait Time" 
+            Field="@context.WaitTime"
+            TData="TimeSpan"
+            Sortable>
+                @context.WaitTime.TotalMilliseconds.ToString("0.00") ms
+            </Column>
+
+            <Column Title="Processing Time" 
+            TData="TimeSpan?">
+                @if (context.ModelProcessingTime.HasValue)
+                {
+                    <span>@context.ModelProcessingTime.Value.TotalSeconds.ToString("0.00") s</span>
+                }
+                else
+                {
+                    <span>N/A</span>
+                }
+            </Column>
+
+            <Column Title="Status" 
+            Field="@context.IsSuccessful"
+            TData="bool"
+            Sortable>
+                <Tag Color="@(context.IsSuccessful ? "green" : "red")">
+                    @(context.IsSuccessful ? "Success" : "Failed")
+                </Tag>
+            </Column>
+
+            <ActionColumn Title="Actions">
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" 
+                        Size="ButtonSize.Small"
+                        OnClick="() => ViewCallDetail(context.Id)">
+                            <Icon Type="eye" />
+                            View
+                        </Button>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </ChildContent>
+</Card>
+
+@code {
+    private List<EndpointCallRecord> _callRecords = new();
+    private List<LlmEndpoint> _endpoints = new();
+    private List<LlmConfig> _configs = new();
+    private bool _loading = false;
+    private int _totalRecords = 0;
+    private int _pageIndex = 1;
+    private int _pageSize = 10;
+    private FilterModel _filterModel = new();
+    private IEnumerable<EndpointCallRecord> _selectedRows = new List<EndpointCallRecord>();
+    private DateTime?[] _dateRange = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get query parameters
+        var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
+        var queryParams = QueryHelpers.ParseQuery(uri.Query);
+
+        if (queryParams.TryGetValue("configId", out var configId))
+        {
+            _filterModel.ConfigId = configId.ToString();
+        }
+
+        if (queryParams.TryGetValue("endpointId", out var endpointId))
+        {
+            _filterModel.EndpointId = endpointId.ToString();
+        }
+
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _loading = true;
+
+        try
+        {
+            // Load filter dropdowns
+            _endpoints = await LlmPoolService.GetEndpointsAsync();
+            _configs = await LlmPoolService.GetConfigsAsync();
+
+            // Apply filters and load data
+            await ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            await _message.Error($"Error loading data: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ApplyFilters()
+    {
+        _loading = true;
+
+        try
+        {
+            // Extract date range if set
+            DateTime? startDate = null;
+            DateTime? endDate = null;
+
+            if (_dateRange != null && _dateRange.Length == 2 && _dateRange is not [null,null])
+            {
+                startDate = _dateRange[0];
+                endDate = _dateRange[1].Value.AddDays(1); // Include the end date
+            }
+
+            // Calculate skip for pagination
+            int skip = (_pageIndex - 1) * _pageSize;
+
+            // Load call records with filters
+            _callRecords = await LlmPoolService.GetCallRecordsAsync(
+                _filterModel.EndpointId,
+                _filterModel.ConfigId,
+                startDate,
+                endDate,
+                skip,
+                _pageSize
+            );
+
+            // For simplicity, we're making an assumption about total count
+            // In a production app, you'd want to have a separate count query
+            _totalRecords = _callRecords.Count == _pageSize ? skip + _pageSize + 1 : skip + _callRecords.Count;
+        }
+        catch (Exception ex)
+        {
+            await _message.Error($"Error applying filters: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ResetFilters()
+    {
+        _filterModel = new FilterModel();
+        _dateRange = [];
+        _pageIndex = 1;
+        
+        ApplyFilters();
+    }
+
+    private void HandleTableChange(QueryModel<EndpointCallRecord> queryModel)
+    {
+        _pageIndex = queryModel.PageIndex;
+        _pageSize = queryModel.PageSize;
+        
+        ApplyFilters();
+    }
+
+    private void ViewCallDetail(string id)
+    {
+        NavigationManager.NavigateTo($"/call-detail/{id}");
+    }
+
+    private class FilterModel
+    {
+        public string? EndpointId { get; set; }
+        public string? ConfigId { get; set; }
+    }
+} 
