@@ -1,9 +1,13 @@
+using System.ClientModel;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Azure;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.AI;
+using OpenAI;
 
 namespace LY.LlmPool.Web.Controllers;
 
@@ -12,17 +16,59 @@ namespace LY.LlmPool.Web.Controllers;
 public class OpenAICompatController : ControllerBase
 {
     private readonly LlmPoolService _llmPoolService;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<OpenAICompatController> _logger;
+    private readonly IServiceProvider _serviceProvider;
 
     public OpenAICompatController(
         LlmPoolService llmPoolService,
-        IHttpClientFactory httpClientFactory,
-        ILogger<OpenAICompatController> logger)
+        ILogger<OpenAICompatController> logger,
+        IServiceProvider serviceProvider)
     {
         _llmPoolService = llmPoolService;
-        _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _serviceProvider = serviceProvider;
+    }
+
+    private IChatClient CreateChatClient(LlmConfig config)
+    {
+        var modelType = config.ModelType?.Name?.ToLower() ?? "";
+
+        IChatClient client = null;
+        //var builder = new OpenAIClientBuilder(_serviceProvider, config.ApiKey, config.BaseUrl, config.Model);
+        switch (modelType)
+        {
+            case "azure":
+                // Azure OpenAI
+                client = new Azure.AI.Inference.ChatCompletionsClient(
+                        new("https://models.inference.ai.azure.com"),
+                        new AzureKeyCredential(Environment.GetEnvironmentVariable("GH_TOKEN")!)
+                    )
+                    .AsIChatClient("gpt-4o-mini");
+
+                // builder.UseOpenAI(options =>
+                // {
+                //     options.ApiKey = config.ApiKey;
+                //     options.Endpoint = config.BaseUrl;
+                //     options.DefaultModel = config.Model;
+                //     options.UseAzure = true;
+                // });
+                break;
+
+            case "openai":
+            case "deepseek":
+            default:
+                // OpenAI compatible endpoints
+                //builder.UseOpenAI(options =>
+                //{
+                //    options.ApiKey = config.ApiKey;
+                //    options.Endpoint = config.BaseUrl;
+                //    options.DefaultModel = config.Model;
+                //    options.UseAzure = false;
+                //});
+                break;
+        }
+
+        return client;
     }
 
     [HttpPost("chat/completions")]
@@ -32,7 +78,8 @@ public class OpenAICompatController : ControllerBase
         var requestStartTime = DateTime.UtcNow;
         object? requestData = null;
         string? requestBody = null;
-        
+        IChatClient? chatClient = null;
+
         try
         {
             // Capture request data
@@ -40,7 +87,7 @@ public class OpenAICompatController : ControllerBase
             {
                 requestBody = await reader.ReadToEndAsync();
             }
-            
+
             if (!string.IsNullOrEmpty(requestBody))
             {
                 try
@@ -57,10 +104,10 @@ public class OpenAICompatController : ControllerBase
         {
             _logger.LogError(ex, "Error reading request data");
         }
-        
+
         // 从请求头中获取API Key
-        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) || 
-            string.IsNullOrEmpty(authHeader) || 
+        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) ||
+            string.IsNullOrEmpty(authHeader) ||
             !authHeader.ToString().StartsWith("Bearer "))
         {
             Response.StatusCode = (int)HttpStatusCode.Unauthorized;
@@ -69,22 +116,22 @@ public class OpenAICompatController : ControllerBase
         }
 
         var apiKey = authHeader.ToString().Replace("Bearer ", "");
-        
+
         try
         {
             // Create initial call record
             callRecord = await _llmPoolService.CreateCallRecordAsync(apiKey, requestData);
-            
+
             var modelAcquireStartTime = DateTime.UtcNow;
             var config = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey);
             var waitTime = DateTime.UtcNow - modelAcquireStartTime;
-            
+
             // Update call record with waiting time
             if (callRecord != null)
             {
                 callRecord.WaitTime = waitTime;
             }
-            
+
             if (config == null)
             {
                 // Update call record with error
@@ -94,7 +141,7 @@ public class OpenAICompatController : ControllerBase
                     callRecord.ErrorMessage = "No available model found or invalid API key";
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
-                
+
                 Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
                 await Response.WriteAsJsonAsync(new { error = "No available model found or invalid API key" });
                 return;
@@ -109,18 +156,20 @@ public class OpenAICompatController : ControllerBase
 
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                var proxyRequest = await CreateProxyRequest(config, requestBody);
+                // Create chat client based on config
+                chatClient = CreateChatClient(config);
 
-                // 设置响应头
-                Response.Headers["Transfer-Encoding"] = "chunked";
-                if (Request.Headers.Accept.Any(x => x.Contains("text/event-stream")))
+                // Parse request
+                var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}");
+                if (chatRequest == null)
                 {
-                    Response.Headers["Content-Type"] = "text/event-stream";
+                    throw new InvalidOperationException("Invalid chat request");
                 }
-                else
+
+                // Override model if specified in config
+                if (!string.IsNullOrEmpty(config.Model))
                 {
-                    Response.Headers["Content-Type"] = "application/json";
+                    chatRequest.Model = config.Model;
                 }
 
                 // Record model call start time
@@ -131,8 +180,17 @@ public class OpenAICompatController : ControllerBase
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
 
-                using var response = await client.SendAsync(proxyRequest, HttpCompletionOption.ResponseHeadersRead);
-                
+                // Set response headers
+                Response.Headers["Transfer-Encoding"] = "chunked";
+                if (Request.Headers.Accept.Any(x => x.Contains("text/event-stream")))
+                {
+                    Response.Headers["Content-Type"] = "text/event-stream";
+                }
+                else
+                {
+                    Response.Headers["Content-Type"] = "application/json";
+                }
+
                 // Record model response start time
                 var modelResponseStartTime = DateTime.UtcNow;
                 if (callRecord != null)
@@ -141,61 +199,112 @@ public class OpenAICompatController : ControllerBase
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
 
-                // Copy status code and headers
-                Response.StatusCode = (int)response.StatusCode;
-                foreach (var header in response.Headers)
-                {
-                    Response.Headers[header.Key] = header.Value.ToArray();
-                }
+                // Prepare chat messages and options
+                var messages = new List<ChatMessage>();
+                var modelType = config.ModelType?.Name?.ToLower() ?? "";
 
-                // Stream the response
-                using var responseStream = await response.Content.ReadAsStreamAsync();
-                var buffer = new byte[8192];
-                var memoryStream = new MemoryStream();
-                int bytesRead;
-
-                while ((bytesRead = await responseStream.ReadAsync(buffer)) > 0)
+                foreach (var message in chatRequest.Messages)
                 {
-                    await Response.Body.WriteAsync(buffer.AsMemory(0, bytesRead));
-                    await Response.Body.FlushAsync();
-                    
-                    // Also save to memory stream for logging
-                    await memoryStream.WriteAsync(buffer.AsMemory(0, bytesRead));
-                }
-
-                // Try to capture response data for logging
-                try
-                {
-                    if (callRecord != null)
+                    var role = modelType == "deepseek" ? MapRoleForDeepseek(message.Role) : message.Role;
+                    var chatRole = role.ToLower() switch
                     {
-                        memoryStream.Position = 0;
-                        using var reader = new StreamReader(memoryStream);
-                        var responseContent = await reader.ReadToEndAsync();
-
-                        if (!string.IsNullOrEmpty(responseContent))
-                        {
-                            try
-                            {
-                                callRecord.ResponseData = JsonSerializer.Deserialize<object>(responseContent);
-                            }
-                            catch
-                            {
-                                // If response is not valid JSON (like streaming data), store as string
-                                callRecord.ResponseDataJson = JsonSerializer.Serialize(responseContent);
-                            }
-                        }
-                    }
+                        "system" => ChatRole.System,
+                        "assistant" => ChatRole.Assistant,
+                        "user" => ChatRole.User,
+                        _ => ChatRole.User
+                    };
+                    messages.Add(new ChatMessage(chatRole, new[] { new TextContent(message.Content) }));
                 }
-                catch (Exception ex)
+
+                var chatOptions = new ChatOptions
                 {
-                    _logger.LogError(ex, "Error capturing response data for logging");
+                    Temperature = chatRequest.Temperature,
+                    MaxOutputTokens = chatRequest.MaxTokens,
+                    FrequencyPenalty = chatRequest.FrequencyPenalty,
+                    PresencePenalty = chatRequest.PresencePenalty
+                };
+
+                if (chatRequest.Stream ?? false)
+                {
+                    await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
+                    {
+                        var json = JsonSerializer.Serialize(new
+                        {
+                            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                            @object = "chat.completion.chunk",
+                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            model = chatRequest.Model,
+                            choices = new[]
+                            {
+                                new
+                                {
+                                    delta = new
+                                    {
+                                        role = update.Role.ToString().ToLower(),
+                                        content = update.Contents.OfType<TextContent>().FirstOrDefault()?.Text
+                                    },
+                                    index = 0,
+                                    finish_reason = update.FinishReason
+                                }
+                            }
+                        });
+
+                        await Response.WriteAsync($"data: {json}\n\n");
+                        await Response.Body.FlushAsync();
+                    }
+
+                    await Response.WriteAsync("data: [DONE]\n\n");
+                    await Response.Body.FlushAsync();
+                }
+                else
+                {
+                    var response = await chatClient.GetResponseAsync(messages, chatOptions);
+                    var usage = response.Usage;
+                    var responseMessage = response.Messages.FirstOrDefault();
+
+                    var json = JsonSerializer.Serialize(new
+                    {
+                        id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                        @object = "chat.completion",
+                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        model = chatRequest.Model,
+                        choices = new[]
+                        {
+                            new
+                            {
+                                message = new
+                                {
+                                    role = responseMessage?.Role.ToString().ToLower(),
+                                    content = responseMessage?.Contents.OfType<TextContent>().FirstOrDefault()?.Text
+                                },
+                                index = 0,
+                                finish_reason = response.FinishReason
+                            }
+                        },
+                        usage = new
+                        {
+                            prompt_tokens = usage?.InputTokenCount,
+                            completion_tokens = usage?.OutputTokenCount,
+                            total_tokens = usage?.TotalTokenCount
+                        }
+                    });
+
+                    await Response.WriteAsync(json);
+
+                    // Update call record with token usage
+                    if (callRecord != null && usage != null)
+                    {
+                        callRecord.PromptTokens = usage.InputTokenCount;
+                        callRecord.CompletionTokens = usage.OutputTokenCount;
+                        callRecord.TotalTokens = usage.TotalTokenCount;
+                    }
                 }
 
                 // Record model response end time and success status
                 if (callRecord != null)
                 {
                     callRecord.ModelResponseEndedAt = DateTime.UtcNow;
-                    callRecord.IsSuccessful = response.IsSuccessStatusCode;
+                    callRecord.IsSuccessful = true;
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
             }
@@ -209,7 +318,7 @@ public class OpenAICompatController : ControllerBase
                     callRecord.ModelResponseEndedAt = DateTime.UtcNow;
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
-                
+
                 _logger.LogError(ex, "Error processing request");
                 Response.StatusCode = (int)HttpStatusCode.InternalServerError;
                 await Response.WriteAsJsonAsync(new { error = "Internal server error" });
@@ -219,6 +328,12 @@ public class OpenAICompatController : ControllerBase
                 if (config != null)
                 {
                     _llmPoolService.ReleaseConfig(config.Id);
+                }
+
+                // Dispose chat client
+                if (chatClient is IDisposable disposable)
+                {
+                    disposable.Dispose();
                 }
             }
         }
@@ -230,39 +345,32 @@ public class OpenAICompatController : ControllerBase
         }
     }
 
-    private async Task<HttpRequestMessage> CreateProxyRequest(LlmConfig config, string? requestBody)
+    private string MapRoleForDeepseek(string role)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, $"{config.BaseUrl}/v1/chat/completions");
-
-        // Copy headers
-        foreach (var header in Request.Headers)
+        return role.ToLower() switch
         {
-            if (!header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase) &&
-                !header.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
-            }
-        }
-
-        // Set API key
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.ApiKey);
-
-        // Add additional headers if configured
-        var additionalHeaders = config.AdditionalHeaders;
-        if (additionalHeaders != null)
-        {
-            foreach (var header in additionalHeaders)
-            {
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-            }
-        }
-
-        // Set request content
-        if (!string.IsNullOrEmpty(requestBody))
-        {
-            request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-        }
-
-        return request;
+            "assistant" => "assistant",
+            "user" => "user",
+            "system" => "system",
+            _ => role
+        };
     }
-} 
+
+    private class ChatRequest
+    {
+        public string Model { get; set; } = string.Empty;
+        public List<Message> Messages { get; set; } = new();
+        public float? Temperature { get; set; }
+        public int? MaxTokens { get; set; }
+        public float? TopP { get; set; }
+        public float? FrequencyPenalty { get; set; }
+        public float? PresencePenalty { get; set; }
+        public bool? Stream { get; set; }
+    }
+
+    private class Message
+    {
+        public string Role { get; set; } = string.Empty;
+        public string Content { get; set; } = string.Empty;
+    }
+}

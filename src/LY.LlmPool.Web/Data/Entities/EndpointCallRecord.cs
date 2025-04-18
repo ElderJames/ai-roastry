@@ -85,4 +85,8 @@ public class EndpointCallRecord
         ModelResponseEndedAt.HasValue 
             ? ModelResponseEndedAt.Value - RequestReceivedAt 
             : null;
+
+    public long? PromptTokens { get; set; }
+    public long? CompletionTokens { get; set; }
+    public long? TotalTokens { get; set; }
 } 
