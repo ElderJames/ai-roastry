@@ -1,0 +1,160 @@
+@page "/chat-test"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@inject LlmPoolService LlmPoolService
+
+<PageTitle>聊天测试</PageTitle>
+
+<Row Gutter="16">
+    <AntDesign.Col Span="6">
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+            <Card>
+                <TitleTemplate>
+                    <Space>
+                        <SpaceItem>
+                            <Icon Type="api" />
+                        </SpaceItem>
+                        <SpaceItem>
+                            模型配置
+                        </SpaceItem>
+                    </Space>
+                </TitleTemplate>
+                <Body>
+                    <div style="display: flex; flex-direction: column; gap: 1rem;">
+                        @foreach (var config in _configs)
+                        {
+                            <a onclick="@(() => SelectConfig(config))">
+                                <Card Hoverable Class="@(_selectedConfig?.Id == config.Id ? "selected-item" : "")">
+                                    <TitleTemplate>
+                                        <Space>
+                                            <SpaceItem>
+                                                <Icon Type="@(config.ModelType?.Icon ?? "api")" />
+                                            </SpaceItem>
+                                            <SpaceItem>
+                                                @config.Name
+                                            </SpaceItem>
+                                        </Space>
+                                    </TitleTemplate>
+                                    <Extra>
+                                        <Tag Color="@(config.IsEnabled ? TagColor.Green : TagColor.Red)">
+                                            @(config.IsEnabled ? "启用" : "禁用")
+                                        </Tag>
+                                    </Extra>
+                                    <Body>
+                                        <div>模型: @config.Model</div>
+                                        @if (!string.IsNullOrEmpty(config.Description))
+                                        {
+                                            <div>描述: @config.Description</div>
+                                        }
+                                    </Body>
+                                </Card>
+                            </a>
+                        }
+                    </div>
+                </Body>
+            </Card>
+
+            <Card>
+                <TitleTemplate>
+                    <Space>
+                        <SpaceItem>
+                            <Icon Type="cloud-server" />
+                        </SpaceItem>
+                        <SpaceItem>
+                            终端配置
+                        </SpaceItem>
+                    </Space>
+                </TitleTemplate>
+                <Body>
+                    <div style="display: flex; flex-direction: column; gap: 1rem;">
+                        @foreach (var endpoint in _endpoints)
+                        {
+                            <a onclick="@(() => SelectEndpoint(endpoint))">
+                                <Card Hoverable Class="@(_selectedEndpoint?.Id == endpoint.Id ? "selected-item" : "")">
+                                    <TitleTemplate>
+                                        <Space>
+                                            <SpaceItem>
+                                                <Icon Type="cloud" />
+                                            </SpaceItem>
+                                            <SpaceItem>
+                                                @endpoint.Name
+                                            </SpaceItem>
+                                        </Space>
+                                    </TitleTemplate>
+                                    <Extra>
+                                        <Tag Color="@(endpoint.IsEnabled ? TagColor.Green : TagColor.Red)">
+                                            @(endpoint.IsEnabled ? "启用" : "禁用")
+                                        </Tag>
+                                    </Extra>
+                                    <Body>
+                                        <div>配置: @endpoint.Name</div>
+                                        @if (!string.IsNullOrEmpty(endpoint.Description))
+                                        {
+                                            <div>描述: @endpoint.Description</div>
+                                        }
+                                    </Body>
+                                </Card>
+                            </a>
+                        }
+                    </div>
+                </Body>
+            </Card>
+        </div>
+    </AntDesign.Col>
+    <AntDesign.Col Span="18">
+        @if (_selectedConfig != null || _selectedEndpoint != null)
+        {
+            <div style="height: calc(100vh - 150px);">
+                <ChatBox Config="_selectedConfig" Endpoint="_selectedEndpoint" />
+            </div>
+        }
+        else
+        {
+            <Card>
+                <Empty Description="@("请选择一个模型配置或终端配置开始测试")" />
+            </Card>
+        }
+    </AntDesign.Col>
+</Row>
+
+<style>
+    .selected-item {
+        border-color: #1677ff;
+    }
+
+    .selected-item:hover {
+        border-color: #1677ff;
+    }
+</style>
+
+@code {
+    private List<LlmConfig> _configs = new();
+    private List<LlmEndpoint> _endpoints = new();
+    private LlmConfig? _selectedConfig;
+    private LlmEndpoint? _selectedEndpoint;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _configs = await LlmPoolService.GetConfigsAsync();
+        _endpoints = await LlmPoolService.GetEndpointsAsync();
+    }
+
+    private void SelectConfig(LlmConfig config)
+    {
+        _selectedConfig = config;
+        _selectedEndpoint = null; // 清除另一个选择
+        StateHasChanged();
+    }
+
+    private void SelectEndpoint(LlmEndpoint endpoint)
+    {
+        _selectedEndpoint = endpoint;
+        _selectedConfig = null; // 清除另一个选择
+        StateHasChanged();
+    }
+} 

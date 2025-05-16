@@ -51,4 +51,7 @@ public class LlmConfig
             : JsonSerializer.Deserialize<Dictionary<string, string>>(AdditionalHeadersJson) ?? new Dictionary<string, string>();
         set => AdditionalHeadersJson = JsonSerializer.Serialize(value);
     }
+
+    public int MaxTokens { get; set; } = 2000;
+    public float Temperature { get; set; } = 0.7f;
 } 

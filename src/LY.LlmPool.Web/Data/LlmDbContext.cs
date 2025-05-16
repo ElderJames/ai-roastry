@@ -57,7 +57,7 @@ public class LlmDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasOne(e => e.LlmConfig)
-                .WithMany()
+                .WithMany(e => e.EndpointConfigs)
                 .HasForeignKey(e => e.LlmConfigId)
                 .OnDelete(DeleteBehavior.Cascade);
 

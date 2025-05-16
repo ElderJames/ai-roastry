@@ -42,6 +42,7 @@ builder.Services.AddAuthentication(options =>
 
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
+builder.Services.AddScoped<ChatClientService>();
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();
@@ -49,9 +50,15 @@ builder.Services.AddHttpClient();
 // Add Ant Design
 builder.Services.AddAntDesign();
 
+// Add HttpContext accessor
+builder.Services.AddHttpContextAccessor();
+
 // Add Razor Pages and MVC
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+builder.Services.AddRazorPages();
+builder.Services.AddServerSideBlazor();
 
 builder.Services.AddControllers();
 

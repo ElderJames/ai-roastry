@@ -43,28 +43,18 @@ public class OpenAICompatController : ControllerBase
                         new("https://models.inference.ai.azure.com"),
                         new AzureKeyCredential(Environment.GetEnvironmentVariable("GH_TOKEN")!)
                     )
-                    .AsIChatClient("gpt-4o-mini");
+                    .AsIChatClient(config.Model);
 
-                // builder.UseOpenAI(options =>
-                // {
-                //     options.ApiKey = config.ApiKey;
-                //     options.Endpoint = config.BaseUrl;
-                //     options.DefaultModel = config.Model;
-                //     options.UseAzure = true;
-                // });
                 break;
 
             case "openai":
             case "deepseek":
             default:
-                // OpenAI compatible endpoints
-                //builder.UseOpenAI(options =>
-                //{
-                //    options.ApiKey = config.ApiKey;
-                //    options.Endpoint = config.BaseUrl;
-                //    options.DefaultModel = config.Model;
-                //    options.UseAzure = false;
-                //});
+                var openAIClientOptions = new OpenAIClientOptions();
+                openAIClientOptions.Endpoint = new Uri(config.BaseUrl);
+                client = new OpenAIClient(new ApiKeyCredential(config.ApiKey), openAIClientOptions)
+                    .AsChatClient(config.Model);
+
                 break;
         }
 
