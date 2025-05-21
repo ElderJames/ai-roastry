@@ -8,6 +8,13 @@ using LY.LlmPool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using OpenAI;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using System.Text.Encodings.Web;
+using System.Text.Unicode;
+using Microsoft.Extensions.Logging;
+using System.Net.Http;
 
 namespace LY.LlmPool.Web.Controllers;
 
@@ -17,48 +24,34 @@ public class OpenAICompatController : ControllerBase
 {
     private readonly LlmPoolService _llmPoolService;
     private readonly ILogger<OpenAICompatController> _logger;
-    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<LoggingHttpHandler> _httpLogger;
+    private readonly static JsonSerializerOptions _jsonSerializerOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+    };
 
     public OpenAICompatController(
         LlmPoolService llmPoolService,
         ILogger<OpenAICompatController> logger,
-        IServiceProvider serviceProvider)
+        ILogger<LoggingHttpHandler> httpLogger)
     {
         _llmPoolService = llmPoolService;
         _logger = logger;
-        _serviceProvider = serviceProvider;
+        _httpLogger = httpLogger;
     }
 
-    private IChatClient CreateChatClient(LlmConfig config)
+    private Kernel CreateKernel(LlmConfig config)
     {
-        var modelType = config.ModelType?.Name?.ToLower() ?? "";
+        var handler = new LoggingHttpHandler(_httpLogger);
+        handler.InnerHandler = new HttpClientHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(config.BaseUrl) };
 
-        IChatClient client = null;
-        //var builder = new OpenAIClientBuilder(_serviceProvider, config.ApiKey, config.BaseUrl, config.Model);
-        switch (modelType)
-        {
-            case "azure":
-                // Azure OpenAI
-                client = new Azure.AI.Inference.ChatCompletionsClient(
-                        new("https://models.inference.ai.azure.com"),
-                        new AzureKeyCredential(Environment.GetEnvironmentVariable("GH_TOKEN")!)
-                    )
-                    .AsIChatClient(config.Model);
-
-                break;
-
-            case "openai":
-            case "deepseek":
-            default:
-                var openAIClientOptions = new OpenAIClientOptions();
-                openAIClientOptions.Endpoint = new Uri(config.BaseUrl);
-                client = new OpenAIClient(new ApiKeyCredential(config.ApiKey), openAIClientOptions)
-                    .AsChatClient(config.Model);
-
-                break;
-        }
-
-        return client;
+        var builder = Kernel.CreateBuilder()
+            .AddOpenAIChatCompletion(config.Model, config.ApiKey, httpClient: httpClient);
+        
+        return builder.Build();
     }
 
     [HttpPost("chat/completions")]
@@ -68,7 +61,6 @@ public class OpenAICompatController : ControllerBase
         var requestStartTime = DateTime.UtcNow;
         object? requestData = null;
         string? requestBody = null;
-        IChatClient? chatClient = null;
 
         try
         {
@@ -82,7 +74,7 @@ public class OpenAICompatController : ControllerBase
             {
                 try
                 {
-                    requestData = JsonSerializer.Deserialize<object>(requestBody);
+                    requestData = JsonSerializer.Deserialize<object>(requestBody, _jsonSerializerOptions);
                 }
                 catch (JsonException ex)
                 {
@@ -146,11 +138,8 @@ public class OpenAICompatController : ControllerBase
 
             try
             {
-                // Create chat client based on config
-                chatClient = CreateChatClient(config);
-
                 // Parse request
-                var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}");
+                var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions);
                 if (chatRequest == null)
                 {
                     throw new InvalidOperationException("Invalid chat request");
@@ -171,9 +160,10 @@ public class OpenAICompatController : ControllerBase
                 }
 
                 // Set response headers
-                Response.Headers["Transfer-Encoding"] = "chunked";
+
                 if (Request.Headers.Accept.Any(x => x.Contains("text/event-stream")))
                 {
+                    Response.Headers["Transfer-Encoding"] = "chunked";
                     Response.Headers["Content-Type"] = "text/event-stream";
                 }
                 else
@@ -189,39 +179,53 @@ public class OpenAICompatController : ControllerBase
                     await _llmPoolService.UpdateCallRecordAsync(callRecord);
                 }
 
-                // Prepare chat messages and options
-                var messages = new List<ChatMessage>();
-                var modelType = config.ModelType?.Name?.ToLower() ?? "";
+                // Create kernel and chat history
+                var kernel = CreateKernel(config);
+                var chatHistory = new ChatHistory();
 
+                // Add messages to chat history
                 foreach (var message in chatRequest.Messages)
                 {
-                    var role = modelType == "deepseek" ? MapRoleForDeepseek(message.Role) : message.Role;
-                    var chatRole = role.ToLower() switch
+                    var role = MapRoleForDeepseek(message.Role);
+                    switch (role.ToLower())
                     {
-                        "system" => ChatRole.System,
-                        "assistant" => ChatRole.Assistant,
-                        "user" => ChatRole.User,
-                        _ => ChatRole.User
-                    };
-                    messages.Add(new ChatMessage(chatRole, new[] { new TextContent(message.Content) }));
+                        case "system":
+                            chatHistory.AddSystemMessage(message.Content);
+                            break;
+                        case "assistant":
+                            chatHistory.AddAssistantMessage(message.Content);
+                            break;
+                        case "user":
+                        default:
+                            chatHistory.AddUserMessage(message.Content);
+                            break;
+                    }
                 }
 
-                var chatOptions = new ChatOptions
-                {
+                var settings = new OpenAIPromptExecutionSettings 
+                { 
                     Temperature = chatRequest.Temperature,
-                    MaxOutputTokens = chatRequest.MaxTokens,
+                    MaxTokens = chatRequest.MaxTokens,
                     FrequencyPenalty = chatRequest.FrequencyPenalty,
-                    PresencePenalty = chatRequest.PresencePenalty
+                    PresencePenalty = chatRequest.PresencePenalty,
+                    TopP = chatRequest.TopP
                 };
+
+                var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
                 if (chatRequest.Stream ?? false)
                 {
-                    await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
+                    var streamingResult = chatCompletionService.GetStreamingChatMessageContentsAsync(
+                        chatHistory,
+                        settings
+                    );
+
+                    await foreach (var update in streamingResult)
                     {
                         var json = JsonSerializer.Serialize(new
                         {
                             id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                            @object = "chat.completion.chunk",
+                            Object = "chat.completion.chunk",
                             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                             model = chatRequest.Model,
                             choices = new[]
@@ -230,14 +234,14 @@ public class OpenAICompatController : ControllerBase
                                 {
                                     delta = new
                                     {
-                                        role = update.Role.ToString().ToLower(),
-                                        content = update.Contents.OfType<TextContent>().FirstOrDefault()?.Text
+                                        role = "assistant",
+                                        content = update.Content
                                     },
                                     index = 0,
-                                    finish_reason = update.FinishReason
+                                    finish_reason = (string?)null
                                 }
                             }
-                        });
+                        }, _jsonSerializerOptions);
 
                         await Response.WriteAsync($"data: {json}\n\n");
                         await Response.Body.FlushAsync();
@@ -248,14 +252,15 @@ public class OpenAICompatController : ControllerBase
                 }
                 else
                 {
-                    var response = await chatClient.GetResponseAsync(messages, chatOptions);
-                    var usage = response.Usage;
-                    var responseMessage = response.Messages.FirstOrDefault();
+                    var response = await chatCompletionService.GetChatMessageContentAsync(
+                        chatHistory,
+                        settings
+                    );
 
                     var json = JsonSerializer.Serialize(new
                     {
                         id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                        @object = "chat.completion",
+                        Object = "chat.completion",
                         created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                         model = chatRequest.Model,
                         choices = new[]
@@ -264,30 +269,22 @@ public class OpenAICompatController : ControllerBase
                             {
                                 message = new
                                 {
-                                    role = responseMessage?.Role.ToString().ToLower(),
-                                    content = responseMessage?.Contents.OfType<TextContent>().FirstOrDefault()?.Text
+                                    role = "assistant",
+                                    content = response.Content
                                 },
                                 index = 0,
-                                finish_reason = response.FinishReason
+                                finish_reason = "stop"
                             }
                         },
                         usage = new
                         {
-                            prompt_tokens = usage?.InputTokenCount,
-                            completion_tokens = usage?.OutputTokenCount,
-                            total_tokens = usage?.TotalTokenCount
+                            prompt_tokens = 0, // Semantic Kernel currently doesn't provide token counts
+                            completion_tokens = 0,
+                            total_tokens = 0
                         }
-                    });
+                    }, _jsonSerializerOptions);
 
                     await Response.WriteAsync(json);
-
-                    // Update call record with token usage
-                    if (callRecord != null && usage != null)
-                    {
-                        callRecord.PromptTokens = usage.InputTokenCount;
-                        callRecord.CompletionTokens = usage.OutputTokenCount;
-                        callRecord.TotalTokens = usage.TotalTokenCount;
-                    }
                 }
 
                 // Record model response end time and success status
@@ -318,12 +315,6 @@ public class OpenAICompatController : ControllerBase
                 if (config != null)
                 {
                     _llmPoolService.ReleaseConfig(config.Id);
-                }
-
-                // Dispose chat client
-                if (chatClient is IDisposable disposable)
-                {
-                    disposable.Dispose();
                 }
             }
         }

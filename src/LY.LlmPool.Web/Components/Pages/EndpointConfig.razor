@@ -152,7 +152,7 @@ Width="800">
     protected override async Task OnInitializedAsync()
     {
         await LoadDataAsync();
-        copyableConfig = new() { OnCopy = () => { _ = _message.Success("已复制"); } };
+        copyableConfig = new() { OnCopy = () => { _message.Success("已复制"); } };
     }
 
     private async Task LoadDataAsync()
@@ -198,12 +198,12 @@ Width="800">
     {
         if (string.IsNullOrWhiteSpace(_editingEndpoint.Name))
         {
-            await _message.Error("Name is required");
+            _message.Error("Name is required");
             return;
         }
         if (!_editingEndpoint.EndpointConfigs.Any())
         {
-            await _message.Error("At least one model is required");
+            _message.Error("At least one model is required");
             return;
         }
 

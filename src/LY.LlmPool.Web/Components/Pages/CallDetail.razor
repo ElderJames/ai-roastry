@@ -192,7 +192,7 @@
         }
         catch (Exception ex)
         {
-            await _message.Error($"Error loading call record: {ex.Message}");
+            _message.Error($"Error loading call record: {ex.Message}");
         }
         finally
         {

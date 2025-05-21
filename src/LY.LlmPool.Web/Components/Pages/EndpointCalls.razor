@@ -181,7 +181,7 @@
         }
         catch (Exception ex)
         {
-            await _message.Error($"Error loading data: {ex.Message}");
+            _message.Error($"Error loading data: {ex.Message}");
         }
         finally
         {
@@ -224,7 +224,7 @@
         }
         catch (Exception ex)
         {
-            await _message.Error($"Error applying filters: {ex.Message}");
+            _message.Error($"Error applying filters: {ex.Message}");
         }
         finally
         {

@@ -67,7 +67,7 @@
                                                 <Space>
                                                     <SpaceItem>
                                                         <Button Type="@ButtonType.Primary" OnClick="() => EditConfig(config)">
-                                                            <Icon Type="edit"/>
+                                                            <Icon Type="edit" />
                                                             Edit
                                                         </Button>
                                                     </SpaceItem>
@@ -224,7 +224,7 @@
         }
         catch (InvalidOperationException ex)
         {
-            await _message.Error(ex.Message);
+            _message.Error(ex.Message);
         }
     }
 
@@ -235,7 +235,7 @@
         {
             if (string.IsNullOrWhiteSpace(modelType.Name))
             {
-                await _message.Error("Model type name is required");
+                _message.Error("Model type name is required");
                 hasError = true;
                 break;
             }
@@ -275,9 +275,9 @@
         }
 
         _editingConfig = new LlmConfig
-        {
-            ModelTypeId = _modelTypes.First().Id
-        };
+            {
+                ModelTypeId = _modelTypes.First().Id
+            };
 
         // 自动填充默认endpoint
         var selectedModelType = _modelTypes.First();
@@ -292,17 +292,17 @@
     private void EditConfig(LlmConfig config)
     {
         _editingConfig = new LlmConfig
-        {
-            Id = config.Id,
-            Name = config.Name,
-            Description = config.Description,
-            ModelTypeId = config.ModelTypeId,
-            BaseUrl = config.BaseUrl,
-            ApiKey = config.ApiKey,
-            Model = config.Model,
-            IsEnabled = config.IsEnabled,
-            AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders)
-        };
+            {
+                Id = config.Id,
+                Name = config.Name,
+                Description = config.Description,
+                ModelTypeId = config.ModelTypeId,
+                BaseUrl = config.BaseUrl,
+                ApiKey = config.ApiKey,
+                Model = config.Model,
+                IsEnabled = config.IsEnabled,
+                AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders)
+            };
         _showConfigDialog = true;
     }
 
@@ -316,27 +316,27 @@
     {
         if (string.IsNullOrWhiteSpace(_editingConfig.Name))
         {
-            await _message.Error("Name is required");
+            _message.Error("Name is required");
             return;
         }
         if (string.IsNullOrWhiteSpace(_editingConfig.ModelTypeId))
         {
-            await _message.Error("Model Type is required");
+            _message.Error("Model Type is required");
             return;
         }
         if (string.IsNullOrWhiteSpace(_editingConfig.BaseUrl))
         {
-            await _message.Error("Base URL is required");
+            _message.Error("Base URL is required");
             return;
         }
         if (string.IsNullOrWhiteSpace(_editingConfig.ApiKey))
         {
-            await _message.Error("API Key is required");
+            _message.Error("API Key is required");
             return;
         }
         if (string.IsNullOrWhiteSpace(_editingConfig.Model))
         {
-            await _message.Error("Model is required");
+            _message.Error("Model is required");
             return;
         }
 

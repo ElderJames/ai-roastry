@@ -210,7 +210,7 @@
         }
         catch (Exception ex)
         {
-            await _message.Error($"Error loading model statistics: {ex.Message}");
+            _message.Error($"Error loading model statistics: {ex.Message}");
         }
         finally
         {
