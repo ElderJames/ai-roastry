@@ -1,0 +1,231 @@
+@page "/prompt-list"
+@using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Models
+@using AntDesign
+@using AntDesign.TableModels
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+
+<PageTitle>Prompt List</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>Prompt List</div>
+            <div>
+                <Button Type="@ButtonType.Primary" OnClick="AddNewPrompt">
+                    <Icon Type="plus" />
+                    Add New Prompt
+                </Button>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Table TItem="LlmPrompt"
+               DataSource="@_prompts"
+               Loading="_loading">
+            <PropertyColumn Property="c=>c.Name" Title="Name">
+                <Space>
+                    <SpaceItem>
+                        <Icon Type="message" />
+                    </SpaceItem>
+                    <SpaceItem>
+                        @context.Name
+                    </SpaceItem>
+                </Space>
+            </PropertyColumn>
+            <PropertyColumn Property="c=>c.Description" Title="Description" />
+            <PropertyColumn Property="c=>c.Content" Title="Content">
+                <div style="max-height: 100px; overflow: hidden; text-overflow: ellipsis;">
+                    @context.Content
+                </div>
+            </PropertyColumn>
+            <PropertyColumn Property="c=>c.UpdateTime" Title="Last Modified" Format="yyyy-MM-dd HH:mm:ss" />
+            <ActionColumn Title="Action">
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="() => EditPrompt(context)">
+                            <Icon Type="edit" />
+                            Edit
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="() => ViewHistory(context)">
+                            <Icon Type="history" />
+                            History
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="Are you sure to delete this prompt?"
+                                   OkText="Yes"
+                                   CancelText="No"
+                                   OnConfirm="() => DeletePrompt(context)">
+                            <Button Danger>
+                                <Icon Type="delete" />
+                            </Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </ChildContent>
+</Card>
+
+<Drawer Title="@("Prompt History")"
+        Visible="@_showHistoryDrawer"
+        Width="800"
+        OnClose="CloseHistoryDrawer">
+    <Table TItem="PromptHistoryEntry"
+           DataSource="@_promptHistory"
+           Loading="@_historyLoading">
+        <PropertyColumn Property="c=>c.Version" Title="Version" />
+        <PropertyColumn Property="c=>c.BasedOnVersion" Title="Based On Version" />
+        <PropertyColumn Property="c=>c.CreateTime" Title="Test Time" Format="yyyy-MM-dd HH:mm:ss" />
+        <Column Title="Test Configurations" TData="string">
+            @{
+                var entry = context;
+                <div>
+                    @foreach (var config in entry.TestConfigs)
+                    {
+                        <Tag Class="mb-1">
+                            <Space>
+                                <SpaceItem>
+                                    <Icon Type="@(config.Type == "Model" ? "robot" : "api")" />
+                                </SpaceItem>
+                                <SpaceItem>
+                                    @config.Type: @config.ConfigId
+                                </SpaceItem>
+                            </Space>
+                        </Tag>
+                    }
+                </div>
+            }
+        </Column>
+        <ActionColumn>
+            <Space>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary" OnClick="() => ViewHistoryDetail(context)">
+                        View
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary" OnClick="() => RestoreFromHistory(context)">
+                        Restore
+                    </Button>
+                </SpaceItem>
+            </Space>
+        </ActionColumn>
+    </Table>
+</Drawer>
+
+@code {
+    private List<LlmPrompt> _prompts = new();
+    private bool _showHistoryDrawer;
+    private bool _loading;
+    private bool _historyLoading;
+    private LlmPrompt _selectedPrompt = new();
+    private List<PromptHistoryEntry> _promptHistory = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _loading = true;
+        try
+        {
+            _prompts = await LlmPoolService.GetPromptsAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void AddNewPrompt()
+    {
+        NavigationManager.NavigateTo("/prompt-edit");
+    }
+
+    private void EditPrompt(LlmPrompt prompt)
+    {
+        NavigationManager.NavigateTo($"/prompt-edit/{prompt.Id}");
+    }
+
+    private async Task DeletePrompt(LlmPrompt prompt)
+    {
+        try
+        {
+            await LlmPoolService.DeletePromptAsync(prompt.Id!);
+            await LoadDataAsync();
+            _message.Success("Prompt deleted successfully");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to delete prompt: {ex.Message}");
+        }
+    }
+
+    private async Task ViewHistory(LlmPrompt prompt)
+    {
+        _selectedPrompt = prompt;
+        await ShowHistory();
+    }
+
+    private async Task ShowHistory()
+    {
+        _showHistoryDrawer = true;
+        _historyLoading = true;
+
+        try
+        {
+            var history = await LlmPoolService.GetPromptHistoryAsync(_selectedPrompt.Id);
+            _promptHistory = history.Select(h => new PromptHistoryEntry
+            {
+                Version = h.Version.ToString(),
+                BasedOnVersion = h.BasedOnVersion?.ToString(),
+                Prompt = h.Prompt ?? new LlmPrompt
+                {
+                    Id = h.PromptId,
+                    Content = h.Content,
+                    Version = h.Version
+                },
+                TestConfigs = h.TestConfigs.Select(PromptTestConfig.FromTestConfigRecord).ToList(),
+                CreateTime = h.CreateTime
+            }).ToList();
+        }
+        finally
+        {
+            _historyLoading = false;
+        }
+    }
+
+    private void CloseHistoryDrawer()
+    {
+        _showHistoryDrawer = false;
+        _promptHistory.Clear();
+    }
+
+    private void ViewHistoryDetail(PromptHistoryEntry history)
+    {
+        NavigationManager.NavigateTo($"/prompt-edit/{_selectedPrompt.Id}?version={history.Version}");
+    }
+
+    private void RestoreFromHistory(PromptHistoryEntry history)
+    {
+        NavigationManager.NavigateTo($"/prompt-edit/{_selectedPrompt.Id}?version={history.Version}&restore=true");
+    }
+
+    public class PromptHistoryEntry
+    {
+        public string? Version { get; set; }
+        public string? BasedOnVersion { get; set; }
+        public LlmPrompt Prompt { get; set; } = new();
+        public List<PromptTestConfig> TestConfigs { get; set; } = new();
+        public DateTime CreateTime { get; set; }
+    }
+} 

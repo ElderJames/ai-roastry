@@ -81,13 +81,27 @@
     [Parameter]
     public LlmEndpoint? Endpoint { get; set; }
 
+    [Parameter]
+    public string? SystemPrompt { get; set; }
+
     private List<ChatMessage> _messages = new();
     private string _currentMessage = string.Empty;
     private bool _isLoading;
     private bool _useStreaming = true;
     private ElementReference _messagesContainer;
 
-
+    protected override void OnInitialized()
+    {
+        if (!string.IsNullOrEmpty(SystemPrompt))
+        {
+            _messages.Add(new ChatMessage
+            {
+                Role = "system",
+                Content = SystemPrompt,
+                Timestamp = DateTime.Now
+            });
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

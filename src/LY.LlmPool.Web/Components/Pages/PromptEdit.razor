@@ -1,0 +1,865 @@
+@page "/prompt-edit"
+@page "/prompt-edit/{Id}"
+@using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Components
+@using AntDesign
+@using AntDesign.TableModels
+@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@using System.Text.RegularExpressions
+@inject LlmPoolService LlmPoolService
+@inject ChatClientService ChatClientService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+
+<PageTitle>@(_editingPrompt.Id == null ? "New Prompt" : "Edit Prompt")</PageTitle>
+
+<Row Gutter="16">
+    <AntDesign.Col Span="12">
+        <div class="prompt-edit-section">
+            <Card>
+                <TitleTemplate>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>Prompt Editor</div>
+                        <div>
+                            <Space>
+                                <SpaceItem>
+                                    <Button OnClick="GoBack">
+                                        <Icon Type="arrow-left" />
+                                        Back
+                                    </Button>
+                                </SpaceItem>
+                                @if (!string.IsNullOrEmpty(_editingPrompt.Id))
+                                {
+                                    <SpaceItem>
+                                        <Button OnClick="ShowHistory">
+                                            <Icon Type="history" />
+                                            History
+                                        </Button>
+                                    </SpaceItem>
+                                }
+                                <SpaceItem>
+                                    <Button Type="@ButtonType.Primary" OnClick="SavePrompt">
+                                        <Icon Type="save" />
+                                        Save
+                                    </Button>
+                                </SpaceItem>
+                            </Space>
+                        </div>
+                    </div>
+                </TitleTemplate>
+                <ChildContent>
+                    <Form Model="@_editingPrompt"
+                          LabelCol="new ColLayoutParam { Span = 4 }"
+                          WrapperCol="new ColLayoutParam { Span = 20 }">
+                        <FormItem Label="Name" Required>
+                            <Input @bind-Value="@_editingPrompt.Name" />
+                        </FormItem>
+                        <FormItem Label="Description">
+                            <TextArea @bind-Value="@_editingPrompt.Description" />
+                        </FormItem>
+                        <FormItem Label="Content" Required>
+                            <TextArea @bind-Value="@_editingPrompt.Content" Rows="15" @oninput="OnPromptContentChanged" />
+                        </FormItem>
+                        @if (_promptParameters.Any())
+                        {
+                            <FormItem Label="Parameters">
+                                <div class="parameters-container">
+                                    @foreach (var param in _promptParameters)
+                                    {
+                                        <div class="parameter-item">
+                                            <Text>{{@param}}</Text>
+                                            <Input @bind-Value="@_parameterValues[param]"
+                                                   Placeholder=@($"Enter value for {param}")
+                                                   Style="width: 300px;" />
+                                        </div>
+                                    }
+                                </div>
+                            </FormItem>
+                        }
+                        @if (_editingPrompt.Version > 0)
+                        {
+                            <FormItem Label="Version">
+                                <Text>@_editingPrompt.Version</Text>
+                            </FormItem>
+                        }
+                    </Form>
+                </ChildContent>
+            </Card>
+
+            <Card Class="mt-3">
+                <TitleTemplate>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>Test Input</div>
+                        <div>
+                            <Button Type="@ButtonType.Primary" 
+                                    OnClick="RunTests" 
+                                    Loading="@_testLoading"
+                                    Disabled="@_testLoading">
+                                <Icon Type="play" />
+                                Run Tests
+                            </Button>
+                        </div>
+                    </div>
+                </TitleTemplate>
+                <ChildContent>
+                    <TextArea @bind-Value="@_testContent" 
+                             Rows="5" 
+                             Placeholder="Enter your test message here..."
+                             Disabled="@_testLoading" />
+                </ChildContent>
+            </Card>
+        </div>
+    </AntDesign.Col>
+    <AntDesign.Col Span="12">
+        <Card>
+            <TitleTemplate>
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>Test Configurations</div>
+                    <div>
+                        <Button Type="@ButtonType.Primary" OnClick="AddTestConfig">
+                            <Icon Type="plus" />
+                            Add Configuration
+                        </Button>
+                    </div>
+                </div>
+            </TitleTemplate>
+            <ChildContent>
+                <div class="test-configs-list">
+                    @foreach (var config in _testConfigs)
+                    {
+                        <Card Size="@CardSize.Small" Class="mb-2">
+                            <TitleTemplate>
+                                <Space>
+                                    <SpaceItem>
+                                        <Icon Type="@(config.Type == "Model" ? "robot" : "api")" />
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Select TItem="string"
+                                                TItemValue="string"
+                                                @bind-Value="@config.Type"
+                                                Style="width: 120px;"
+                                                Disabled="@_testLoading">
+                                            <SelectOptions>
+                                                <SelectOption Value="@("Model")" Label="Model" />
+                                                <SelectOption Value="@("Endpoint")" Label="Endpoint" />
+                                            </SelectOptions>
+                                        </Select>
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        @if (config.Type == "Model")
+                                        {
+                                            <Select TItem="LlmConfig"
+                                                    TItemValue="string"
+                                                    DataSource="@_availableConfigs"
+                                                    @bind-Value="@config.ConfigId"
+                                                    ValueName="@nameof(LlmConfig.Id)"
+                                                    LabelName="@nameof(LlmConfig.Name)"
+                                                    Style="width: 200px;"
+                                                    Disabled="@_testLoading" />
+                                        }
+                                        else
+                                        {
+                                            <Select TItem="LlmEndpoint"
+                                                    TItemValue="string"
+                                                    DataSource="@_availableEndpoints"
+                                                    @bind-Value="@config.ConfigId"
+                                                    ValueName="@nameof(LlmEndpoint.Id)"
+                                                    LabelName="@nameof(LlmEndpoint.Name)"
+                                                    Style="width: 200px;"
+                                                    Disabled="@_testLoading" />
+                                        }
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Input @bind-Value="@config.Parameters" 
+                                               Placeholder="temperature=0.7,max_tokens=100"
+                                               Disabled="@_testLoading" />
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Button Danger OnClick="() => RemoveTestConfig(config)" Disabled="@_testLoading">
+                                            <Icon Type="delete" />
+                                        </Button>
+                                    </SpaceItem>
+                                </Space>
+                            </TitleTemplate>
+                            <ChildContent>
+                                @if (config.TestResult != null)
+                                {
+                                    @if (config.TestResult.Success)
+                                    {
+                                        <div class="response-container">
+                                            <pre class="@(config.IsStreaming ? "streaming" : "")">
+                                                @config.TestResult.Response
+                                            </pre>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <Alert Type="@AlertType.Error">
+                                            @config.TestResult.Error
+                                        </Alert>
+                                    }
+                                }
+                            </ChildContent>
+                        </Card>
+                    }
+                </div>
+            </ChildContent>
+        </Card>
+    </AntDesign.Col>
+</Row>
+
+<Drawer Title="@("Prompt History")"
+        Visible="@_showHistoryDrawer"
+        Width="800"
+        OnClose="CloseHistoryDrawer">
+    <Table TItem="LlmPromptHistory"
+           DataSource="@_promptHistory"
+           Loading="@_historyLoading"
+           ExpandIconColumnIndex="1">
+        <ChildContent>
+            <PropertyColumn Property="c=>c.Version" Title="Version" />
+            <PropertyColumn Property="c=>c.BasedOnVersion" Title="Based On Version" />
+            <PropertyColumn Property="c=>c.CreateTime" Title="Create Time" Format="yyyy-MM-dd HH:mm:ss" />
+            <Column Title="Content" TData="string">
+                <div style="max-height: 100px; overflow: hidden; text-overflow: ellipsis;">
+                    @context.Content
+                </div>
+            </Column>
+            <ActionColumn>
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="() => LoadHistoryVersion(context)">
+                            Load
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="Are you sure to delete this history record?"
+                                   OkText="Yes"
+                                   CancelText="No"
+                                   OnConfirm="() => DeleteHistoryRecord(context)">
+                            <Button Danger>
+                                <Icon Type="delete" />
+                                Delete
+                            </Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </ChildContent>
+        <ExpandTemplate Context="expandedContext">
+            <div class="history-test-configs">
+                <Divider Orientation="DividerOrientation.Left">Test Configurations</Divider>
+                @if (expandedContext.Data.TestConfigs?.Any() == true)
+                {
+                    <Table TItem="TestConfigRecord"
+                           DataSource="@expandedContext.Data.TestConfigs"
+                           Size="TableSize.Small"
+                           Bordered>
+                        <ChildContent>
+                            <PropertyColumn Property="c=>c.Type" Title="Type" />
+                            <PropertyColumn Property="c=>c.ConfigName" Title="Config Name" />
+                            <PropertyColumn Property="c=>c.ModelType" Title="Model Type" />
+                            <PropertyColumn Property="c=>c.Parameters" Title="Parameters" />
+                            <Column Title="Result" TData="TestConfigRecord">
+                                <div>
+                                    @if (context.Success)
+                                    {
+                                        <div class="history-response">
+                                            <pre>@context.Response</pre>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <Tag Color="TagColor.Red">@context.Error</Tag>
+                                    }
+                                </div>
+                            </Column>
+                        </ChildContent>
+                    </Table>
+                }
+                else
+                {
+                    <Empty Description="@("No test configurations")" />
+                }
+            </div>
+        </ExpandTemplate>
+    </Table>
+</Drawer>
+
+<style>
+    .prompt-edit-section {
+        margin-bottom: 16px;
+    }
+
+    .test-configs-list {
+        max-height: calc(100vh - 250px);
+        overflow-y: auto;
+    }
+
+    .parameters-container {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .parameter-item {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .response-container {
+        position: relative;
+        background: #f5f5f5;
+        border-radius: 4px;
+        padding: 8px;
+        margin-top: 8px;
+    }
+
+    .response-container pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    .streaming {
+        animation: typing 0.5s steps(40) infinite;
+    }
+
+    @@keyframes typing {
+        from { border-right: 2px solid #1890ff; }
+        to { border-right: 2px solid transparent; }
+    }
+
+    .history-test-configs {
+        padding: 8px;
+    }
+
+    .history-response {
+        max-height: 200px;
+        overflow-y: auto;
+        background: #f5f5f5;
+        border-radius: 4px;
+        padding: 8px;
+    }
+
+    .history-response pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public string? Id { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery]
+    public string? Version { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery]
+    public bool Restore { get; set; }
+
+    private List<LlmConfig> _availableConfigs = new();
+    private List<LlmEndpoint> _availableEndpoints = new();
+    private bool _testLoading;
+    private string _selectedTestType = "Model";
+    private string? _selectedConfigId;
+    private string? _selectedEndpointId;
+    private LlmPrompt _editingPrompt = new();
+    private List<PromptTestConfig> _testConfigs = new();
+    private bool _showHistoryDrawer;
+    private bool _historyLoading;
+    private List<LlmPromptHistory> _promptHistory = new();
+    private HashSet<string> _promptParameters = new();
+    private Dictionary<string, string> _parameterValues = new();
+
+    private string _testContent = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+
+        if (!string.IsNullOrEmpty(Id))
+        {
+            if (!string.IsNullOrEmpty(Version))
+            {
+                await LoadHistoryVersion();
+            }
+            else
+            {
+                await LoadPrompt();
+            }
+
+            if (!string.IsNullOrEmpty(_editingPrompt.Content))
+            {
+                UpdatePromptParameters(_editingPrompt.Content);
+            }
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        try
+        {
+            _availableConfigs = await LlmPoolService.GetConfigsAsync();
+            _availableEndpoints = await LlmPoolService.GetEndpointsAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load data: {ex.Message}");
+        }
+    }
+
+    private void LoadTestConfigsAndParameters(List<TestConfigRecord>? testConfigs)
+    {
+        if (testConfigs?.Any() == true)
+        {
+            _testConfigs = testConfigs.Select(c => new PromptTestConfig
+            {
+                Type = c.Type,
+                ConfigId = c.ConfigId,
+                Parameters = c.Parameters,
+                TestResult = new PromptTestResult
+                {
+                    Success = c.Success,
+                    Response = c.Response,
+                    Error = c.Error
+                }
+            }).ToList();
+
+            // Restore parameter values if they exist
+            if (testConfigs.First().ParameterValues?.Any() == true)
+            {
+                _parameterValues = new Dictionary<string, string>(testConfigs.First().ParameterValues);
+            }
+        }
+        else
+        {
+            // Add a default test configuration if none exists
+            _testConfigs = new List<PromptTestConfig>
+            {
+                new PromptTestConfig { Type = "Model" }
+            };
+        }
+    }
+
+    private async Task LoadPrompt()
+    {
+        try
+        {
+            var prompt = await LlmPoolService.GetPromptByIdAsync(Id!);
+            if (prompt == null)
+            {
+                _message.Error("Prompt not found");
+                NavigationManager.NavigateTo("/prompt-list");
+                return;
+            }
+
+            _editingPrompt = prompt;
+
+            // Load the latest history record
+            var history = await LlmPoolService.GetPromptHistoryAsync(Id);
+            var latestHistory = history.OrderByDescending(h => h.CreateTime).FirstOrDefault();
+            
+            if (latestHistory != null)
+            {
+                // Update prompt content from latest history
+                _editingPrompt.Content = latestHistory.Content;
+                _editingPrompt.Version = latestHistory.Version;
+            }
+
+            LoadTestConfigsAndParameters(latestHistory?.TestConfigs);
+
+            // Update parameters based on the loaded content
+            if (!string.IsNullOrEmpty(_editingPrompt.Content))
+            {
+                UpdatePromptParameters(_editingPrompt.Content);
+            }
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load prompt: {ex.Message}");
+            NavigationManager.NavigateTo("/prompt-list");
+        }
+    }
+
+    private async Task LoadHistoryVersion()
+    {
+        try
+        {
+            var history = await LlmPoolService.GetPromptHistoryAsync(Id);
+            var version = history.FirstOrDefault(h => h.Version.ToString() == Version);
+            if (version == null)
+            {
+                _message.Error("Version not found");
+                NavigationManager.NavigateTo("/prompt-list");
+                return;
+            }
+
+            _editingPrompt = new LlmPrompt
+            {
+                Id = Restore ? version.PromptId : null,
+                Name = _editingPrompt.Name, // Keep the current name
+                Description = _editingPrompt.Description, // Keep the current description
+                Content = version.Content,
+                Version = version.Version
+            };
+
+            LoadTestConfigsAndParameters(version.TestConfigs);
+
+            // Update parameters based on the loaded content
+            if (!string.IsNullOrEmpty(_editingPrompt.Content))
+            {
+                UpdatePromptParameters(_editingPrompt.Content);
+            }
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load history version: {ex.Message}");
+            NavigationManager.NavigateTo("/prompt-list");
+        }
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/prompt-list");
+    }
+
+    private async Task SavePrompt()
+    {
+        if (string.IsNullOrWhiteSpace(_editingPrompt.Name) || string.IsNullOrWhiteSpace(_editingPrompt.Content))
+        {
+            _message.Error("Please fill in all required fields");
+            return;
+        }
+
+        try
+        {
+            if (_editingPrompt.Id == null)
+            {
+                await LlmPoolService.CreatePromptAsync(_editingPrompt);
+                _message.Success("Prompt created successfully");
+            }
+            else
+            {
+                await LlmPoolService.UpdatePromptAsync(_editingPrompt);
+                _message.Success("Prompt updated successfully");
+            }
+
+            // Save current state to history
+            var history = new LlmPromptHistory
+            {
+                PromptId = _editingPrompt.Id ?? throw new Exception("Prompt ID is null"),
+                Content = _editingPrompt.Content,
+                BasedOnVersion = _editingPrompt.Version,
+                TestConfigs = _testConfigs.Select(c => new TestConfigRecord
+                {
+                    Type = c.Type,
+                    ConfigId = c.ConfigId,
+                    Parameters = c.Parameters,
+                    Success = c.TestResult?.Success ?? false,
+                    Response = c.TestResult?.Response,
+                    Error = c.TestResult?.Error,
+                    ConfigName = c.Type == "Model" 
+                        ? _availableConfigs.FirstOrDefault(m => m.Id == c.ConfigId)?.Name 
+                        : _availableEndpoints.FirstOrDefault(e => e.Id == c.ConfigId)?.Name,
+                    ModelType = c.Type == "Model"
+                        ? _availableConfigs.FirstOrDefault(m => m.Id == c.ConfigId)?.ModelType?.Name
+                        : null,
+                    ParameterValues = new Dictionary<string, string>(_parameterValues)
+                }).ToList()
+            };
+
+            await LlmPoolService.SavePromptHistoryAsync(history);
+            _message.Success("History saved successfully");
+
+            NavigationManager.NavigateTo("/prompt-list");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to save prompt: {ex.Message}");
+        }
+    }
+
+    private void AddTestConfig()
+    {
+        _testConfigs.Add(new PromptTestConfig { Type = "Model" });
+    }
+
+    private void RemoveTestConfig(PromptTestConfig config)
+    {
+        _testConfigs.Remove(config);
+    }
+
+    private void OnPromptContentChanged(ChangeEventArgs e)
+    {
+        if (e.Value is string content)
+        {
+            _editingPrompt.Content = content;
+            UpdatePromptParameters(content);
+        }
+    }
+
+    private void UpdatePromptParameters(string content)
+    {
+        var oldParameters = new HashSet<string>(_promptParameters);
+        _promptParameters.Clear();
+
+        // Find all {{param_name}} patterns
+        var matches = Regex.Matches(content, @"\{\{(\w+)\}\}");
+        foreach (Match match in matches)
+        {
+            var paramName = match.Groups[1].Value;
+            _promptParameters.Add(paramName);
+
+            // Keep existing parameter values
+            if (!_parameterValues.ContainsKey(paramName))
+            {
+                _parameterValues[paramName] = string.Empty;
+            }
+        }
+
+        // Remove values for parameters that no longer exist
+        foreach (var oldParam in oldParameters)
+        {
+            if (!_promptParameters.Contains(oldParam))
+            {
+                _parameterValues.Remove(oldParam);
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task RunTests()
+    {
+        if (string.IsNullOrWhiteSpace(_editingPrompt.Content))
+        {
+            _message.Error("Please enter prompt content before testing");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_testContent))
+        {
+            _message.Error("Please enter test content before testing");
+            return;
+        }
+
+        _testLoading = true;
+
+        try
+        {
+            // Create a temporary prompt with current content for testing
+            var tempPrompt = new LlmPrompt
+            {
+                Id = _editingPrompt.Id ?? "temp",
+                Content = _editingPrompt.Content,  // Use current editing content
+                Name = _editingPrompt.Name,
+                Description = _editingPrompt.Description
+            };
+
+            // Process the prompt content with parameter values
+            var processedPromptContent = _editingPrompt.Content;
+            foreach (var param in _parameterValues)
+            {
+                processedPromptContent = processedPromptContent.Replace($"{{{{{param.Key}}}}}", param.Value);
+            }
+
+            foreach (var config in _testConfigs)
+            {
+                try
+                {
+                    config.IsStreaming = true;
+                    config.TestResult = new PromptTestResult { Success = true, Response = "" };
+                    StateHasChanged();
+
+                    if (config.Type == "Model")
+                    {
+                        var llmConfig = await LlmPoolService.GetConfigByIdAsync(config.ConfigId!);
+                        if (llmConfig == null)
+                        {
+                            throw new Exception("Selected model configuration not found.");
+                        }
+
+                        await foreach (var chunk in ChatClientService.SendStreamingMessageAsync(
+                            llmConfig,
+                            new List<ChatMessage> 
+                            { 
+                                new ChatMessage { Role = "system", Content = processedPromptContent },
+                                new ChatMessage { Role = "user", Content = _testContent }
+                            }))
+                        {
+                            config.TestResult.Response += chunk;
+                            StateHasChanged();
+                            await Task.Delay(10); // Add a small delay for smoother typing effect
+                        }
+                    }
+                    else
+                    {
+                        var endpoint = await LlmPoolService.GetEndpointByIdAsync(config.ConfigId!);
+                        if (endpoint == null)
+                        {
+                            throw new Exception("Selected endpoint not found.");
+                        }
+
+                        await foreach (var chunk in ChatClientService.SendStreamingMessageAsync(
+                            endpoint,
+                            new List<ChatMessage> 
+                            { 
+                                new ChatMessage { Role = "system", Content = processedPromptContent },
+                                new ChatMessage { Role = "user", Content = _testContent }
+                            }))
+                        {
+                            config.TestResult.Response += chunk;
+                            StateHasChanged();
+                            await Task.Delay(10); // Add a small delay for smoother typing effect
+                        }
+                    }
+
+                    config.IsStreaming = false;
+                }
+                catch (Exception ex)
+                {
+                    config.TestResult = new PromptTestResult
+                    {
+                        Success = false,
+                        Error = ex.Message
+                    };
+                }
+                finally
+                {
+                    config.IsStreaming = false;
+                }
+            }
+
+            // Save test results to history with current content and parameter values
+            await SaveTestHistory();
+            _message.Success("Test configurations saved to history");
+        }
+        finally
+        {
+            _testLoading = false;
+        }
+    }
+
+    private async Task SaveTestHistory()
+    {
+        if (_editingPrompt.Id == null)
+        {
+            // Save the prompt first if it's new
+            await SavePrompt();
+        }
+
+        if (_editingPrompt.Id != null)
+        {
+            var history = new LlmPromptHistory
+            {
+                PromptId = _editingPrompt.Id,
+                Content = _editingPrompt.Content,  // Use current content
+                BasedOnVersion = _editingPrompt.Version,
+                TestConfigs = _testConfigs.Select(c => new TestConfigRecord
+                {
+                    Type = c.Type,
+                    ConfigId = c.ConfigId,
+                    Parameters = c.Parameters,
+                    Success = c.TestResult?.Success ?? false,
+                    Response = c.TestResult?.Response,
+                    Error = c.TestResult?.Error,
+                    // Add model/endpoint information
+                    ConfigName = c.Type == "Model" 
+                        ? _availableConfigs.FirstOrDefault(m => m.Id == c.ConfigId)?.Name 
+                        : _availableEndpoints.FirstOrDefault(e => e.Id == c.ConfigId)?.Name,
+                    ModelType = c.Type == "Model"
+                        ? _availableConfigs.FirstOrDefault(m => m.Id == c.ConfigId)?.ModelType?.Name
+                        : null,
+                    // Save parameter values
+                    ParameterValues = new Dictionary<string, string>(_parameterValues)
+                }).ToList()
+            };
+
+            await LlmPoolService.SavePromptHistoryAsync(history);
+        }
+    }
+
+    private async Task ShowHistory()
+    {
+        if (string.IsNullOrEmpty(_editingPrompt.Id))
+        {
+            return;
+        }
+
+        _showHistoryDrawer = true;
+        _historyLoading = true;
+
+        try
+        {
+            _promptHistory = await LlmPoolService.GetPromptHistoryAsync(_editingPrompt.Id);
+        }
+        finally
+        {
+            _historyLoading = false;
+        }
+    }
+
+    private void CloseHistoryDrawer()
+    {
+        _showHistoryDrawer = false;
+        _promptHistory.Clear();
+    }
+
+    private async Task LoadHistoryVersion(LlmPromptHistory history)
+    {
+        // Create a new prompt based on the history version
+        _editingPrompt = new LlmPrompt
+        {
+            Id = history.PromptId,
+            Name = _editingPrompt.Name, // Keep the current name
+            Description = _editingPrompt.Description, // Keep the current description
+            Content = history.Content,
+            Version = history.Version,
+            CreateTime = _editingPrompt.CreateTime,
+            UpdateTime = DateTime.UtcNow
+        };
+
+        LoadTestConfigsAndParameters(history.TestConfigs);
+
+        // Update parameters based on the loaded content
+        if (!string.IsNullOrEmpty(_editingPrompt.Content))
+        {
+            UpdatePromptParameters(_editingPrompt.Content);
+        }
+
+        // Close the drawer
+        CloseHistoryDrawer();
+
+        // Show success message
+        _message.Success($"Loaded version {history.Version}");
+    }
+
+    private async Task DeleteHistoryRecord(LlmPromptHistory history)
+    {
+        try
+        {
+            await LlmPoolService.DeletePromptHistoryAsync(history.Id);
+            _message.Success("History record deleted successfully");
+            
+            // Refresh the history list
+            if (_showHistoryDrawer)
+            {
+                await ShowHistory();
+            }
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to delete history record: {ex.Message}");
+        }
+    }
+}

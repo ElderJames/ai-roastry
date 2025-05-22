@@ -3,6 +3,7 @@ using System;
 using LY.LlmPool.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LY.LlmPool.Web.Data.Migrations
 {
     [DbContext(typeof(LlmDbContext))]
-    partial class LlmDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250521080857_AddPromptConfig")]
+    partial class AddPromptConfig
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -301,10 +304,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("id");
 
-                    b.Property<int?>("BasedOnVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("based_on_version");
-
                     b.Property<string>("Content")
                         .IsRequired()
                         .HasColumnType("text")
@@ -320,10 +319,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("prompt_id");
-
-                    b.Property<string>("TestConfigsJson")
-                        .HasColumnType("text")
-                        .HasColumnName("test_configs");
 
                     b.Property<int>("Version")
                         .HasColumnType("integer")

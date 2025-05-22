@@ -1,0 +1,122 @@
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Services
+@inject ChatClientService ChatClientService
+@inject MessageService MessageService
+
+@if (Config == null && Endpoint == null)
+{
+    <Alert Message="请选择一个模型或终端点" Type="@AlertType.Warning" ShowIcon="true" />
+    return;
+}
+
+<div class="simple-test-chat">
+    <div class="chat-input-area">
+        <TextArea @bind-Value="@_currentMessage"
+                 AutoSize="true"
+                 Placeholder="输入测试消息"
+                 Style="margin-bottom: 8px;" />
+        <Button Type="@ButtonType.Primary" 
+                OnClick="SendMessage" 
+                Loading="_isLoading"
+                Block>
+            发送
+        </Button>
+    </div>
+    
+    @if (_response != null)
+    {
+        <div class="response-area">
+            <Alert Type="@(_response.Status == "error" ? AlertType.Error : AlertType.Info)"
+                   Message="@_response.Message"
+                   ShowIcon="true" />
+        </div>
+    }
+</div>
+
+<style>
+    .simple-test-chat {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .chat-input-area {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .response-area {
+        margin-top: 16px;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public LlmConfig? Config { get; set; }
+
+    [Parameter]
+    public LlmEndpoint? Endpoint { get; set; }
+
+    [Parameter]
+    public string? SystemPrompt { get; set; }
+
+    private string _currentMessage = string.Empty;
+    private bool _isLoading;
+    private ChatResponse? _response;
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(_currentMessage) || _isLoading)
+            return;
+
+        _isLoading = true;
+        try
+        {
+            var messages = new List<ChatMessage>();
+            
+            if (!string.IsNullOrEmpty(SystemPrompt))
+            {
+                messages.Add(new ChatMessage
+                {
+                    Role = "system",
+                    Content = SystemPrompt,
+                    Timestamp = DateTime.Now
+                });
+            }
+
+            messages.Add(new ChatMessage
+            {
+                Role = "user",
+                Content = _currentMessage.Trim(),
+                Timestamp = DateTime.Now
+            });
+
+            if (Config != null)
+            {
+                _response = await ChatClientService.SendMessageAsync(Config, messages);
+            }
+            else if (Endpoint != null)
+            {
+                _response = await ChatClientService.SendMessageAsync(Endpoint, messages);
+            }
+
+            if (_response.Status == "success")
+            {
+                _currentMessage = string.Empty;
+            }
+        }
+        catch (Exception ex)
+        {
+            _response = new ChatResponse
+            {
+                Status = "error",
+                Message = ex.Message
+            };
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+} 

@@ -15,6 +15,8 @@ public class LlmDbContext : DbContext
     public DbSet<LlmEndpoint> Endpoints { get; set; } = null!;
     public DbSet<LlmEndpointConfig> EndpointConfigs { get; set; } = null!;
     public DbSet<EndpointCallRecord> EndpointCallRecords { get; set; } = null!;
+    public DbSet<LlmPrompt> Prompts { get; set; } = null!;
+    public DbSet<LlmPromptHistory> PromptHistory { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -88,6 +90,28 @@ public class LlmDbContext : DbContext
             entity.HasIndex(e => e.LlmConfigId);
             entity.HasIndex(e => e.RequestReceivedAt);
             entity.HasIndex(e => e.ParentCallId);
+        });
+
+        modelBuilder.Entity<LlmPrompt>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.Property(e => e.CreateTime).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.UpdateTime).HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<LlmPromptHistory>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.CreateTime).HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.HasOne(e => e.Prompt)
+                .WithMany()
+                .HasForeignKey(e => e.PromptId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => e.PromptId);
+            entity.HasIndex(e => e.CreateTime);
         });
     }
 } 
