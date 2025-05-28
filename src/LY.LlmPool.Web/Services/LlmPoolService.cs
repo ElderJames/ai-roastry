@@ -229,9 +229,46 @@ public class LlmPoolService
         existing.IsEnabled = endpoint.IsEnabled;
         existing.UpdatedAt = DateTime.UtcNow;
 
-        // Update configs
-        dbContext.EndpointConfigs.RemoveRange(existing.EndpointConfigs);
-        dbContext.EndpointConfigs.AddRange(endpoint.EndpointConfigs);
+        // 更新 EndpointConfigs
+        // 1. 删除已不存在的配置
+        var configsToRemove = existing.EndpointConfigs
+            .Where(ec => !endpoint.EndpointConfigs.Any(newEc => 
+                newEc.Id == ec.Id || 
+                (newEc.LlmConfigId == ec.LlmConfigId && newEc.Priority == ec.Priority)))
+            .ToList();
+        
+        foreach (var config in configsToRemove)
+        {
+            existing.EndpointConfigs.Remove(config);
+            dbContext.EndpointConfigs.Remove(config);
+        }
+
+        // 2. 更新或添加新的配置
+        foreach (var newConfig in endpoint.EndpointConfigs)
+        {
+            var existingConfig = existing.EndpointConfigs
+                .FirstOrDefault(ec => ec.Id == newConfig.Id || 
+                    (ec.LlmConfigId == newConfig.LlmConfigId && ec.Priority == newConfig.Priority));
+
+            if (existingConfig != null)
+            {
+                // 更新现有配置
+                existingConfig.LlmConfigId = newConfig.LlmConfigId;
+                existingConfig.Priority = newConfig.Priority;
+            }
+            else
+            {
+                // 添加新配置
+                var config = new LlmEndpointConfig
+                {
+                    EndpointId = existing.Id,
+                    LlmConfigId = newConfig.LlmConfigId,
+                    Priority = newConfig.Priority,
+                    CreatedAt = DateTime.UtcNow
+                };
+                existing.EndpointConfigs.Add(config);
+            }
+        }
 
         await dbContext.SaveChangesAsync();
         return existing;

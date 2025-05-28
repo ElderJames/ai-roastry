@@ -657,15 +657,6 @@
 
         try
         {
-            // Create a temporary prompt with current content for testing
-            var tempPrompt = new LlmPrompt
-            {
-                Id = _editingPrompt.Id ?? "temp",
-                Content = _editingPrompt.Content,  // Use current editing content
-                Name = _editingPrompt.Name,
-                Description = _editingPrompt.Description
-            };
-
             // Process the prompt content with parameter values
             var processedPromptContent = _editingPrompt.Content;
             foreach (var param in _parameterValues)
@@ -673,7 +664,11 @@
                 processedPromptContent = processedPromptContent.Replace($"{{{{{param.Key}}}}}", param.Value);
             }
 
-            foreach (var config in _testConfigs)
+            // 创建取消令牌，设置2分钟超时
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+
+            // 准备所有测试任务
+            var tasks = _testConfigs.Select(async config =>
             {
                 try
                 {
@@ -681,6 +676,7 @@
                     config.TestResult = new PromptTestResult { Success = true, Response = "" };
                     StateHasChanged();
 
+                    IAsyncEnumerable<string> streamingResponse;
                     if (config.Type == "Model")
                     {
                         var llmConfig = await LlmPoolService.GetConfigByIdAsync(config.ConfigId!);
@@ -689,18 +685,13 @@
                             throw new Exception("Selected model configuration not found.");
                         }
 
-                        await foreach (var chunk in ChatClientService.SendStreamingMessageAsync(
+                        streamingResponse = ChatClientService.SendStreamingMessageAsync(
                             llmConfig,
                             new List<ChatMessage> 
                             { 
                                 new ChatMessage { Role = "system", Content = processedPromptContent },
                                 new ChatMessage { Role = "user", Content = _testContent }
-                            }))
-                        {
-                            config.TestResult.Response += chunk;
-                            StateHasChanged();
-                            await Task.Delay(10); // Add a small delay for smoother typing effect
-                        }
+                            });
                     }
                     else
                     {
@@ -710,37 +701,61 @@
                             throw new Exception("Selected endpoint not found.");
                         }
 
-                        await foreach (var chunk in ChatClientService.SendStreamingMessageAsync(
+                        streamingResponse = ChatClientService.SendStreamingMessageAsync(
                             endpoint,
                             new List<ChatMessage> 
                             { 
                                 new ChatMessage { Role = "system", Content = processedPromptContent },
                                 new ChatMessage { Role = "user", Content = _testContent }
-                            }))
+                            });
+                    }
+
+                    try
+                    {
+                        await foreach (var chunk in streamingResponse.WithCancellation(cts.Token))
                         {
                             config.TestResult.Response += chunk;
                             StateHasChanged();
-                            await Task.Delay(10); // Add a small delay for smoother typing effect
+                            await Task.Delay(10, cts.Token); // 保持打字效果的同步性
                         }
                     }
-
-                    config.IsStreaming = false;
+                    catch (OperationCanceledException)
+                    {
+                        throw new Exception("Request timed out after 2 minutes.");
+                    }
                 }
                 catch (Exception ex)
                 {
                     config.TestResult = new PromptTestResult
                     {
                         Success = false,
-                        Error = ex.Message
+                        Error = ex is TaskCanceledException or OperationCanceledException 
+                            ? "Request timed out or was cancelled." 
+                            : ex.Message
                     };
                 }
                 finally
                 {
                     config.IsStreaming = false;
+                    StateHasChanged();
                 }
+            }).ToList();
+
+            try
+            {
+                // 并行执行所有测试，添加超时处理
+                await Task.WhenAll(tasks);
+            }
+            catch (TaskCanceledException)
+            {
+                _message.Warning("Some requests timed out.");
+            }
+            catch (OperationCanceledException)
+            {
+                _message.Warning("Some requests were cancelled.");
             }
 
-            // Save test results to history with current content and parameter values
+            // 保存测试结果到历史记录
             await SaveTestHistory();
             _message.Success("Test configurations saved to history");
         }
@@ -862,4 +877,5 @@
             _message.Error($"Failed to delete history record: {ex.Message}");
         }
     }
+}
 }

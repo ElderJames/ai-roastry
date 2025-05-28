@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Data.Entities;
 public class LlmModelType
 {
     [Key]
-    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Id { get; set; } = string.Empty;
 
     [Required]
     [MaxLength(50)]

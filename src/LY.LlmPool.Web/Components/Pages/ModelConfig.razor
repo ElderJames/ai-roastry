@@ -212,19 +212,31 @@
 
     private void AddModelType()
     {
-        _modelTypes.Add(new LlmModelType { Icon = "api" });
+        _modelTypes.Add(new LlmModelType 
+        { 
+            Icon = "api",
+            CreatedAt = DateTime.UtcNow
+        });
     }
 
     private async Task RemoveModelType(LlmModelType modelType)
     {
         try
         {
-            await LlmPoolService.DeleteModelTypeAsync(modelType.Id);
+            if (!string.IsNullOrEmpty(modelType.Id))
+            {
+                await LlmPoolService.DeleteModelTypeAsync(modelType.Id);
+                _message.Success($"Deleted model type: {modelType.Name}");
+            }
             _modelTypes.Remove(modelType);
         }
         catch (InvalidOperationException ex)
         {
             _message.Error(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to delete model type: {ex.Message}");
         }
     }
 
@@ -243,21 +255,35 @@
 
         if (hasError) return;
 
-        foreach (var modelType in _modelTypes)
+        try 
         {
-            if (string.IsNullOrEmpty(modelType.Id))
+            foreach (var modelType in _modelTypes)
             {
-                await LlmPoolService.AddModelTypeAsync(modelType);
+                if (string.IsNullOrEmpty(modelType.Id))
+                {
+                    // 新增模型类型
+                    modelType.Id = Guid.NewGuid().ToString("N");
+                    modelType.CreatedAt = DateTime.UtcNow;
+                    await LlmPoolService.AddModelTypeAsync(modelType);
+                    _message.Success($"Added model type: {modelType.Name}");
+                }
+                else
+                {
+                    // 更新现有模型类型
+                    modelType.UpdatedAt = DateTime.UtcNow;
+                    await LlmPoolService.UpdateModelTypeAsync(modelType);
+                    _message.Success($"Updated model type: {modelType.Name}");
+                }
             }
-            else
-            {
-                await LlmPoolService.UpdateModelTypeAsync(modelType);
-            }
-        }
 
-        CloseModelTypeDialog();
-        await LoadModelTypesAsync();
-        await LoadConfigsAsync();
+            CloseModelTypeDialog();
+            await LoadModelTypesAsync();
+            await LoadConfigsAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to save model types: {ex.Message}");
+        }
     }
 
     private void CloseModelTypeDialog()

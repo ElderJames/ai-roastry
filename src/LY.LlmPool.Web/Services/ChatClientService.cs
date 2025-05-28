@@ -30,14 +30,14 @@ public class ChatClientService
         var request = _httpContextAccessor.HttpContext?.Request;
         if (request == null) return string.Empty;
 
-        return $"{request.Scheme}://{request.Host}/v1";
+        return $"{request.Scheme}://{request.Host}";
     }
 
     private Kernel CreateKernel(string apiKey, string baseUrl, string model)
     {
         var handler = new LoggingHttpHandler(_logger);
         handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl) };
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl+ "/v1") };
 
         var builder = Kernel.CreateBuilder()
             .AddOpenAIChatCompletion(model, apiKey, httpClient: httpClient);

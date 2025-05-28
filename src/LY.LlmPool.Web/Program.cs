@@ -131,6 +131,13 @@ using (var scope = app.Services.CreateScope())
                 Description = "Qwen Models",
                 Icon = "cloud",
                 DefaultEndpoint = "https://dashscope.aliyuncs.com"
+            },
+            new LlmModelType
+            {
+                Name = "Ollama",
+                Description = "Ollama Local Models",
+                Icon = "laptop",
+                DefaultEndpoint = "http://localhost:11434"
             }
         );
         await dbContext.SaveChangesAsync();
