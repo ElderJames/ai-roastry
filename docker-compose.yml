@@ -1,0 +1,34 @@
+services:
+  ly.llmpool.web:
+    image: ${DOCKER_REGISTRY-}lyllmpoolweb:${DOCKER_TAG:-latest}
+    build:
+      context: .
+      dockerfile: src/LY.LlmPool.Web/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__DefaultConnection=Host=db;Port=5432;Database=${POSTGRES_DB:-LlmPool};Username=${POSTGRES_USER:-user_pg};Password=${POSTGRES_PASSWORD:-password_zYHcAJ}
+      - APPLY_MIGRATIONS
+      - APP_BASE_PATH
+    restart: always
+
+  db:
+    image: postgres:17.4-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-user_pg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password_zYHcAJ}
+      POSTGRES_DB: ${POSTGRES_DB:-LlmPool}
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:

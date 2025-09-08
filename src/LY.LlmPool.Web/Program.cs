@@ -65,6 +65,9 @@ builder.Services.AddControllers();
 // Add email sender
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 
+// 添加健康检查服务
+builder.Services.AddHealthChecks();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -73,6 +76,13 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
+}
+
+if (Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
+{
+    using var scope = app.Services.CreateScope();
+    var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    dbContext.Database.Migrate();
 }
 
 app.UseHttpsRedirection();
@@ -102,46 +112,48 @@ app.MapAdditionalIdentityEndpoints();
 app.MapControllers();
 
 // Apply database migrations and seed initial data if needed
-using (var scope = app.Services.CreateScope())
-{
-    var dbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
-    dbContext.Database.Migrate();
+//using (var scope = app.Services.CreateScope())
+//{
+//    var dbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
+//    dbContext.Database.Migrate();
 
-    // Seed initial model types if none exist
-    if (!await dbContext.ModelTypes.AnyAsync())
-    {
-        dbContext.ModelTypes.AddRange(
-            new LlmModelType
-            {
-                Name = "OpenAI",
-                Description = "OpenAI Compatible Models",
-                Icon = "thunderbolt",
-                DefaultEndpoint = "https://api.openai.com"
-            },
-            new LlmModelType
-            {
-                Name = "DeepSeek",
-                Description = "DeepSeek Models",
-                Icon = "robot",
-                DefaultEndpoint = "https://api.deepseek.com"
-            },
-            new LlmModelType
-            {
-                Name = "Qwen",
-                Description = "Qwen Models",
-                Icon = "cloud",
-                DefaultEndpoint = "https://dashscope.aliyuncs.com"
-            },
-            new LlmModelType
-            {
-                Name = "Ollama",
-                Description = "Ollama Local Models",
-                Icon = "laptop",
-                DefaultEndpoint = "http://localhost:11434"
-            }
-        );
-        await dbContext.SaveChangesAsync();
-    }
-}
+//    // Seed initial model types if none exist
+//    if (!await dbContext.ModelTypes.AnyAsync())
+//    {
+//        dbContext.ModelTypes.AddRange(
+//            new LlmModelType
+//            {
+//                Name = "OpenAI",
+//                Description = "OpenAI Compatible Models",
+//                Icon = "thunderbolt",
+//                DefaultEndpoint = "https://api.openai.com"
+//            },
+//            new LlmModelType
+//            {
+//                Name = "DeepSeek",
+//                Description = "DeepSeek Models",
+//                Icon = "robot",
+//                DefaultEndpoint = "https://api.deepseek.com"
+//            },
+//            new LlmModelType
+//            {
+//                Name = "Qwen",
+//                Description = "Qwen Models",
+//                Icon = "cloud",
+//                DefaultEndpoint = "https://dashscope.aliyuncs.com"
+//            },
+//            new LlmModelType
+//            {
+//                Name = "Ollama",
+//                Description = "Ollama Local Models",
+//                Icon = "laptop",
+//                DefaultEndpoint = "http://localhost:11434"
+//            }
+//        );
+//        await dbContext.SaveChangesAsync();
+//    }
+//}
+
+app.MapHealthChecks("/health");
 
 app.Run();

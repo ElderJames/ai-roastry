@@ -1,0 +1,9 @@
+services:
+  ly.llmpool.web:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_HTTP_PORTS=8080
+      # - ASPNETCORE_HTTPS_PORTS=8081  # 注释掉HTTPS端口配置
+      - ASPNETCORE_URLS=http://+:8080   # 只使用HTTP
+    ports:
+      - "${HTTP_PORT}:8080"
