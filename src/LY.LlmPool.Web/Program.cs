@@ -83,6 +83,8 @@ if (Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
     using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     dbContext.Database.Migrate();
+    var llmDbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
+    llmDbContext.Database.Migrate();
 }
 
 app.UseHttpsRedirection();
