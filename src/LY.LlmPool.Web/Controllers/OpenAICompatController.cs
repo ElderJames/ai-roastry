@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Azure;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
@@ -139,11 +140,15 @@ public class OpenAICompatController : ControllerBase
             try
             {
                 // Parse request
+                _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
                 var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions);
                 if (chatRequest == null)
                 {
                     throw new InvalidOperationException("Invalid chat request");
                 }
+                
+                _logger.LogInformation("解析的聊天请求 - 模型: {Model}, 消息数量: {MessageCount}", 
+                    chatRequest.Model, chatRequest.Messages.Count);
 
                 // Override model if specified in config
                 if (!string.IsNullOrEmpty(config.Model))
@@ -184,21 +189,82 @@ public class OpenAICompatController : ControllerBase
                 var chatHistory = new ChatHistory();
 
                 // Add messages to chat history
+                _logger.LogInformation("开始处理 {MessageCount} 条消息", chatRequest.Messages.Count);
                 foreach (var message in chatRequest.Messages)
                 {
                     var role = MapRoleForDeepseek(message.Role);
-                    switch (role.ToLower())
+                    _logger.LogInformation("处理消息 - 角色: {Role}, 内容类型: {ContentType}, 包含图片: {HasImages}", 
+                        role, message.ContentElement.ValueKind, message.HasImages);
+                    
+                    if (message.HasImages && message.ContentElement.ValueKind == JsonValueKind.Array)
                     {
-                        case "system":
-                            chatHistory.AddSystemMessage(message.Content);
-                            break;
-                        case "assistant":
-                            chatHistory.AddAssistantMessage(message.Content);
-                            break;
-                        case "user":
-                        default:
-                            chatHistory.AddUserMessage(message.Content);
-                            break;
+                        // 处理多模态内容
+                        _logger.LogInformation("处理多模态消息，内容项数量: {ItemCount}", 
+                            message.ContentElement.GetArrayLength());
+                        var contentItems = new ChatMessageContentItemCollection();
+                        
+                        foreach (var item in message.ContentElement.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("type", out var typeElement))
+                            {
+                                var type = typeElement.GetString();
+                                _logger.LogInformation("处理内容项 - 类型: {Type}", type);
+                                
+                                if (type == "text" && item.TryGetProperty("text", out var textElement))
+                                {
+                                    var text = textElement.GetString();
+                                    if (!string.IsNullOrEmpty(text))
+                                    {
+                                        contentItems.Add(new Microsoft.SemanticKernel.TextContent(text));
+                                        _logger.LogInformation("添加文本内容，长度: {Length}", text.Length);
+                                    }
+                                }
+                                else if ((type == "image" || type == "image_url") && 
+                                         TryExtractImageData(item, out var imageData, out var mimeType))
+                                {
+                                    contentItems.Add(new Microsoft.SemanticKernel.ImageContent(imageData, mimeType));
+                                    _logger.LogInformation("添加图片内容 - MIME类型: {MimeType}, 大小: {Size} bytes", 
+                                        mimeType, imageData.Length);
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("无法处理的内容项类型: {Type}, JSON: {Json}", 
+                                        type, item.GetRawText());
+                                }
+                            }
+                        }
+                        
+                        // 添加多模态消息
+                        var authorRole = role.ToLower() switch
+                        {
+                            "system" => AuthorRole.System,
+                            "assistant" => AuthorRole.Assistant,
+                            "user" => AuthorRole.User,
+                            _ => AuthorRole.User
+                        };
+                        
+                        chatHistory.AddMessage(authorRole, contentItems);
+                        _logger.LogInformation("已添加多模态消息 - 角色: {Role}, 内容项数量: {ItemCount}", 
+                            authorRole, contentItems.Count);
+                    }
+                    else
+                    {
+                        // 处理纯文本内容
+                        _logger.LogInformation("处理纯文本消息 - 角色: {Role}, 内容: {Content}", 
+                            role, message.Content);
+                        switch (role.ToLower())
+                        {
+                            case "system":
+                                chatHistory.AddSystemMessage(message.Content);
+                                break;
+                            case "assistant":
+                                chatHistory.AddAssistantMessage(message.Content);
+                                break;
+                            case "user":
+                            default:
+                                chatHistory.AddUserMessage(message.Content);
+                                break;
+                        }
                     }
                 }
 
@@ -211,10 +277,12 @@ public class OpenAICompatController : ControllerBase
                     TopP = chatRequest.TopP
                 };
 
+                _logger.LogInformation("开始调用聊天完成服务");
                 var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
                 if (chatRequest.Stream ?? false)
                 {
+                    _logger.LogInformation("使用流式响应模式");
                     var streamingResult = chatCompletionService.GetStreamingChatMessageContentsAsync(
                         chatHistory,
                         settings
@@ -252,10 +320,13 @@ public class OpenAICompatController : ControllerBase
                 }
                 else
                 {
+                    _logger.LogInformation("使用非流式响应模式");
                     var response = await chatCompletionService.GetChatMessageContentAsync(
                         chatHistory,
                         settings
                     );
+                    
+                    _logger.LogInformation("收到模型响应，内容长度: {Length}", response.Content?.Length ?? 0);
 
                     var json = JsonSerializer.Serialize(new
                     {
@@ -352,6 +423,187 @@ public class OpenAICompatController : ControllerBase
     private class Message
     {
         public string Role { get; set; } = string.Empty;
-        public string Content { get; set; } = string.Empty;
+        
+        private JsonElement _content;
+        
+        [JsonPropertyName("content")]
+        public JsonElement ContentElement
+        {
+            get => _content;
+            set => _content = value;
+        }
+        
+        // 获取文本内容的便捷属性
+        [JsonIgnore]
+        public string Content
+        {
+            get
+            {
+                if (_content.ValueKind == JsonValueKind.String)
+                {
+                    return _content.GetString() ?? string.Empty;
+                }
+                else if (_content.ValueKind == JsonValueKind.Array)
+                {
+                    // 从数组中提取所有文本内容
+                    var textContent = "";
+                    foreach (var item in _content.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("type", out var typeElement) && 
+                            typeElement.GetString() == "text" &&
+                            item.TryGetProperty("text", out var textElement))
+                        {
+                            textContent += textElement.GetString();
+                        }
+                    }
+                    return textContent;
+                }
+                return string.Empty;
+            }
+            set
+            {
+                // 设置时创建字符串类型的 JsonElement
+                _content = JsonSerializer.SerializeToElement(value);
+            }
+        }
+        
+        // 检查是否包含图片
+        [JsonIgnore]
+        public bool HasImages
+        {
+            get
+            {
+                if (_content.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in _content.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("type", out var typeElement))
+                        {
+                            var type = typeElement.GetString();
+                            if (type == "image" || type == "image_url")
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+        }
+    }
+
+    private static bool TryExtractImageData(JsonElement item, out byte[] imageData, out string mimeType)
+    {
+        imageData = Array.Empty<byte>();
+        mimeType = "image/jpeg";
+
+        try
+        {
+            // 处理 image_url 格式
+            if (item.TryGetProperty("image_url", out var imageUrlElement) &&
+                imageUrlElement.TryGetProperty("url", out var urlElement))
+            {
+                var url = urlElement.GetString();
+                if (!string.IsNullOrEmpty(url) && url.StartsWith("data:"))
+                {
+                    var result = TryParseDataUrl(url, out imageData, out mimeType);
+                    if (result)
+                    {
+                        Console.WriteLine($"成功解析 image_url 格式图片 - MIME: {mimeType}, 大小: {imageData.Length} bytes");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"解析 image_url 格式图片失败 - URL: {url.Substring(0, Math.Min(50, url.Length))}...");
+                    }
+                    return result;
+                }
+                else
+                {
+                    Console.WriteLine($"image_url 不是 data URL 格式: {url?.Substring(0, Math.Min(50, url?.Length ?? 0))}...");
+                }
+            }
+            // 处理直接的 image 格式
+            else if (item.TryGetProperty("source", out var sourceElement))
+            {
+                if (sourceElement.TryGetProperty("type", out var typeElement) &&
+                    typeElement.GetString() == "base64" &&
+                    sourceElement.TryGetProperty("data", out var dataElement))
+                {
+                    var base64Data = dataElement.GetString();
+                    if (!string.IsNullOrEmpty(base64Data))
+                    {
+                        imageData = Convert.FromBase64String(base64Data);
+                        
+                        if (sourceElement.TryGetProperty("media_type", out var mediaTypeElement))
+                        {
+                            mimeType = mediaTypeElement.GetString() ?? "image/jpeg";
+                        }
+                        
+                        Console.WriteLine($"成功解析 source 格式图片 - MIME: {mimeType}, 大小: {imageData.Length} bytes");
+                        return true;
+                    }
+                    else
+                    {
+                        Console.WriteLine("source 格式图片的 base64 数据为空");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"source 格式不正确 - JSON: {sourceElement.GetRawText()}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"未识别的图片格式 - JSON: {item.GetRawText()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"解析图片数据时发生异常: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    private static bool TryParseDataUrl(string dataUrl, out byte[] imageData, out string mimeType)
+    {
+        imageData = Array.Empty<byte>();
+        mimeType = "image/jpeg";
+
+        try
+        {
+            Console.WriteLine($"解析 Data URL，长度: {dataUrl.Length}");
+            // data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
+            var commaIndex = dataUrl.IndexOf(',');
+            if (commaIndex == -1) 
+            {
+                Console.WriteLine("Data URL 格式错误：找不到逗号分隔符");
+                return false;
+            }
+
+            var header = dataUrl.Substring(5, commaIndex - 5); // 去掉 "data:" 前缀
+            var base64Data = dataUrl.Substring(commaIndex + 1);
+            Console.WriteLine($"Header: {header}, Base64 数据长度: {base64Data.Length}");
+
+            // 解析 MIME 类型
+            var semicolonIndex = header.IndexOf(';');
+            if (semicolonIndex != -1)
+            {
+                mimeType = header.Substring(0, semicolonIndex);
+            }
+            else
+            {
+                mimeType = header;
+            }
+
+            imageData = Convert.FromBase64String(base64Data);
+            Console.WriteLine($"成功解析 Data URL - MIME: {mimeType}, 图片大小: {imageData.Length} bytes");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"解析 Data URL 时发生异常: {ex.Message}");
+            return false;
+        }
     }
 }
