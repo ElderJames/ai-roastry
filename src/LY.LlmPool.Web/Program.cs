@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
+using Microsoft.AspNetCore.HttpLogging;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -50,6 +51,20 @@ builder.Services.AddScoped<CallRecordService>();
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();
+
+// Enable HTTP request/response logging (including JSON bodies)
+builder.Services.AddHttpLogging(options =>
+{
+    options.LoggingFields = HttpLoggingFields.Request |
+                            HttpLoggingFields.RequestHeaders |
+                            HttpLoggingFields.RequestBody |
+                            HttpLoggingFields.Response |
+                            HttpLoggingFields.ResponseHeaders;
+    options.RequestBodyLogLimit = 1024 * 1024; // 1MB
+    options.ResponseBodyLogLimit = 1024 * 1024; // 1MB
+    options.MediaTypeOptions.AddText("application/json");
+    options.MediaTypeOptions.AddText("text/plain");
+});
 
 // Named HttpClient for LlmPool API with configurable BaseUrl and HttpContext fallback
 builder.Services.AddTransient<LoggingHttpHandler>();
@@ -137,6 +152,9 @@ app.UseAntiforgery();
 
 // Add routing middleware
 app.UseRouting();
+
+// HTTP request/response logging
+app.UseHttpLogging();
 
 // Add authentication & authorization
 //app.UseAuthentication();
