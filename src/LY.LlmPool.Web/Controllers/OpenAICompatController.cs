@@ -183,18 +183,18 @@ public class OpenAICompatController : ControllerBase
                     case "none":
                         break;
                     case "auto":
-                        settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+                        settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
                         break;
                     case "required":
                     case "tool":
                     default:
-                        settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+                        settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
                         break;
                 }
             }
             else
             {
-                settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+                settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
             }
         }
 
@@ -283,7 +283,6 @@ public class OpenAICompatController : ControllerBase
             {
                 _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
 
-                // Get configuration from app
                 if (!string.IsNullOrEmpty(app.LlmConfigId))
                 {
                     var appConfig = await _llmPoolService.GetConfigByIdAsync(app.LlmConfigId);
@@ -605,6 +604,9 @@ public class OpenAICompatController : ControllerBase
                     }
                 }
 
+                // 规范化 tool_choice（兼容字符串/对象）
+                var toolChoiceForSettings = NormalizeToolChoice(chatRequest.ToolChoice);
+
                 var settings = CreateExecutionSettings(
                     chatRequest.Temperature,
                     chatRequest.MaxTokens,
@@ -612,7 +614,7 @@ public class OpenAICompatController : ControllerBase
                     chatRequest.FrequencyPenalty,
                     chatRequest.PresencePenalty,
                     requestTools,
-                    chatRequest.ToolChoice);
+                    toolChoiceForSettings);
 
                 _logger.LogInformation("开始调用聊天完成服务");
                 var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
@@ -880,6 +882,38 @@ public class OpenAICompatController : ControllerBase
         };
     }
 
+    private static Dictionary<string, object>? NormalizeToolChoice(JsonElement toolChoiceRaw)
+    {
+        if (toolChoiceRaw.ValueKind == JsonValueKind.Undefined || toolChoiceRaw.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (toolChoiceRaw.ValueKind == JsonValueKind.String)
+        {
+            var s = toolChoiceRaw.GetString();
+            if (!string.IsNullOrWhiteSpace(s))
+            {
+                return new Dictionary<string, object> { ["type"] = s! };
+            }
+            return null;
+        }
+
+        if (toolChoiceRaw.ValueKind == JsonValueKind.Object)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(toolChoiceRaw.GetRawText(), _jsonSerializerOptions);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
     private class ChatRequest
     {
         public string Model { get; set; } = string.Empty;
@@ -901,7 +935,7 @@ public class OpenAICompatController : ControllerBase
 
         // OpenAI tool_choice 支持
         [JsonPropertyName("tool_choice")]
-        public Dictionary<string, object>? ToolChoice { get; set; }
+        public JsonElement ToolChoice { get; set; }
     }
 
     private class OpenAITool

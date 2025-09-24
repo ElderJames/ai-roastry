@@ -1,11 +1,13 @@
 using LY.LlmPool.Web.Components;
 using LY.LlmPool.Web.Components.Account;
-using LY.LlmPool.Web.Services;
-using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Services;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -55,6 +57,17 @@ builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
 {
     var cfg = sp.GetRequiredService<IConfiguration>();
     var baseUrl = cfg["LlmPool:BaseUrl"]; // e.g. "https://your-host/v1"
+    var server = sp.GetRequiredService<IServer>();
+    var addresses = server.Features.Get<IServerAddressesFeature>()?.Addresses.Where(x => !x.StartsWith("https")) ?? [];
+
+    if (addresses.Any())
+    {
+        var address = addresses.First();
+        var port = new Uri(address).Port;
+        // 构建基于当前请求的URL
+        baseUrl = $"http://localhost:{port}/v1";
+    }
+
     if (string.IsNullOrWhiteSpace(baseUrl))
     {
         var accessor = sp.GetRequiredService<IHttpContextAccessor>();
@@ -118,7 +131,7 @@ if (Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
     llmDbContext.Database.Migrate();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseAntiforgery();
 
@@ -126,9 +139,9 @@ app.UseAntiforgery();
 app.UseRouting();
 
 // Add authentication & authorization
-app.UseAuthentication();
+//app.UseAuthentication();
 app.UseAntiforgery();
-app.UseAuthorization();
+//app.UseAuthorization();
 
 // Configure OpenAPI
 app.MapOpenApi();

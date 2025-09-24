@@ -540,6 +540,31 @@
 
                 if (isApp)
                 {
+                    if (_simulateTools)
+                    {
+                        var appParms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+                            ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                            : null;
+                        var http2 = HttpClientFactory.CreateClient("LlmPoolApi");
+                        var client2 = new LY.LlmPool.Client.LlmPoolClient(http2, apiKey);
+                        var msgs2 = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                        {
+                            Role = m.Role,
+                            Content = m.Content,
+                            ContentItems = m.ContentItems
+                        }).ToList();
+                        var settings2 = new OpenAIPromptExecutionSettings();
+                        if (Config != null)
+                        {
+                            settings2.Temperature = Config.Temperature;
+                            settings2.MaxTokens = Config.MaxTokens;
+                        }
+                        var toolObjs2 = new object[] { this };
+                        var text2 = await client2.ChatAppAsync(model!, msgs2, toolObjs2, appParms, settings2);
+                        assistantMessage.Content += text2;
+                        StateHasChanged();
+                        return;
+                    }
                     var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
                         ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
                         : null;
@@ -570,25 +595,50 @@
                 }
                 else
                 {
-                    // 非 App：使用 LlmPoolClient 进行流式（经 SK）
-                    var http = HttpClientFactory.CreateClient("LlmPoolApi");
-                    var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
-                    var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
-                    var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                    // 非 App
+                    if (_simulateTools)
                     {
-                        Role = m.Role,
-                        Content = m.Content,
-                        ContentItems = m.ContentItems
-                    }).ToList();
-
-                    var chatOptions = new LY.LlmPool.Client.ChatOptions
+                        var http3 = HttpClientFactory.CreateClient("LlmPoolApi");
+                        var client3 = new LY.LlmPool.Client.LlmPoolClient(http3, apiKey);
+                        var msgs3 = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                        {
+                            Role = m.Role,
+                            Content = m.Content,
+                            ContentItems = m.ContentItems
+                        }).ToList();
+                        var chatOptions3 = new LY.LlmPool.Client.ChatOptions
+                        {
+                            Temperature = Config?.Temperature,
+                            MaxTokens = Config?.MaxTokens,
+                            TopP = null
+                        };
+                        var text3 = await client3.ChatAsync(model!, msgs3, null, new object[] { this }, chatOptions3);
+                        assistantMessage.Content += text3;
+                        StateHasChanged();
+                        return;
+                    }
+                    else
                     {
-                        Temperature = Config?.Temperature,
-                        MaxTokens = Config?.MaxTokens,
-                        TopP = null
-                    };
+                        // 使用 LlmPoolClient 进行流式（经 SK）
+                        var http = HttpClientFactory.CreateClient("LlmPoolApi");
+                        var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
+                        var toolObjects2 = Array.Empty<object>();
+                        var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                        {
+                            Role = m.Role,
+                            Content = m.Content,
+                            ContentItems = m.ContentItems
+                        }).ToList();
 
-                    streamingResult = client.ChatStreamAsync(model!, msgs, null, toolObjects2, chatOptions);
+                        var chatOptions = new LY.LlmPool.Client.ChatOptions
+                        {
+                            Temperature = Config?.Temperature,
+                            MaxTokens = Config?.MaxTokens,
+                            TopP = null
+                        };
+
+                        streamingResult = client.ChatStreamAsync(model!, msgs, null, toolObjects2, chatOptions);
+                    }
                 }
             }
 
