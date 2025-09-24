@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Data.Entities;
 public class LlmEndpoint
 {
     [Key]
-    public string Id { get; set; }
+    public string Id { get; set; } = string.Empty;
 
     [Required]
     [MaxLength(50)]

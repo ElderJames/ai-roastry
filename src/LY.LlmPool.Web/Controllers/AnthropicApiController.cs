@@ -3,6 +3,7 @@ using LY.LlmPool.Web.Models.Anthropic;
 using LY.LlmPool.Web.Services;
 using System.Text.Json;
 using System.Text;
+using System.Text.Encodings.Web;
 
 namespace LY.LlmPool.Web.Controllers;
 
@@ -16,17 +17,20 @@ public class AnthropicApiController : ControllerBase
     private readonly LlmPoolService _llmPoolService;
     private readonly ChatClientService _chatClientService;
     private readonly AnthropicTransformService _transformService;
+    private readonly CallRecordService _callRecordService;
     private readonly ILogger<AnthropicApiController> _logger;
 
     public AnthropicApiController(
         LlmPoolService llmPoolService,
         ChatClientService chatClientService,
         AnthropicTransformService transformService,
+        CallRecordService callRecordService,
         ILogger<AnthropicApiController> logger)
     {
         _llmPoolService = llmPoolService;
         _chatClientService = chatClientService;
         _transformService = transformService;
+        _callRecordService = callRecordService;
         _logger = logger;
     }
 
@@ -38,6 +42,8 @@ public class AnthropicApiController : ControllerBase
     {
         try
         {
+            var requestStartTime = DateTime.UtcNow;
+            object? requestData = null;
             // 手动读取和解析 JSON
             using var reader = new StreamReader(Request.Body);
             var requestBody = await reader.ReadToEndAsync();
@@ -66,6 +72,16 @@ public class AnthropicApiController : ControllerBase
                 {
                     return BadRequest(new { error = new { message = "Failed to parse request", type = "invalid_request_error" } });
                 }
+                try
+                {
+                    // 存储原始请求数据以供观察
+                    requestData = JsonSerializer.Deserialize<object>(requestBody, new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                    });
+                }
+                catch { }
             }
             catch (JsonException ex)
             {
@@ -83,15 +99,26 @@ public class AnthropicApiController : ControllerBase
                 return BadRequest(new { error = new { message = "Missing or invalid API key", type = "invalid_request_error" } });
             }
 
-            // 根据apiKey作为 key 查找 endpoint config
-            var endpoint = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey);
-            if (endpoint == null)
+            // 根据apiKey作为 key 查找 endpoint 下可用的 config（并尝试占用）
+            var modelAcquireStartTime = DateTime.UtcNow;
+            var config = await _llmPoolService.GetAvailableConfigByKeyAsync(apiKey.ToString());
+            if (config == null)
             {
                 return BadRequest(new { error = new { message = $"API key '{apiKey}' not found or not available", type = "invalid_request_error" } });
             }
 
-            _logger.LogInformation("Processing message request: {OriginalModel} -> Endpoint: {EndpointName}", 
-                request.OriginalModel, endpoint.Name);
+            // 解析所属 endpoint
+            var endpointForCfg = await _llmPoolService.GetEndpointForConfigAsync(config.Id!);
+            var endpointId = endpointForCfg?.Id ?? apiKey.ToString();
+
+            _logger.LogInformation("Processing message request: {OriginalModel} -> EndpointId: {EndpointId}, Config: {ConfigName}", 
+                request.OriginalModel, endpointId, config.Name);
+
+            // 创建调用记录并记录等待时间与选择信息
+            var callRecord = await _callRecordService.CreateAsync(endpointId, requestData);
+            var waitTime = DateTime.UtcNow - modelAcquireStartTime;
+            await _callRecordService.UpdateWaitAsync(callRecord, waitTime);
+            await _callRecordService.UpdateConfigAsync(callRecord, config.Id);
 
             // 转换请求格式
             var messages = _transformService.ConvertToInternalMessages(request);
@@ -99,15 +126,68 @@ public class AnthropicApiController : ControllerBase
             if (request.Stream == true)
             {
                 // 流式响应
-                return await HandleStreamingRequest(request, endpoint, messages);
+                // 记录开始与首包时间点
+                await _callRecordService.MarkStartAsync(callRecord);
+
+                // 设置 SSE 头
+                Response.Headers["Transfer-Encoding"] = "chunked";
+                Response.Headers["Content-Type"] = "text/event-stream; charset=utf-8";
+                Response.Headers["Cache-Control"] = "no-cache";
+                Response.Headers["Connection"] = "keep-alive";
+                Response.Headers["X-Accel-Buffering"] = "no";
+
+                // 标记响应开始
+                await _callRecordService.MarkResponseStartAsync(callRecord);
+
+                var result = await HandleStreamingCore(request, config, messages, callRecord, endpointId, requestStartTime);
+                return result;
             }
             else
             {
                 // 非流式响应
-                var response = await _chatClientService.SendMessageAsync(endpoint, messages);
+                await _callRecordService.MarkStartAsync(callRecord);
+                await _callRecordService.MarkResponseStartAsync(callRecord);
+
+                var response = await _chatClientService.SendMessageAsync(config, messages);
                 var anthropicResponse = _transformService.ConvertToAnthropicResponse(response, request);
                 
                 _logger.LogInformation("Message request completed successfully");
+
+                // 提取文本消息用于观测
+                string? msgText = null;
+                try
+                {
+                    if (anthropicResponse?.Content != null && anthropicResponse.Content.Count > 0)
+                    {
+                        var texts = anthropicResponse.Content
+                            .Where(c => string.Equals(c.Type, "text", StringComparison.OrdinalIgnoreCase))
+                            .Select(c => c.Text ?? string.Empty);
+                        msgText = string.Join("", texts);
+                    }
+                }
+                catch { }
+
+                await _callRecordService.WriteSelectionAsync(
+                    callRecord,
+                    selectionStrategy: "endpoint-id-lb",
+                    endpointId: endpointId,
+                    configId: config.Id,
+                    configName: config.Name,
+                    appName: null,
+                    model: config.Model,
+                    message: msgText,
+                    toolCalls: null,
+                    requestReceivedAt: requestStartTime);
+
+                await _callRecordService.FinalizeAsync(
+                    callRecord,
+                    selectionStrategy: "endpoint-id-lb",
+                    endpointId: endpointId,
+                    configId: config.Id,
+                    configName: config.Name,
+                    appName: null,
+                    model: config.Model,
+                    requestReceivedAt: requestStartTime);
                 return Ok(anthropicResponse);
             }
         }
@@ -198,25 +278,25 @@ public class AnthropicApiController : ControllerBase
     /// </summary>
     private async Task<IActionResult> HandleStreamingRequest(MessagesRequest request, Data.Entities.LlmConfig endpoint, List<Models.ChatMessage> messages)
     {
+        // 已重构为 HandleStreamingCore 并在 CreateMessage 中设置时间点与选择信息
+        return await Task.FromResult(new EmptyResult());
+    }
+
+    private async Task<IActionResult> HandleStreamingCore(MessagesRequest request, Data.Entities.LlmConfig config, List<Models.ChatMessage> messages,
+        Data.Entities.EndpointCallRecord callRecord, string endpointId, DateTime requestStartTime)
+    {
         try
         {
-            Response.Headers["Content-Type"] = "text/event-stream";
-            Response.Headers["Cache-Control"] = "no-cache";
-            Response.Headers["Connection"] = "keep-alive";
-            Response.Headers["X-Accel-Buffering"] = "no"; // 禁用nginx缓冲
-
             var responseStream = Response.Body;
             var cancellationToken = HttpContext.RequestAborted;
 
-            // 获取流式响应
-            var streamingResponse = _chatClientService.SendStreamingMessageAsync(endpoint, messages);
+            var streamingResponse = _chatClientService.SendStreamingMessageAsync(config, messages);
             var streamEvents = _transformService.ConvertToStreamEventsAsync(streamingResponse, request);
 
             await foreach (var streamEvent in streamEvents.WithCancellation(cancellationToken))
             {
                 var eventData = SerializeStreamEvent(streamEvent);
                 var eventBytes = Encoding.UTF8.GetBytes(eventData);
-                
                 await responseStream.WriteAsync(eventBytes, cancellationToken);
                 await responseStream.FlushAsync(cancellationToken);
 
@@ -224,23 +304,31 @@ public class AnthropicApiController : ControllerBase
                     break;
             }
 
-            // 发送结束标记
             var doneBytes = Encoding.UTF8.GetBytes("data: [DONE]\n\n");
             await responseStream.WriteAsync(doneBytes, cancellationToken);
             await responseStream.FlushAsync(cancellationToken);
+
+            await _callRecordService.FinalizeAsync(
+                callRecord,
+                selectionStrategy: "endpoint-id-lb",
+                endpointId: endpointId,
+                configId: config.Id,
+                configName: config.Name,
+                appName: null,
+                model: config.Model,
+                requestReceivedAt: requestStartTime);
 
             return new EmptyResult();
         }
         catch (OperationCanceledException)
         {
             _logger.LogInformation("Streaming request was cancelled");
+            await _callRecordService.MarkErrorAsync(callRecord, "client_canceled");
             return new EmptyResult();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in streaming response");
-            
-            // 尝试发送错误事件
             try
             {
                 var errorEvent = CreateErrorStreamEvent(ex.Message);
@@ -249,12 +337,17 @@ public class AnthropicApiController : ControllerBase
                 await Response.Body.WriteAsync(errorBytes);
                 await Response.Body.FlushAsync();
             }
-            catch
-            {
-                // 忽略发送错误事件时的异常
-            }
+            catch { }
 
+            await _callRecordService.MarkErrorAsync(callRecord, ex.Message);
             return new EmptyResult();
+        }
+        finally
+        {
+            if (!string.IsNullOrEmpty(config.Id))
+            {
+                _llmPoolService.ReleaseConfig(config.Id);
+            }
         }
     }
 

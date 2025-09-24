@@ -1,23 +1,28 @@
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Models
 @using LY.LlmPool.Web.Services
+@using LY.LlmPool.Client
 @using System.Net.Http.Json
-@using System.Text.Json
 @using Microsoft.AspNetCore.Http
 @using Microsoft.SemanticKernel.ChatCompletion
+@using Microsoft.SemanticKernel.Connectors.OpenAI
 @using Microsoft.SemanticKernel
 @using System.Text
 @using Microsoft.AspNetCore.Components.Forms
+@using System.ComponentModel
+@using System.Text.Json
 
 @inject ChatClientService ChatClientService
+@inject IServiceProvider Services
+@inject LlmPoolService LlmPoolService
 @inject MessageService MessageService
 @inject IJSRuntime JS
 @inject IHttpClientFactory HttpClientFactory
 @inject IHttpContextAccessor HttpContextAccessor
 
-@if (Config == null && Endpoint == null)
+@if (Config == null && Endpoint == null && App == null)
 {
-    <Alert Message="请选择一个模型或终端点" Type="@AlertType.Warning" ShowIcon="true" />
+    <Alert Message="请选择一个模型、终端点或应用" Type="@AlertType.Warning" ShowIcon="true" />
     return;
 }
 <InputFile hidden id="inputfile" OnChange="OnImageUpload" multiple accept="image/*" />
@@ -86,6 +91,7 @@
                     }
                     <Switch Checked="_useStreaming" CheckedChildren="流式响应" UnCheckedChildren="普通响应" OnChange="@(value => _useStreaming = value)" />
                     <Switch Checked="_useAnthropicApi" CheckedChildren="Anthropic API" UnCheckedChildren="直接调用" OnChange="@(value => _useAnthropicApi = value)" />
+                    <Switch Checked="_simulateTools" CheckedChildren="模拟工具调用" UnCheckedChildren="无工具" OnChange="@(value => _simulateTools = value)" />
                 </div>
                 
                 <!-- 图片预览区域 -->
@@ -98,6 +104,20 @@
                                 <img src="@image.DataUrl" alt="@image.FileName" />
                                 <Button Size="@ButtonSize.Small" Icon="close" OnClick="@(() => RemoveImage(image))" />
                                 <span class="image-name">@image.FileName</span>
+                            </div>
+                        }
+                    </div>
+                }
+                
+                @if (App != null && _appParameters.Count > 0)
+                {
+                    <div class="parameters-input" style="margin-bottom: 16px; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
+                        <div style="margin-bottom: 8px; font-weight: 500;">参数设置</div>
+                        @foreach (var param in _appParameters)
+                        {
+                            <div style="margin-bottom: 8px;">
+                                <Text Strong="true" style="margin-right: 8px;">@param.Key:</Text>
+                                <Input @bind-Value="@param.Value" Placeholder="@($"请输入{param.Key}的值")" Style="width: 200px;" />
                             </div>
                         }
                     </div>
@@ -136,6 +156,9 @@
     public LlmEndpoint? Endpoint { get; set; }
 
     [Parameter]
+    public LlmApp? App { get; set; }
+
+    [Parameter]
     public string? SystemPrompt { get; set; }
 
     private List<ChatMessage> _messages = new();
@@ -143,8 +166,79 @@
     private bool _isLoading;
     private bool _useStreaming = true;
     private bool _useAnthropicApi = false;
+    private bool _simulateTools = false;
     private ElementReference _messagesContainer;
     private List<SelectedImage> _selectedImages = new();
+    private List<AppParameter> _appParameters = new();
+    
+    private List<Tool> BuildSimulatedTools()
+    {
+        var tools = new List<Tool>();
+        if (!_simulateTools) return tools;
+
+        tools.Add(new Tool
+        {
+            Name = "echo",
+            Description = "回显输入的文本",
+            InputSchema = new Dictionary<string, object>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object>
+                {
+                    ["text"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "string",
+                        ["description"] = "要回显的内容"
+                    }
+                },
+                ["required"] = new[] { "text" }
+            }
+        });
+
+        tools.Add(new Tool
+        {
+            Name = "get_time",
+            Description = "返回当前时间，可选格式化",
+            InputSchema = new Dictionary<string, object>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object>
+                {
+                    ["format"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "string",
+                        ["description"] = ".NET 日期时间格式化字符串"
+                    }
+                }
+            }
+        });
+
+        tools.Add(new Tool
+        {
+            Name = "sum",
+            Description = "计算两个整数的和",
+            InputSchema = new Dictionary<string, object>
+            {
+                ["type"] = "object",
+                ["properties"] = new Dictionary<string, object>
+                {
+                    ["a"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "integer",
+                        ["description"] = "加数 A"
+                    },
+                    ["b"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "integer",
+                        ["description"] = "加数 B"
+                    }
+                },
+                ["required"] = new[] { "a", "b" }
+            }
+        });
+
+        return tools;
+    }
 
     public class SelectedImage
     {
@@ -152,6 +246,20 @@
         public string DataUrl { get; set; } = string.Empty;
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string MimeType { get; set; } = string.Empty;
+    }
+
+    public class AppParameter
+    {
+        public string Key { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (App != null && !string.IsNullOrEmpty(App.PromptId))
+        {
+            await LoadAppParameters();
+        }
     }
 
     protected override void OnInitialized()
@@ -164,6 +272,36 @@
                 Content = SystemPrompt,
                 Timestamp = DateTime.Now
             });
+        }
+    }
+
+    private async Task LoadAppParameters()
+    {
+        try
+        {
+            var prompt = await LlmPoolService.GetPromptByIdAsync(App!.PromptId!);
+            if (prompt != null)
+            {
+                // 使用PromptParameterService提取参数
+                var promptParameterService = new PromptParameterService();
+                var paramNames = promptParameterService.ExtractParameterNames(prompt.Content);
+
+                _appParameters.Clear();
+                foreach (var paramName in paramNames)
+                {
+                    _appParameters.Add(new AppParameter 
+                    { 
+                        Key = paramName, 
+                        Value = string.Empty 
+                    });
+                }
+
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageService.Error($"加载应用参数失败: {ex.Message}");
         }
     }
 
@@ -200,19 +338,19 @@
         if (_selectedImages.Count > 0)
         {
             var contentItems = new ChatMessageContentItemCollection();
-            
+
             // 添加文本内容（如果有）
             if (!string.IsNullOrWhiteSpace(_currentMessage))
             {
                 contentItems.Add(new TextContent(_currentMessage.Trim()));
             }
-            
+
             // 添加图片内容
             foreach (var image in _selectedImages)
             {
                 contentItems.Add(new ImageContent(image.Data, image.MimeType));
             }
-            
+
             userMessage.ContentItems = contentItems;
             // 不设置 Content 属性，避免冲突
         }
@@ -223,6 +361,8 @@
         }
 
         _messages.Add(userMessage);
+
+        // 不再在组件内注入 tools，仅在调用服务时传入包含 KernelFunction 的对象
         _currentMessage = string.Empty;
         _selectedImages.Clear();
         _isLoading = true;
@@ -264,25 +404,99 @@
     private async Task SendNormalMessage()
     {
         ChatResponse response;
-        if (Config != null)
+        var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
+        if (_useAnthropicApi)
         {
-            response = await ChatClientService.SendMessageAsync(Config, _messages);
+            // 保持 Anthropic 走原服务
+            if (Config != null)
+            {
+                response = await ChatClientService.SendMessageAsync(Config, _messages, toolObjects);
+            }
+            else if (Endpoint != null)
+            {
+                response = await ChatClientService.SendMessageAsync(Endpoint, _messages, toolObjects);
+            }
+            else if (App != null)
+            {
+                var parameters = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value)) 
+                    ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value))
+                                  .ToDictionary(p => p.Key, p => (object)p.Value)
+                    : null;
+                response = await ChatClientService.SendMessageAsyncByAppName(App.Name, _messages, parameters, toolObjects);
+            }
+            else
+            {
+                throw new Exception("未选择模型、终端点或应用");
+            }
+
+            if (response.Status == "error") throw new Exception(response.Message);
+            AddAssistantMessage(response.Message);
+            return;
         }
-        else if (Endpoint != null)
+
+        // App 流程：使用客户端 SDK 的 ChatAppAsync，可靠透传 parameters
+        var baseUrl = HttpContextAccessor.HttpContext != null
+            ? $"{HttpContextAccessor.HttpContext.Request.Scheme}://{HttpContextAccessor.HttpContext.Request.Host}/v1"
+            : string.Empty;
+        var isApp = App != null;
+        var apiKey = isApp
+            ? "app-temp-key"
+            : (Config != null ? (Config.Id ?? Config.ApiKey) : (Endpoint?.Id)) ?? "app-temp-key";
+    var model = isApp ? App!.Name : (Config?.Name ?? Endpoint?.Name);
+        if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
+
+        if (isApp)
         {
-            response = await ChatClientService.SendMessageAsync(Endpoint, _messages);
+            var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+                ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                : null;
+            var client = new LY.LlmPool.Client.LlmPoolClient(baseUrl, apiKey);
+            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+            {
+                Role = m.Role,
+                Content = m.Content,
+                ContentItems = m.ContentItems
+            }).ToList();
+            var clientTools = _simulateTools
+                ? BuildSimulatedTools().Select(t => new LY.LlmPool.Client.ClientTool
+                {
+                    Name = t.Name,
+                    Description = t.Description,
+                    InputSchema = t.InputSchema
+                }).ToList()
+                : null;
+            var toolChoice = _simulateTools ? new Dictionary<string, object> { ["type"] = "auto" } : null;
+            var settings = new OpenAIPromptExecutionSettings();
+            if (Config != null)
+            {
+                settings.Temperature = Config.Temperature;
+                settings.MaxTokens = Config.MaxTokens;
+            }
+            var text = await client.ChatAppAsync(model!, msgs, parms, clientTools, toolChoice, settings);
+            AddAssistantMessage(text);
         }
         else
         {
-            throw new Exception("未选择模型或终端点");
-        }
+            // 非 App：改为使用 LlmPoolClient（经 SK 调用 openai controller）
+            var client = new LY.LlmPool.Client.LlmPoolClient(baseUrl, apiKey);
+            var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
+            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+            {
+                Role = m.Role,
+                Content = m.Content,
+                ContentItems = m.ContentItems
+            }).ToList();
 
-        if (response.Status == "error")
-        {
-            throw new Exception(response.Message);
-        }
+            var chatOptions = new LY.LlmPool.Client.ChatOptions
+            {
+                Temperature = Config?.Temperature,
+                MaxTokens = Config?.MaxTokens,
+                TopP = null
+            };
 
-        AddAssistantMessage(response.Message);
+            var text = await client.ChatAsync(model!, msgs, null, toolObjects2, chatOptions);
+            AddAssistantMessage(text);
+        }
     }
 
     private async Task SendStreamingMessage()
@@ -301,17 +515,91 @@
         try
         {
             IAsyncEnumerable<string> streamingResult;
-            if (Config != null)
+            var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
+            if (_useAnthropicApi)
             {
-                streamingResult = ChatClientService.SendStreamingMessageAsync(Config, _messages);
-            }
-            else if (Endpoint != null)
-            {
-                streamingResult = ChatClientService.SendStreamingMessageAsync(Endpoint, _messages);
+                if (Config != null)
+                {
+                    streamingResult = ChatClientService.SendStreamingMessageAsync(Config, _messages, toolObjects);
+                }
+                else if (Endpoint != null)
+                {
+                    streamingResult = ChatClientService.SendStreamingMessageAsync(Endpoint, _messages, toolObjects);
+                }
+                else if (App != null)
+                {
+                    var parameters = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+                        ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                        : null;
+                    streamingResult = ChatClientService.SendStreamingMessageAsyncByAppName(App.Name, _messages, parameters, toolObjects);
+                }
+                else
+                {
+                    throw new Exception("未选择模型、终端点或应用");
+                }
             }
             else
             {
-                throw new Exception("未选择模型或终端点");
+                var isApp = App != null;
+                var originBase = HttpContextAccessor.HttpContext != null
+                    ? $"{HttpContextAccessor.HttpContext.Request.Scheme}://{HttpContextAccessor.HttpContext.Request.Host}/v1"
+                    : string.Empty;
+                var apiKey = isApp
+                    ? "app-temp-key"
+                    : (Config != null ? (Config.Id ?? Config.ApiKey) : (Endpoint?.Id)) ?? "app-temp-key";
+                var model = isApp ? App!.Name : (Config?.Name ?? Endpoint?.Name);
+                if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
+
+                if (isApp)
+                {
+                    var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+                        ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                        : null;
+                    var client = new LY.LlmPool.Client.LlmPoolClient(originBase, apiKey);
+                    var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                    {
+                        Role = m.Role,
+                        Content = m.Content,
+                        ContentItems = m.ContentItems
+                    }).ToList();
+                    var clientTools = _simulateTools
+                        ? BuildSimulatedTools().Select(t => new LY.LlmPool.Client.ClientTool
+                        {
+                            Name = t.Name,
+                            Description = t.Description,
+                            InputSchema = t.InputSchema
+                        }).ToList()
+                        : null;
+                    var toolChoice = _simulateTools ? new Dictionary<string, object> { ["type"] = "auto" } : null;
+                    var settings = new OpenAIPromptExecutionSettings();
+                    if (Config != null)
+                    {
+                        settings.Temperature = Config.Temperature;
+                        settings.MaxTokens = Config.MaxTokens;
+                    }
+                    streamingResult = client.ChatAppStreamAsync(model!, msgs, parms, clientTools, toolChoice, settings);
+                }
+                else
+                {
+                    // 非 App：使用 LlmPoolClient 进行流式（经 SK）
+                    var client = new LY.LlmPool.Client.LlmPoolClient(originBase, apiKey);
+                    var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
+                    var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+                    {
+                        Role = m.Role,
+                        Content = m.Content,
+                        ContentItems = m.ContentItems
+                    }).ToList();
+
+                    var chatOptions = new LY.LlmPool.Client.ChatOptions
+                    {
+                        Temperature = Config?.Temperature,
+                        MaxTokens = Config?.MaxTokens,
+                        TopP = null
+                    };
+
+                    streamingResult = client.ChatStreamAsync(model!, msgs, null, toolObjects2, chatOptions);
+                }
             }
 
             await foreach (var chunk in streamingResult)
@@ -327,6 +615,8 @@
             StateHasChanged();
         }
     }
+
+        
 
     private void AddAssistantMessage(string content)
     {
@@ -504,6 +794,31 @@
             assistantMessage.IsStreaming = false;
             StateHasChanged();
         }
+    }
+
+    // 示例工具方法：在模拟工具调用时，会通过 ChatClientService 注册为 Kernel 插件
+    [KernelFunction("echo")]
+    [Description("回显输入的文本")]
+    public string Echo([Description("要回显的内容")] string text)
+    {
+        return text;
+    }
+
+    [KernelFunction("get_time")]
+    [Description("返回当前时间，可选格式化")]
+    public string GetTime([Description(".NET 日期时间格式化字符串")] string? format = "yyyy-MM-dd HH:mm:ss")
+    {
+        var fmt = string.IsNullOrWhiteSpace(format) ? "yyyy-MM-dd HH:mm:ss" : format;
+        return DateTime.Now.ToString(fmt);
+    }
+
+    [KernelFunction("sum")]
+    [Description("计算两个整数的和")]
+    public int Sum(
+        [Description("加数 A")] int a,
+        [Description("加数 B")] int b)
+    {
+        return a + b;
     }
 }
 

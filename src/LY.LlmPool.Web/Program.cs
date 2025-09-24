@@ -43,6 +43,8 @@ builder.Services.AddAuthentication(options =>
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
 builder.Services.AddScoped<ChatClientService>();
+builder.Services.AddScoped<PromptParameterService>();
+builder.Services.AddScoped<CallRecordService>();
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();
@@ -65,7 +67,7 @@ builder.Services.AddControllers();
 // Add email sender
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 
-// Ìí¼Ó½¡¿µ¼ì²é·þÎñ
+// ï¿½ï¿½ï¿½Ó½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
@@ -159,3 +161,5 @@ app.MapControllers();
 app.MapHealthChecks("/health");
 
 app.Run();
+
+public partial class Program { }

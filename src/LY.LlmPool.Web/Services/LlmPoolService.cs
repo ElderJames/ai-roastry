@@ -454,6 +454,25 @@ public class LlmPoolService
         return null;
     }
 
+    // Resolve a config directly by its name (enabled only)
+    public async Task<LlmConfig?> GetConfigByNameAsync(string name)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Configs
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Name == name && c.IsEnabled);
+    }
+
+    // Resolve an endpoint by its name (enabled only)
+    public async Task<LlmEndpoint?> GetEndpointByNameAsync(string name)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Endpoints
+            .Include(e => e.EndpointConfigs)
+            .ThenInclude(ec => ec.LlmConfig)
+            .FirstOrDefaultAsync(e => e.Name == name && e.IsEnabled);
+    }
+
     public void ReleaseConfig(string configId)
     {
         if (_configLocks.TryGetValue(configId, out var semaphore))
@@ -477,6 +496,34 @@ public class LlmPoolService
         }
 
         return await _configLocks[configId].WaitAsync(TimeSpan.Zero);
+    }
+
+    // Public wrapper for acquiring a specific config if available (non-blocking)
+    public Task<bool> AcquireConfigIfAvailableAsync(string configId)
+        => TryAcquireConfigAsync(configId);
+
+    // Find an enabled endpoint that contains the given config, prefer lower priority mapping
+    public async Task<LlmEndpoint?> GetEndpointForConfigAsync(string configId)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var query = dbContext.Endpoints
+            .Include(e => e.EndpointConfigs)
+            .ThenInclude(ec => ec.LlmConfig)
+            .Where(e => e.IsEnabled && e.EndpointConfigs.Any(ec => ec.LlmConfigId == configId));
+
+        var endpoints = await query.ToListAsync();
+        if (!endpoints.Any()) return null;
+
+        // Choose the endpoint where this config has the lowest priority
+        var best = endpoints
+            .Select(e => new
+            {
+                Endpoint = e,
+                Priority = e.EndpointConfigs.First(ec => ec.LlmConfigId == configId).Priority
+            })
+            .OrderBy(x => x.Priority)
+            .First().Endpoint;
+        return best;
     }
 
     #endregion
@@ -750,6 +797,89 @@ public class LlmPoolService
             dbContext.PromptHistory.Remove(history);
             await dbContext.SaveChangesAsync();
         }
+    }
+
+    #endregion
+
+    #region Apps
+
+    public async Task<List<LlmApp>> GetAppsAsync()
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Apps
+            .Include(a => a.Prompt)
+            .Include(a => a.LlmConfig)
+            .Include(a => a.Endpoint)
+            .AsNoTracking()
+            .OrderBy(a => a.Name)
+            .ToListAsync();
+    }
+
+    public async Task<LlmApp?> GetAppByIdAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Apps
+            .Include(a => a.Prompt)
+            .Include(a => a.LlmConfig)
+            .Include(a => a.Endpoint)
+            .FirstOrDefaultAsync(a => a.Id == id);
+    }
+
+    public async Task<LlmApp?> GetAppByNameAsync(string name)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Apps
+            .Include(a => a.Prompt)
+            .Include(a => a.LlmConfig)
+            .Include(a => a.Endpoint)
+            .FirstOrDefaultAsync(a => a.Name == name && a.IsEnabled);
+    }
+
+    public async Task<LlmApp> AddAppAsync(LlmApp app)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        app.Id = Guid.NewGuid().ToString("N");
+        app.CreatedAt = DateTime.UtcNow;
+        app.UpdatedAt = DateTime.UtcNow;
+        dbContext.Apps.Add(app);
+        await dbContext.SaveChangesAsync();
+        return app;
+    }
+
+    public async Task<LlmApp> UpdateAppAsync(LlmApp app)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.Apps.FindAsync(app.Id);
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"App with ID {app.Id} not found.");
+        }
+
+        existing.Name = app.Name;
+        existing.Description = app.Description;
+        existing.AppType = app.AppType;
+        existing.PromptId = app.PromptId;
+        existing.LlmConfigId = app.LlmConfigId;
+        existing.EndpointId = app.EndpointId;
+        existing.IsEnabled = app.IsEnabled;
+        existing.ConfigJson = app.ConfigJson;
+        existing.UpdatedAt = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task DeleteAppAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var app = await dbContext.Apps.FindAsync(id);
+        if (app == null)
+        {
+            throw new KeyNotFoundException($"App with ID {id} not found.");
+        }
+
+        dbContext.Apps.Remove(app);
+        await dbContext.SaveChangesAsync();
     }
 
     #endregion

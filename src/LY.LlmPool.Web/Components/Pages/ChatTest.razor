@@ -1,117 +1,156 @@
 @page "/chat-test"
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Services
+@using Microsoft.AspNetCore.Components
 @inject LlmPoolService LlmPoolService
+@inject NavigationManager NavigationManager
 
 <PageTitle>聊天测试</PageTitle>
 
 <Row Gutter="16">
     <AntDesign.Col Span="6">
-        <div style="display: flex; flex-direction: column; gap: 1rem;">
-            <Card>
-                <TitleTemplate>
-                    <Space>
-                        <SpaceItem>
-                            <Icon Type="api" />
-                        </SpaceItem>
-                        <SpaceItem>
-                            模型配置
-                        </SpaceItem>
-                    </Space>
-                </TitleTemplate>
-                <Body>
-                    <div style="display: flex; flex-direction: column; gap: 1rem;">
-                        @foreach (var config in _configs)
-                        {
-                            <a onclick="@(() => SelectConfig(config))">
-                                <Card Hoverable Class="@(_selectedConfig?.Id == config.Id ? "selected-item" : "")">
-                                    <TitleTemplate>
-                                        <Space>
-                                            <SpaceItem>
-                                                <Icon Type="@(config.ModelType?.Icon ?? "api")" />
-                                            </SpaceItem>
-                                            <SpaceItem>
-                                                @config.Name
-                                            </SpaceItem>
-                                        </Space>
-                                    </TitleTemplate>
-                                    <Extra>
-                                        <Tag Color="@(config.IsEnabled ? TagColor.Green : TagColor.Red)">
-                                            @(config.IsEnabled ? "启用" : "禁用")
-                                        </Tag>
-                                    </Extra>
-                                    <Body>
-                                        <div>模型: @config.Model</div>
-                                        @if (!string.IsNullOrEmpty(config.Description))
-                                        {
-                                            <div>描述: @config.Description</div>
-                                        }
-                                    </Body>
-                                </Card>
-                            </a>
-                        }
-                    </div>
-                </Body>
-            </Card>
-
-            <Card>
-                <TitleTemplate>
-                    <Space>
-                        <SpaceItem>
-                            <Icon Type="cloud-server" />
-                        </SpaceItem>
-                        <SpaceItem>
-                            终端配置
-                        </SpaceItem>
-                    </Space>
-                </TitleTemplate>
-                <Body>
-                    <div style="display: flex; flex-direction: column; gap: 1rem;">
-                        @foreach (var endpoint in _endpoints)
-                        {
-                            <a onclick="@(() => SelectEndpoint(endpoint))">
-                                <Card Hoverable Class="@(_selectedEndpoint?.Id == endpoint.Id ? "selected-item" : "")">
-                                    <TitleTemplate>
-                                        <Space>
-                                            <SpaceItem>
-                                                <Icon Type="cloud" />
-                                            </SpaceItem>
-                                            <SpaceItem>
-                                                @endpoint.Name
-                                            </SpaceItem>
-                                        </Space>
-                                    </TitleTemplate>
-                                    <Extra>
-                                        <Tag Color="@(endpoint.IsEnabled ? TagColor.Green : TagColor.Red)">
-                                            @(endpoint.IsEnabled ? "启用" : "禁用")
-                                        </Tag>
-                                    </Extra>
-                                    <Body>
-                                        <div>配置: @endpoint.Name</div>
-                                        @if (!string.IsNullOrEmpty(endpoint.Description))
-                                        {
-                                            <div>描述: @endpoint.Description</div>
-                                        }
-                                    </Body>
-                                </Card>
-                            </a>
-                        }
-                    </div>
-                </Body>
-            </Card>
-        </div>
+        <Card>
+            <TitleTemplate>
+                <Space>
+                    <SpaceItem>
+                        <Icon Type="experiment" />
+                    </SpaceItem>
+                    <SpaceItem>
+                        配置选择
+                    </SpaceItem>
+                </Space>
+            </TitleTemplate>
+            <Body>
+                <Tabs DefaultActiveKey="@_activeTabKey" OnChange="OnTabChange">
+                    <TabPane Key="apps" Tab="应用配置">
+                        <div style="display: flex; flex-direction: column; gap: 1rem; max-height: calc(100vh - 300px); overflow-y: auto;">
+                            @foreach (var app in _apps)
+                            {
+                                <a @onclick="()=> SelectApp(app)">
+                                    <Card Hoverable Class="@(_selectedApp?.Id == app.Id ? "selected-item" : "")">
+                                        <TitleTemplate>
+                                            <Space>
+                                                <SpaceItem>
+                                                    <Icon Type="@(app.AppType == "Prompt" ? "message" : "robot")" />
+                                                </SpaceItem>
+                                                <SpaceItem>
+                                                    @app.Name
+                                                </SpaceItem>
+                                            </Space>
+                                        </TitleTemplate>
+                                        <Extra>
+                                            <Tag Color="@(app.IsEnabled ? TagColor.Green : TagColor.Red)">
+                                                @(app.IsEnabled ? "启用" : "禁用")
+                                            </Tag>
+                                        </Extra>
+                                        <Body>
+                                            <div>类型: @app.AppType</div>
+                                            @if (!string.IsNullOrEmpty(app.Description))
+                                            {
+                                                <div>描述: @app.Description</div>
+                                            }
+                                            @if (!string.IsNullOrEmpty(app.PromptId))
+                                            {
+                                                <div>Prompt: @app.Prompt?.Name</div>
+                                            }
+                                        </Body>
+                                    </Card>
+                                </a>
+                            }
+                        </div>
+                    </TabPane>
+                    <TabPane Key="models" Tab="模型配置">
+                        <div style="display: flex; flex-direction: column; gap: 1rem; max-height: calc(100vh - 300px); overflow-y: auto;">
+                            @foreach (var config in _configs)
+                            {
+                                <a @onclick="() => SelectConfig(config)">
+                                    <Card Hoverable Class="@(_selectedConfig?.Id == config.Id ? "selected-item" : "")">
+                                        <TitleTemplate>
+                                            <Space>
+                                                <SpaceItem>
+                                                    <Icon Type="@(config.ModelType?.Icon ?? "api")" />
+                                                </SpaceItem>
+                                                <SpaceItem>
+                                                    @config.Name
+                                                </SpaceItem>
+                                            </Space>
+                                        </TitleTemplate>
+                                        <Extra>
+                                            <Tag Color="@(config.IsEnabled ? TagColor.Green : TagColor.Red)">
+                                                @(config.IsEnabled ? "启用" : "禁用")
+                                            </Tag>
+                                        </Extra>
+                                        <Body>
+                                            <div>模型: @config.Model</div>
+                                            @if (!string.IsNullOrEmpty(config.Description))
+                                            {
+                                                <div>描述: @config.Description</div>
+                                            }
+                                        </Body>
+                                    </Card>
+                                </a>
+                            }
+                        </div>
+                    </TabPane>
+                    <TabPane Key="endpoints" Tab="终端配置">
+                        <div style="display: flex; flex-direction: column; gap: 1rem; max-height: calc(100vh - 300px); overflow-y: auto;">
+                            @foreach (var endpoint in _endpoints)
+                            {
+                                <a @onclick="() => SelectEndpoint(endpoint)">
+                                    <Card Hoverable Class="@(_selectedEndpoint?.Id == endpoint.Id ? "selected-item" : "")">
+                                        <TitleTemplate>
+                                            <Space>
+                                                <SpaceItem>
+                                                    <Icon Type="cloud" />
+                                                </SpaceItem>
+                                                <SpaceItem>
+                                                    @endpoint.Name
+                                                </SpaceItem>
+                                            </Space>
+                                        </TitleTemplate>
+                                        <Extra>
+                                            <Tag Color="@(endpoint.IsEnabled ? TagColor.Green : TagColor.Red)">
+                                                @(endpoint.IsEnabled ? "启用" : "禁用")
+                                            </Tag>
+                                        </Extra>
+                                        <Body>
+                                            <div>配置: @endpoint.Name</div>
+                                            @if (!string.IsNullOrEmpty(endpoint.Description))
+                                            {
+                                                <div>描述: @endpoint.Description</div>
+                                            }
+                                        </Body>
+                                    </Card>
+                                </a>
+                            }
+                        </div>
+                    </TabPane>
+                </Tabs>
+            </Body>
+        </Card>
     </AntDesign.Col>
     <AntDesign.Col Span="18">
-        @if (_selectedConfig != null || _selectedEndpoint != null)
+        @if (_selectedApp != null || _selectedConfig != null || _selectedEndpoint != null)
         {
             <div style="height: calc(100vh - 150px);">
-                <ChatBox Config="_selectedConfig" Endpoint="_selectedEndpoint" />
+                @if (_selectedApp != null)
+                {
+                    @if (!string.IsNullOrEmpty(_configWarning))
+                    {
+                        <Alert Message="@_configWarning" Type="@AlertType.Warning" ShowIcon="true" />
+                    }
+                    else if (!string.IsNullOrEmpty(_configSourceLabel))
+                    {
+                        <Alert Message="@_configSourceLabel" Type="@AlertType.Info" ShowIcon="true" />
+                    }
+                }
+                <ChatBox Config="_selectedConfig" Endpoint="_selectedEndpoint" App="_selectedApp" />
             </div>
         }
         else
         {
             <Card>
-                <Empty Description="@("请选择一个模型配置或终端配置开始测试")" />
+                <Empty Description="@("请选择一个应用、模型配置或终端配置开始测试")" />
             </Card>
         }
     </AntDesign.Col>
@@ -128,33 +167,99 @@
 </style>
 
 @code {
+    private List<LlmApp> _apps = new();
     private List<LlmConfig> _configs = new();
     private List<LlmEndpoint> _endpoints = new();
+    private LlmApp? _selectedApp;
     private LlmConfig? _selectedConfig;
     private LlmEndpoint? _selectedEndpoint;
+    private string _activeTabKey = "apps";
+    private string? _configSourceLabel;
+    private string? _configWarning;
+
+    [Parameter]
+    [SupplyParameterFromQuery]
+    public string? App { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+        
+        // 如果URL中有app参数，自动选择对应的应用
+        if (!string.IsNullOrEmpty(App))
+        {
+            var app = _apps.FirstOrDefault(a => a.Name == App);
+            if (app != null)
+            {
+                 SelectApp(app);
+                _activeTabKey = "apps";
+            }
+        }
     }
 
     private async Task LoadData()
     {
+        _apps = await LlmPoolService.GetAppsAsync();
         _configs = await LlmPoolService.GetConfigsAsync();
         _endpoints = await LlmPoolService.GetEndpointsAsync();
+    }
+
+    private void OnTabChange(string activeKey)
+    {
+        _activeTabKey = activeKey;
+        // 切换Tab时清除其他选择
+        switch (activeKey)
+        {
+            case "apps":
+                _selectedConfig = null;
+                _selectedEndpoint = null;
+                _configSourceLabel = null;
+                _configWarning = null;
+                break;
+            case "models":
+                _selectedApp = null;
+                _selectedEndpoint = null;
+                _configSourceLabel = null;
+                _configWarning = null;
+                break;
+            case "endpoints":
+                _selectedApp = null;
+                _selectedConfig = null;
+                _configSourceLabel = null;
+                _configWarning = null;
+                break;
+        }
+        StateHasChanged();
+    }
+
+    private void SelectApp(LlmApp app)
+    {
+        _selectedApp = app;
+        _selectedConfig = null;
+        _selectedEndpoint = null;
+        _configSourceLabel = null;
+        _configWarning = null;
+
+        StateHasChanged();
     }
 
     private void SelectConfig(LlmConfig config)
     {
         _selectedConfig = config;
-        _selectedEndpoint = null; // 清除另一个选择
+        _selectedApp = null;
+        _selectedEndpoint = null;
+        _configSourceLabel = null;
+        _configWarning = null;
         StateHasChanged();
     }
 
     private void SelectEndpoint(LlmEndpoint endpoint)
     {
         _selectedEndpoint = endpoint;
-        _selectedConfig = null; // 清除另一个选择
+        _selectedApp = null;
+        _selectedConfig = null;
+        _configSourceLabel = null;
+        _configWarning = null;
         StateHasChanged();
     }
 } 

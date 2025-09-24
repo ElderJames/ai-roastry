@@ -17,3 +17,18 @@ function readFileAsArrayBuffer(file) {
         reader.readAsArrayBuffer(file);
     });
 } 
+
+// 触发下载 data URL 的助手
+window.downloadDataUrl = function(url, filename) {
+    try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'download';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    } catch (e) {
+        console.error('downloadDataUrl failed', e);
+    }
+}

@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Models
     public class PromptTestConfig
     {
         public string Type { get; set; } = "Model";
-        public string? ConfigId { get; set; }
+        public string ConfigId { get; set; } = string.Empty;
         public string? Parameters { get; set; }
         public PromptTestResult? TestResult { get; set; }
         public bool IsStreaming { get; set; }
@@ -15,7 +15,7 @@ namespace LY.LlmPool.Web.Models
             return new PromptTestConfig
             {
                 Type = record.Type,
-                ConfigId = record.ConfigId,
+                ConfigId = record.ConfigId ?? string.Empty,
                 Parameters = record.Parameters,
                 TestResult = new PromptTestResult
                 {

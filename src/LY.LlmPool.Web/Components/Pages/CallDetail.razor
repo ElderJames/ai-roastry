@@ -2,6 +2,8 @@
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Services
 @using System.Text.Json
+@using AntDesign
+@using System.Net
 @inject LlmPoolService LlmPoolService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
@@ -44,27 +46,30 @@
             <Tabs DefaultActiveKey="details">
                 <TabPane Key="details" Tab="Call Details">
                     <Descriptions Bordered Column="2">
-                        <DescriptionItem Title="Call ID">@callRecord.Id</DescriptionItem>
-                        <DescriptionItem Title="Request Time">@callRecord.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss.fff")</DescriptionItem>
-                        <DescriptionItem Title="Endpoint">@(callRecord.Endpoint?.Name ?? "Unknown")</DescriptionItem>
-                        <DescriptionItem Title="Model">@(callRecord.LlmConfig?.Name ?? "N/A")</DescriptionItem>
-                        <DescriptionItem Title="Wait Time">@callRecord.WaitTime.TotalMilliseconds.ToString("0.00") ms</DescriptionItem>
-                        <DescriptionItem Title="Model Call Started">
+                        <DescriptionsItem Title="Call ID">@callRecord.Id</DescriptionsItem>
+                        <DescriptionsItem Title="Request Time">@callRecord.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss.fff")</DescriptionsItem>
+                        <DescriptionsItem Title="Endpoint">@(callRecord.Endpoint?.Name ?? "Unknown")</DescriptionsItem>
+                        <DescriptionsItem Title="Model">@(callRecord.LlmConfig?.Name ?? "N/A")</DescriptionsItem>
+                        <DescriptionsItem Title="Wait Time">@callRecord.WaitTime.TotalMilliseconds.ToString("0.00") ms</DescriptionsItem>
+                        <DescriptionsItem Title="Model Call Started">
                             @(callRecord.ModelCallStartedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
-                        </DescriptionItem>
-                        <DescriptionItem Title="Model Response Started">
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Model Response Started">
                             @(callRecord.ModelResponseStartedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
-                        </DescriptionItem>
-                        <DescriptionItem Title="Model Response Ended">
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Model Response Ended">
                             @(callRecord.ModelResponseEndedAt?.ToString("HH:mm:ss.fff") ?? "N/A")
-                        </DescriptionItem>
-                        <DescriptionItem Title="Status">
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Selection Strategy">
+                            @(selectionStrategy ?? "N/A")
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Status">
                             <Tag Color="@(callRecord.IsSuccessful ? "green" : "red")">
                                 @(callRecord.IsSuccessful ? "Success" : "Failed")
                             </Tag>
-                        </DescriptionItem>
-                        <DescriptionItem Title="Error Message">@(callRecord.ErrorMessage ?? "N/A")</DescriptionItem>
-                        <DescriptionItem Title="Model Processing Time">
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Error Message">@(callRecord.ErrorMessage ?? "N/A")</DescriptionsItem>
+                        <DescriptionsItem Title="Model Processing Time">
                             @if (callRecord.ModelProcessingTime.HasValue)
                             {
                                 <span>@callRecord.ModelProcessingTime.Value.TotalSeconds.ToString("0.000") seconds</span>
@@ -73,8 +78,8 @@
                             {
                                 <span>N/A</span>
                             }
-                        </DescriptionItem>
-                        <DescriptionItem Title="Total Time">
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Total Time">
                             @if (callRecord.TotalTime.HasValue)
                             {
                                 <span>@callRecord.TotalTime.Value.TotalSeconds.ToString("0.000") seconds </span>
@@ -83,7 +88,28 @@
                             {
                                 <span>N/A</span>
                             }
-                        </DescriptionItem>
+                        </DescriptionsItem>
+                    </Descriptions>
+                </TabPane>
+
+                <TabPane Key="routing" Tab="Routing">
+                    <Descriptions Bordered Column="2">
+                        <DescriptionsItem Title="Strategy">
+                            @if (!string.IsNullOrEmpty(selectionStrategy)) { <Tag>@selectionStrategy</Tag>; } else { <span>N/A</span>; }
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="Endpoint ID">@(selection?.EndpointId ?? callRecord.EndpointId)</DescriptionsItem>
+                        <DescriptionsItem Title="Endpoint Name">@(callRecord.Endpoint?.Name ?? "Unknown")</DescriptionsItem>
+                        <DescriptionsItem Title="Config ID">@(selection?.ConfigId ?? callRecord.LlmConfigId ?? "N/A")</DescriptionsItem>
+                        <DescriptionsItem Title="Config Name">@(selection?.ConfigName ?? callRecord.LlmConfig?.Name ?? "N/A")</DescriptionsItem>
+                    </Descriptions>
+
+                    <Divider />
+
+                    <Descriptions Bordered Column="2">
+                        <DescriptionsItem Title="Request Received">@timings?.RequestReceivedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Model Call Started">@timings?.ModelCallStartedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Response Started">@timings?.ModelResponseStartedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Response Ended">@timings?.ModelResponseEndedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
                     </Descriptions>
                 </TabPane>
 
@@ -99,6 +125,42 @@
                     </pre>
                 </TabPane>
 
+                <TabPane Key="tools" Tab="Tool Calls">
+                    @if (_toolCalls.Count == 0)
+                    {
+                        <Alert Message="No tool calls" Type="AlertType.Info" ShowIcon="true" />
+                    }
+                    else
+                    {
+                        @foreach (var tc in _toolCalls)
+                        {
+                            <Card Size="CardSize.Small" Style="margin-bottom: 12px;">
+                                <div style="margin-bottom:8px;">
+                                    <Space>
+                                        <SpaceItem>
+                                            <Tag Color="TagColor.Blue">@tc.Name</Tag>
+                                        </SpaceItem>
+                                        @if (!string.IsNullOrEmpty(tc.Id))
+                                        {
+                                            <SpaceItem>
+                                                <Tag>@tc.Id</Tag>
+                                            </SpaceItem>
+                                        }
+                                    </Space>
+                                </div>
+                                <Descriptions Bordered Column="1">
+                                    <DescriptionsItem Title="Arguments">
+                                        <pre class="code-pre json">@((MarkupString)RenderJsonHtml(tc.ArgumentsJson))</pre>
+                                    </DescriptionsItem>
+                                    <DescriptionsItem Title="Result">
+                                        <pre class="code-pre json">@((MarkupString)RenderJsonHtml(tc.ResultJson))</pre>
+                                    </DescriptionsItem>
+                                </Descriptions>
+                            </Card>
+                        }
+                    }
+                </TabPane>
+
                 @if (callChain != null && callChain.Count > 1)
                 {
                     <TabPane Key="chain" Tab="Call Chain">
@@ -106,9 +168,9 @@
                             @foreach (var call in callChain)
                             {
                                 <TimelineItem>
-                                    <TimelineItemLabel>@call.RequestReceivedAt.ToString("HH:mm:ss.fff")</TimelineItemLabel>
-                                    <TimelineItemDot Color="@(call.IsSuccessful ? "green" : "red")"></TimelineItemDot>
-                                    <TimelineItemContent>
+                                    <div class="ant-timeline-item-label">@call.RequestReceivedAt.ToString("HH:mm:ss.fff")</div>
+                                    <div class="ant-timeline-item-head" style="background-color:@(call.IsSuccessful ? "green" : "red")"></div>
+                                    <div class="ant-timeline-item-content">
                                         <Card Size="CardSize.Small" Style="margin-bottom: 8px;">
                                             <div class="d-flex justify-content-between">
                                                 <div>
@@ -134,7 +196,7 @@
                                                 <small>Processing Time: @(call.ModelProcessingTime?.TotalSeconds.ToString("0.000") ?? "N/A") seconds</small>
                                             </div>
                                         </Card>
-                                    </TimelineItemContent>
+                                    </div>
                                 </TimelineItem>
                             }
                         </Timeline>
@@ -155,6 +217,11 @@
     font-family: 'Courier New', monospace;
     white-space: pre-wrap;
     }
+    .code-pre.json .json-key { color: #1e6bb8; }
+    .code-pre.json .json-string { color: #22863a; }
+    .code-pre.json .json-number { color: #b000b5; }
+    .code-pre.json .json-bool { color: #b08800; }
+    .code-pre.json .json-null { color: #6a737d; font-style: italic; }
 </style>
 
 @code {
@@ -164,6 +231,10 @@
     private EndpointCallRecord? callRecord;
     private List<EndpointCallRecord>? callChain;
     private bool loading = true;
+    private List<ToolCallView> _toolCalls = new();
+    private string? selectionStrategy;
+    private SelectionView? selection;
+    private TimingsView? timings;
 
     protected override async Task OnInitializedAsync()
     {
@@ -188,6 +259,10 @@
             {
                 // Load the call chain
                 callChain = await LlmPoolService.GetCallChainAsync(CallId);
+                _toolCalls = ParseToolCalls(callRecord.ResponseDataJson);
+                selectionStrategy = ParseSelectionStrategy(callRecord.ResponseDataJson);
+                selection = ParseSelection(callRecord.ResponseDataJson);
+                timings = ParseTimings(callRecord.ResponseDataJson);
             }
         }
         catch (Exception ex)
@@ -230,6 +305,209 @@
         catch
         {
             return jsonStr;
+        }
+    }
+
+    private List<ToolCallView> ParseToolCalls(string? json)
+    {
+        var list = new List<ToolCallView>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in tcEl.EnumerateArray())
+                {
+                    var id = item.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                    string? name = null;
+                    string args = "";
+                    string result = "";
+
+                    if (item.TryGetProperty("function", out var fnEl) && fnEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (fnEl.TryGetProperty("name", out var nameEl)) name = nameEl.GetString();
+                        if (fnEl.TryGetProperty("arguments", out var argsEl)) args = argsEl.GetRawText();
+                        if (fnEl.TryGetProperty("result", out var resEl)) result = resEl.GetRawText();
+                    }
+
+                    list.Add(new ToolCallView
+                    {
+                        Id = id ?? string.Empty,
+                        Name = name ?? string.Empty,
+                        ArgumentsJson = args,
+                        ResultJson = result
+                    });
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private string? ParseSelectionStrategy(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("selection", out var sel) && sel.ValueKind == JsonValueKind.Object)
+            {
+                if (sel.TryGetProperty("strategy", out var st) && st.ValueKind == JsonValueKind.String)
+                {
+                    return st.GetString();
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private SelectionView? ParseSelection(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("selection", out var sel) && sel.ValueKind == JsonValueKind.Object)
+            {
+                var view = new SelectionView();
+                if (sel.TryGetProperty("endpoint_id", out var eid) && eid.ValueKind == JsonValueKind.String) view.EndpointId = eid.GetString();
+                if (sel.TryGetProperty("config_id", out var cid) && cid.ValueKind == JsonValueKind.String) view.ConfigId = cid.GetString();
+                if (sel.TryGetProperty("config_name", out var cname) && cname.ValueKind == JsonValueKind.String) view.ConfigName = cname.GetString();
+                return view;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private TimingsView? ParseTimings(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("timings", out var t) && t.ValueKind == JsonValueKind.Object)
+            {
+                DateTime? ParseDt(JsonElement el, string name)
+                {
+                    if (el.TryGetProperty(name, out var v))
+                    {
+                        if (v.ValueKind == JsonValueKind.String && DateTime.TryParse(v.GetString(), out var dt)) return dt;
+                        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var ms)) return DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime;
+                    }
+                    return null;
+                }
+                return new TimingsView
+                {
+                    RequestReceivedAt = ParseDt(t, "request_received_at"),
+                    ModelCallStartedAt = ParseDt(t, "model_call_started_at"),
+                    ModelResponseStartedAt = ParseDt(t, "model_response_started_at"),
+                    ModelResponseEndedAt = ParseDt(t, "model_response_ended_at")
+                };
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private class SelectionView
+    {
+        public string? EndpointId { get; set; }
+        public string? ConfigId { get; set; }
+        public string? ConfigName { get; set; }
+    }
+
+    private class TimingsView
+    {
+        public DateTime? RequestReceivedAt { get; set; }
+        public DateTime? ModelCallStartedAt { get; set; }
+        public DateTime? ModelResponseStartedAt { get; set; }
+        public DateTime? ModelResponseEndedAt { get; set; }
+    }
+
+    private class ToolCallView
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string ArgumentsJson { get; set; } = string.Empty;
+        public string ResultJson { get; set; } = string.Empty;
+    }
+
+    private string RenderJsonHtml(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return WebUtility.HtmlEncode("No data");
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var sb = new System.Text.StringBuilder();
+            AppendJsonHtml(sb, doc.RootElement, 0);
+            return sb.ToString();
+        }
+        catch
+        {
+            return WebUtility.HtmlEncode(json);
+        }
+    }
+
+    private void AppendJsonHtml(System.Text.StringBuilder sb, JsonElement el, int indent)
+    {
+        string Ind(int n) => new string(' ', n * 2);
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Object:
+                sb.Append("{\n");
+                var props = el.EnumerateObject().ToList();
+                for (int i = 0; i < props.Count; i++)
+                {
+                    var p = props[i];
+                    sb.Append(Ind(indent + 1));
+                    sb.Append("\"<span class=\"json-key\">");
+                    sb.Append(WebUtility.HtmlEncode(p.Name));
+                    sb.Append("</span>\": ");
+                    AppendJsonHtml(sb, p.Value, indent + 1);
+                    if (i < props.Count - 1) sb.Append(",");
+                    sb.Append("\n");
+                }
+                sb.Append(Ind(indent));
+                sb.Append("}");
+                break;
+            case JsonValueKind.Array:
+                sb.Append("[\n");
+                var idx = 0;
+                foreach (var item in el.EnumerateArray())
+                {
+                    sb.Append(Ind(indent + 1));
+                    AppendJsonHtml(sb, item, indent + 1);
+                    if (idx++ < el.GetArrayLength() - 1) sb.Append(",");
+                    sb.Append("\n");
+                }
+                sb.Append(Ind(indent));
+                sb.Append("]");
+                break;
+            case JsonValueKind.String:
+                sb.Append("\"<span class=\"json-string\">");
+                sb.Append(WebUtility.HtmlEncode(el.GetString()));
+                sb.Append("</span>\"");
+                break;
+            case JsonValueKind.Number:
+                sb.Append("<span class=\"json-number\">");
+                sb.Append(WebUtility.HtmlEncode(el.GetRawText()));
+                sb.Append("</span>");
+                break;
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                sb.Append("<span class=\"json-bool\">");
+                sb.Append(el.ValueKind == JsonValueKind.True ? "true" : "false");
+                sb.Append("</span>");
+                break;
+            case JsonValueKind.Null:
+                sb.Append("<span class=\"json-null\">null</span>");
+                break;
+            default:
+                sb.Append(WebUtility.HtmlEncode(el.GetRawText()));
+                break;
         }
     }
 } 

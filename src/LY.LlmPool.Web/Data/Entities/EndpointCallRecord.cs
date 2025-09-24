@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 
 namespace LY.LlmPool.Web.Data.Entities;
 
@@ -46,9 +48,9 @@ public class EndpointCallRecord
     {
         get => string.IsNullOrEmpty(RequestDataJson)
             ? null
-            : JsonSerializer.Deserialize<object>(RequestDataJson);
+            : JsonSerializer.Deserialize<object>(RequestDataJson, _jsonOptions);
         set => RequestDataJson = value != null 
-            ? JsonSerializer.Serialize(value) 
+            ? JsonSerializer.Serialize(value, _jsonOptions) 
             : null;
     }
     
@@ -60,9 +62,9 @@ public class EndpointCallRecord
     {
         get => string.IsNullOrEmpty(ResponseDataJson)
             ? null
-            : JsonSerializer.Deserialize<object>(ResponseDataJson);
+            : JsonSerializer.Deserialize<object>(ResponseDataJson, _jsonOptions);
         set => ResponseDataJson = value != null 
-            ? JsonSerializer.Serialize(value) 
+            ? JsonSerializer.Serialize(value, _jsonOptions) 
             : null;
     }
     
@@ -89,4 +91,11 @@ public class EndpointCallRecord
     public long? PromptTokens { get; set; }
     public long? CompletionTokens { get; set; }
     public long? TotalTokens { get; set; }
+
+    // Use relaxed encoder to preserve Chinese and symbols in stored JSON
+    private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+    {
+        Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
+        WriteIndented = false
+    };
 } 

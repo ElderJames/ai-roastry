@@ -1,0 +1,245 @@
+@page "/request-log"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@using AntDesign
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+
+<PageTitle>请求日志</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>请求日志（时间序列）</div>
+            <Space>
+                <SpaceItem>
+                    <Select TItem="OptionItem"
+                            TItemValue="string"
+                            DataSource="@groupOptions"
+                            ValueName="Value"
+                            LabelName="Label"
+                            @bind-Value="groupType"
+                            Style="width:160px" />
+                </SpaceItem>
+                <SpaceItem>
+                    <DatePicker TValue="DateTime?"
+                               Value="@selectedDate"
+                               OnChange="OnDateChanged"
+                               Picker="DatePickerType.Date"
+                               DisabledDate="date => date > DateTime.UtcNow.Date" />
+                </SpaceItem>
+            </Space>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        @if (loading)
+        {
+            <Spin />
+        }
+        else if (records == null || records.Count == 0)
+        {
+            <Empty />
+        }
+        else
+        {
+            <div class="filters mb-2">
+                @if (groupType == "app")
+                {
+                    <Select TItem="string" TItemValue="string"
+                            DataSource="@appNames"
+                            @bind-Value="selectedApp"
+                            AllowClear Placeholder="选择应用" Style="width:240px">
+                    </Select>
+                }
+                else if (groupType == "endpoint")
+                {
+                    <Select TItem="LlmEndpoint" TItemValue="string"
+                            DataSource="@endpoints"
+                            ValueName="@nameof(LlmEndpoint.Id)"
+                            LabelName="@nameof(LlmEndpoint.Name)"
+                            @bind-Value="selectedEndpoint"
+                            AllowClear Placeholder="选择端点" Style="width:240px">
+                    </Select>
+                }
+                else if (groupType == "model")
+                {
+                    <Select TItem="LlmConfig" TItemValue="string"
+                            DataSource="@configs"
+                            ValueName="@nameof(LlmConfig.Id)"
+                            LabelName="@nameof(LlmConfig.Name)"
+                            @bind-Value="selectedConfig"
+                            AllowClear Placeholder="选择模型配置" Style="width:240px">
+                    </Select>
+                }
+                <Button OnClick="ApplyFilter">应用筛选</Button>
+            </div>
+
+            @foreach (var group in GetGroups())
+            {
+                <Card Bordered Style="margin-bottom:12px;">
+                    <TitleTemplate>
+                        <Space>
+                            <SpaceItem>@group.Key</SpaceItem>
+                            <SpaceItem>
+                                <Tag Color="TagColor.Blue">@group.Value.Count 条</Tag>
+                            </SpaceItem>
+                        </Space>
+                    </TitleTemplate>
+                    <ChildContent>
+                        <div class="call-timeline">
+                            @{ var hours = Enumerable.Range(0, 24).ToList(); }
+                            <div class="hour-bars">
+                                @foreach (var h in hours)
+                                {
+                                    var cnt = group.Value.Count(c => c.RequestReceivedAt.Hour == h);
+                                    var maxH = Math.Max(1, group.Value.GroupBy(c => c.RequestReceivedAt.Hour).Select(g => g.Count()).DefaultIfEmpty(0).Max());
+                                    var height = cnt > 0 ? Math.Max(10, (cnt * 100) / maxH) : 0;
+                                    var color = cnt > 0 ? "#1890ff" : "#f0f0f0";
+                                    <Tooltip Title="@($"{h}:00 - {h}:59: {cnt} 次")">
+                                        <div class="hour-bar" style="@($"height:{height}%; background-color:{color};")"></div>
+                                    </Tooltip>
+                                }
+                            </div>
+                            <div class="hour-labels">
+                                <div>0h</div>
+                                <div>12h</div>
+                                <div>23h</div>
+                            </div>
+                        </div>
+                    </ChildContent>
+                </Card>
+            }
+        }
+    </ChildContent>
+</Card>
+
+<style>
+    .call-timeline { margin-top: 8px; height: 100px; }
+    .hour-bars { display:flex; justify-content:space-between; align-items:flex-end; height:80px; }
+    .hour-bar { flex:1; margin:0 1px; border-radius:2px 2px 0 0; transition: all .3s; cursor:pointer; }
+    .hour-bar:hover { background-color:#40a9ff !important; }
+    .hour-labels { display:flex; justify-content:space-between; font-size:12px; color:#999; margin-top:4px; }
+</style>
+
+@code {
+    private bool loading = true;
+    private DateTime selectedDate = DateTime.UtcNow.Date;
+    private string groupType = "app"; // app | endpoint | model
+
+    private List<EndpointCallRecord> records = new();
+    private List<LlmEndpoint> endpoints = new();
+    private List<LlmConfig> configs = new();
+    private HashSet<string> appNames = new(StringComparer.OrdinalIgnoreCase);
+
+    private string? selectedApp;
+    private string? selectedEndpoint;
+    private string? selectedConfig;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task OnDateChanged(DateTimeChangedEventArgs<DateTime?> date)
+    {
+        if (date.Date.HasValue)
+        {
+            selectedDate = date.Date.Value.Date;
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        try
+        {
+            var startDate = selectedDate.ToUniversalTime();
+            var endDate = startDate.AddDays(1);
+
+            endpoints = await LlmPoolService.GetEndpointsAsync();
+            configs = await LlmPoolService.GetConfigsAsync();
+            records = await LlmPoolService.GetCallRecordsAsync(
+                endpointId: null,
+                configId: null,
+                startDate: startDate,
+                endDate: endDate,
+                skip: null,
+                take: null);
+
+            appNames = new HashSet<string>(
+                records.Select(r => ParseAppName(r.ResponseDataJson))
+                       .Where(n => !string.IsNullOrWhiteSpace(n))
+                       .Cast<string>(),
+                StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"加载失败: {ex.Message}");
+        }
+        finally { loading = false; }
+    }
+
+    private void ApplyFilter()
+    {
+        // 触发 UI 重绘即可
+        StateHasChanged();
+    }
+
+    private Dictionary<string, List<EndpointCallRecord>> GetGroups()
+    {
+        IEnumerable<EndpointCallRecord> query = records;
+        if (groupType == "app" && !string.IsNullOrEmpty(selectedApp))
+        {
+            query = query.Where(r => string.Equals(ParseAppName(r.ResponseDataJson), selectedApp, StringComparison.OrdinalIgnoreCase));
+        }
+        if (groupType == "endpoint" && !string.IsNullOrEmpty(selectedEndpoint))
+        {
+            query = query.Where(r => r.EndpointId == selectedEndpoint);
+        }
+        if (groupType == "model" && !string.IsNullOrEmpty(selectedConfig))
+        {
+            query = query.Where(r => r.LlmConfigId == selectedConfig);
+        }
+
+        return groupType switch
+        {
+            "endpoint" => query.GroupBy(r => r.Endpoint?.Name ?? r.EndpointId).ToDictionary(g => g.Key, g => g.OrderBy(x => x.RequestReceivedAt).ToList()),
+            "model" => query.GroupBy(r => r.LlmConfig?.Name ?? r.LlmConfigId ?? "<unknown>").ToDictionary(g => g.Key, g => g.OrderBy(x => x.RequestReceivedAt).ToList()),
+            _ => query.GroupBy(r => ParseAppName(r.ResponseDataJson) ?? "<未识别应用>").ToDictionary(g => g.Key, g => g.OrderBy(x => x.RequestReceivedAt).ToList())
+        };
+    }
+
+    private static string? ParseAppName(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                root.TryGetProperty("selection", out var sel) && sel.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                if (sel.TryGetProperty("app_name", out var app) && app.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    return app.GetString();
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private class OptionItem
+    {
+        public string Value { get; set; } = string.Empty;
+        public string Label { get; set; } = string.Empty;
+    }
+
+    private readonly List<OptionItem> groupOptions = new()
+    {
+        new OptionItem{ Value = "app", Label = "按应用"},
+        new OptionItem{ Value = "endpoint", Label = "按端点"},
+        new OptionItem{ Value = "model", Label = "按模型配置"}
+    };
+}

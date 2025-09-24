@@ -17,6 +17,7 @@ public class LlmDbContext : DbContext
     public DbSet<EndpointCallRecord> EndpointCallRecords { get; set; } = null!;
     public DbSet<LlmPrompt> Prompts { get; set; } = null!;
     public DbSet<LlmPromptHistory> PromptHistory { get; set; } = null!;
+    public DbSet<LlmApp> Apps { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -112,6 +113,28 @@ public class LlmDbContext : DbContext
 
             entity.HasIndex(e => e.PromptId);
             entity.HasIndex(e => e.CreateTime);
+        });
+
+        modelBuilder.Entity<LlmApp>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            
+            entity.HasOne(e => e.Prompt)
+                .WithMany()
+                .HasForeignKey(e => e.PromptId)
+                .OnDelete(DeleteBehavior.SetNull);
+                
+            entity.HasOne(e => e.LlmConfig)
+                .WithMany()
+                .HasForeignKey(e => e.LlmConfigId)
+                .OnDelete(DeleteBehavior.SetNull);
+                
+            entity.HasOne(e => e.Endpoint)
+                .WithMany()
+                .HasForeignKey(e => e.EndpointId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
     }
 } 

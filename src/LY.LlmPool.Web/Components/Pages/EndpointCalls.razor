@@ -4,9 +4,11 @@
 @using LY.LlmPool.Web.Services
 @using System.Globalization
 @using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
 @inject LlmPoolService LlmPoolService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
 
 <PageTitle>Endpoint Call Records</PageTitle>
 
@@ -14,36 +16,65 @@
     <TitleTemplate>
         <div class="d-flex justify-content-between align-items-center">
             <div>Endpoint Call Records</div>
+            <div>
+                <Button OnClick="ExportCsv" Disabled="@(!_callRecords.Any())">
+                    <Icon Type="download" />
+                    导出 CSV
+                </Button>
+            </div>
         </div>
     </TitleTemplate>
     <ChildContent>
         <Form Layout="FormLayout.Inline" Model="@_filterModel">
             <FormItem Label="Endpoint">
-                <Select TItem="LlmEndpoint" 
-                TItemValue="string" 
-                DataSource="@_endpoints" 
-                @bind-Value="@_filterModel.EndpointId"
-                ValueName="@nameof(LlmEndpoint.Id)"
-                LabelName="@nameof(LlmEndpoint.Name)"
-                Style="width: 180px;"
-                AllowClear 
-                Placeholder="All Endpoints">
-                </Select>
+                @if (_endpoints.Any())
+                {
+                    <Select TItem="LlmEndpoint" 
+                    TItemValue="string" 
+                    DataSource="@_endpoints" 
+                    @bind-Value="@_filterModel.EndpointId"
+                    ValueName="@nameof(LlmEndpoint.Id)"
+                    LabelName="@nameof(LlmEndpoint.Name)"
+                    Style="width: 180px;"
+                    AllowClear 
+                    Placeholder="All Endpoints">
+                    </Select>
+                }
+                else
+                {
+                    <div style="width: 180px; line-height: 32px;">Loading...</div>
+                }
             </FormItem>
             <FormItem Label="LLM Model">
-                <Select TItem="LlmConfig" 
-                TItemValue="string" 
-                DataSource="@_configs" 
-                @bind-Value="@_filterModel.ConfigId"
-                ValueName="@nameof(LlmConfig.Id)"
-                LabelName="@nameof(LlmConfig.Name)"
-                Style="width: 180px;"
-                AllowClear 
-                Placeholder="All Models">
-                </Select>
+                @if (_configs.Any())
+                {
+                    <Select TItem="LlmConfig" 
+                    TItemValue="string" 
+                    DataSource="@_configs" 
+                    @bind-Value="@_filterModel.ConfigId"
+                    ValueName="@nameof(LlmConfig.Id)"
+                    LabelName="@nameof(LlmConfig.Name)"
+                    Style="width: 180px;"
+                    AllowClear 
+                    Placeholder="All Models">
+                    </Select>
+                }
+                else
+                {
+                    <div style="width: 180px; line-height: 32px;">Loading...</div>
+                }
             </FormItem>
             <FormItem Label="Date Range">
                 <RangePicker @bind-Value="@_dateRange" Style="width: 300px;" />
+            </FormItem>
+            <FormItem Label="Strategy">
+                <Select TItem="string"
+                        TItemValue="string"
+                        DataSource="@_strategyOptions"
+                        @bind-Value="@_filterModel.Strategy"
+                        AllowClear
+                        Placeholder="All Strategies"
+                        Style="width: 200px;" />
             </FormItem>
             <FormItem>
                 <Button Type="@ButtonType.Primary" OnClick="ApplyFilters">
@@ -71,28 +102,24 @@
         @bind-SelectedRows="@_selectedRows">
 
             <Column Title="Request Time" 
-            Field="@context.RequestReceivedAt"
             Sortable
             TData="DateTime">
                 @context.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss")
             </Column>
 
             <Column Title="Endpoint" 
-            Field="@context.Endpoint?.Name"
             TData="string" 
             Sortable>
                 @(context.Endpoint?.Name ?? "Unknown")
             </Column>
 
             <Column Title="Model" 
-            Field="@context.LlmConfig?.Name"
             TData="string"
             Sortable>
                 @(context.LlmConfig?.Name ?? "N/A")
             </Column>
 
             <Column Title="Wait Time" 
-            Field="@context.WaitTime"
             TData="TimeSpan"
             Sortable>
                 @context.WaitTime.TotalMilliseconds.ToString("0.00") ms
@@ -110,8 +137,32 @@
                 }
             </Column>
 
+            <Column Title="Tools" TData="string">
+                @if (ToolCallCount(context.ResponseDataJson) > 0)
+                {
+                    <Tag Color="TagColor.Blue">@($"{ToolCallCount(context.ResponseDataJson)} call(s)")</Tag>
+                }
+                else
+                {
+                    <span>-</span>
+                }
+            </Column>
+
+            <Column Title="Strategy" TData="string">
+                @{
+                    var strategy = GetSelectionStrategy(context.ResponseDataJson);
+                }
+                @if (!string.IsNullOrEmpty(strategy))
+                {
+                    <Tag>@strategy</Tag>
+                }
+                else
+                {
+                    <span>-</span>
+                }
+            </Column>
+
             <Column Title="Status" 
-            Field="@context.IsSuccessful"
             TData="bool"
             Sortable>
                 <Tag Color="@(context.IsSuccessful ? "green" : "red")">
@@ -139,13 +190,14 @@
     private List<EndpointCallRecord> _callRecords = new();
     private List<LlmEndpoint> _endpoints = new();
     private List<LlmConfig> _configs = new();
+    private List<string> _strategyOptions = new() { "app-config", "app-endpoint-lb", "config-name-direct-acquire", "endpoint-name-lb", "endpoint-id-lb" };
     private bool _loading = false;
     private int _totalRecords = 0;
     private int _pageIndex = 1;
     private int _pageSize = 10;
     private FilterModel _filterModel = new();
     private IEnumerable<EndpointCallRecord> _selectedRows = new List<EndpointCallRecord>();
-    private DateTime?[] _dateRange = null;
+    private DateTime?[] _dateRange = new DateTime?[2];
 
     protected override async Task OnInitializedAsync()
     {
@@ -202,7 +254,10 @@
             if (_dateRange != null && _dateRange.Length == 2 && _dateRange is not [null,null])
             {
                 startDate = _dateRange[0];
-                endDate = _dateRange[1].Value.AddDays(1); // Include the end date
+                if (_dateRange[1].HasValue)
+                {
+                    endDate = _dateRange[1]!.Value.AddDays(1); // Include the end date
+                }
             }
 
             // Calculate skip for pagination
@@ -218,6 +273,14 @@
                 _pageSize
             );
 
+            // 额外在客户端按策略筛选（由 ResponseDataJson.selection.strategy 提供）
+            if (!string.IsNullOrWhiteSpace(_filterModel.Strategy))
+            {
+                _callRecords = _callRecords
+                    .Where(r => string.Equals(GetSelectionStrategy(r.ResponseDataJson), _filterModel.Strategy, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
             // For simplicity, we're making an assumption about total count
             // In a production app, you'd want to have a separate count query
             _totalRecords = _callRecords.Count == _pageSize ? skip + _pageSize + 1 : skip + _callRecords.Count;
@@ -232,21 +295,19 @@
         }
     }
 
-    private void ResetFilters()
+    private async Task ResetFilters()
     {
         _filterModel = new FilterModel();
         _dateRange = [];
         _pageIndex = 1;
-        
-        ApplyFilters();
+        await ApplyFilters();
     }
 
-    private void HandleTableChange(QueryModel<EndpointCallRecord> queryModel)
+    private async Task HandleTableChange(QueryModel<EndpointCallRecord> queryModel)
     {
         _pageIndex = queryModel.PageIndex;
         _pageSize = queryModel.PageSize;
-        
-        ApplyFilters();
+        await ApplyFilters();
     }
 
     private void ViewCallDetail(string id)
@@ -254,9 +315,94 @@
         NavigationManager.NavigateTo($"/call-detail/{id}");
     }
 
+    private int ToolCallCount(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return 0;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("tool_calls", out var tc) &&
+                tc.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                return tc.GetArrayLength();
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    private string? GetSelectionStrategy(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("selection", out var sel) && sel.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                sel.TryGetProperty("strategy", out var st) && st.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return st.GetString();
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private class FilterModel
     {
-        public string? EndpointId { get; set; }
-        public string? ConfigId { get; set; }
+        public string EndpointId { get; set; } = string.Empty;
+        public string ConfigId { get; set; } = string.Empty;
+        public string? Strategy { get; set; }
+    }
+
+    private async Task ExportCsv()
+    {
+        if (!_callRecords.Any())
+        {
+            _message.Warning("当前无数据可导出");
+            return;
+        }
+
+        // Header
+        var sb = new System.Text.StringBuilder();
+        void AppendCsvCell(string? s)
+        {
+            s ??= string.Empty;
+            var needsQuote = s.Contains('"') || s.Contains(',') || s.Contains('\n') || s.Contains('\r');
+            s = s.Replace("\"", "\"\"");
+            if (needsQuote) sb.Append('"').Append(s).Append('"'); else sb.Append(s);
+        }
+
+        string? GetStrategy(EndpointCallRecord r) => GetSelectionStrategy(r.ResponseDataJson) ?? string.Empty;
+
+        // Columns: RequestTime, Endpoint, Model, WaitMs, ProcessSec, Strategy, Status
+        sb.AppendLine("Request Time,Endpoint,Model,Wait(ms),Processing(s),Strategy,Status");
+        foreach (var r in _callRecords)
+        {
+            var requestTime = r.RequestReceivedAt.ToString("yyyy-MM-dd HH:mm:ss");
+            var endpoint = r.Endpoint?.Name ?? string.Empty;
+            var model = r.LlmConfig?.Name ?? string.Empty;
+            var waitMs = r.WaitTime.TotalMilliseconds.ToString("0.##", CultureInfo.InvariantCulture);
+            var procSec = r.ModelProcessingTime.HasValue ? r.ModelProcessingTime.Value.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture) : string.Empty;
+            var strategy = GetStrategy(r);
+            var status = r.IsSuccessful ? "Success" : "Failed";
+
+            AppendCsvCell(requestTime); sb.Append(',');
+            AppendCsvCell(endpoint); sb.Append(',');
+            AppendCsvCell(model); sb.Append(',');
+            AppendCsvCell(waitMs); sb.Append(',');
+            AppendCsvCell(procSec); sb.Append(',');
+            AppendCsvCell(strategy); sb.Append(',');
+            AppendCsvCell(status); sb.AppendLine();
+        }
+
+        var csv = sb.ToString();
+        var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
+        var base64 = Convert.ToBase64String(bytes);
+        var dataUrl = $"data:text/csv;base64,{base64}";
+
+        var fileName = $"endpoint-calls-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv";
+        await JSRuntime.InvokeVoidAsync("downloadDataUrl", dataUrl, fileName);
     }
 } 

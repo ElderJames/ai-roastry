@@ -49,11 +49,11 @@
                             <Extra>
                                 <Space>
                                     <SpaceItem>
-                                        <Button Type="@ButtonType.Link" OnClick="() => ViewModelCalls(config.Id)">
+                                        <Button Type="@ButtonType.Link" OnClick="() => ViewModelCalls(config.Id!)">
                                             View Model Calls
                                         </Button>
                                     </SpaceItem>
-                                    @foreach (var endpoint in GetEndpointsForModel(config.Id))
+                                    @foreach (var endpoint in GetEndpointsForModel(config.Id!))
                                     {
                                         <SpaceItem>
                                             <Button Type="@ButtonType.Link" OnClick="() => ViewEndpointCalls(endpoint.Id)">
@@ -64,21 +64,21 @@
                                 </Space>
                             </Extra>
                             <ChildContent>
-                                <Statistic Title="Total Calls" Value="@GetCallCount(config.Id)" />
+                                <Statistic Title="Total Calls" Value="@GetCallCount(config.Id!)" />
 
                                 <Divider />
 
                                 <Row>
                                     <AntDesign.Col Span="12">
                                         <Statistic Title="Success Rate" 
-                                        Value="@GetSuccessRate(config.Id)" 
+                                        Value="@GetSuccessRate(config.Id!)" 
                                         Precision="2"
                                         Suffix="%" 
-                                        ValueStyle="@($"color: {GetColorForSuccessRate(config.Id)}")" />
+                                        ValueStyle="@($"color: {GetColorForSuccessRate(config.Id!)}")" />
                                     </AntDesign.Col>
                                     <AntDesign.Col Span="12">
                                         <Statistic Title="Avg. Response Time" 
-                                        Value="@GetAvgResponseTime(config.Id)" 
+                                        Value="@GetAvgResponseTime(config.Id!)" 
                                         Precision="2"
                                         Suffix="s" />
                                     </AntDesign.Col>
@@ -88,14 +88,14 @@
 
                                 <div class="call-timeline">
                                     @{
-                                        var configCalls = GetCallsForModel(config.Id);
-                                        var hours = Enumerable.Range(0, 24);
+                                        var timelineCalls = GetCallsForModel(config.Id!);
+                                        var timelineHours = Enumerable.Range(0, 24);
                                     }
                                     <div class="hour-bars">
-                                        @foreach (var hour in hours)
+                                        @foreach (var hour in timelineHours)
                                         {
-                                            var hourCalls = configCalls.Where(c => c.RequestReceivedAt.Hour == hour).Count();
-                                            var maxHourCalls = Math.Max(1, configCalls.GroupBy(c => c.RequestReceivedAt.Hour)
+                                            var hourCalls = timelineCalls.Where(c => c.RequestReceivedAt.Hour == hour).Count();
+                                            var maxHourCalls = Math.Max(1, timelineCalls.GroupBy(c => c.RequestReceivedAt.Hour)
                                                                               .Select(g => g.Count())
                                                                               .DefaultIfEmpty(0)
                                                                               .Max());
@@ -111,6 +111,82 @@
                                         <div>0h</div>
                                         <div>12h</div>
                                         <div>23h</div>
+                                    </div>
+                                </div>
+
+                                <Divider />
+
+                                @{
+                                    var strategyCounts = GetStrategyCountsForModel(config.Id!);
+                                    var strategyTotal = strategyCounts.Values.Sum();
+                                }
+                                <div class="strategy-section">
+                                    <div class="strategy-title">策略分布</div>
+                                    @if (strategyTotal == 0)
+                                    {
+                                        <div class="strategy-empty">无数据</div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var kv in strategyCounts.OrderByDescending(x => x.Value))
+                                        {
+                                            var percent = strategyTotal > 0 ? (kv.Value * 100.0 / strategyTotal) : 0;
+                                            var color = GetStrategyColor(kv.Key);
+                                            <div class="strategy-row">
+                                                <div class="strategy-label">@kv.Key</div>
+                                                <Tooltip Title="@($"{kv.Value} / {strategyTotal} ({percent:0.0}%)")">
+                                                    <div class="strategy-bar">
+                                                        <div class="strategy-bar-fill" style="width:@($"{percent:0.0}%"); background-color:@color;"></div>
+                                                    </div>
+                                                </Tooltip>
+                                                <div class="strategy-val">@percent.ToString("0.0")%</div>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+
+                                <Divider />
+
+                                <div class="strategy-trend">
+                                    <div class="strategy-title">策略趋势（按小时）</div>
+                                    @{
+                                        var trendCalls = GetCallsForModel(config.Id!);
+                                        var strategies = new[] { "app-config", "app-endpoint-lb", "config-name-direct-acquire", "endpoint-name-lb", "endpoint-id-lb" };
+                                        var trendHours = Enumerable.Range(0, 24);
+                                    }
+                                    <div class="trend-bars">
+                                        @foreach (var hour in trendHours)
+                                        {
+                                            var hourCalls = trendCalls.Where(c => c.RequestReceivedAt.Hour == hour).ToList();
+                                            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                                            foreach (var call in hourCalls)
+                                            {
+                                                var st = ParseSelectionStrategy(call.ResponseDataJson);
+                                                if (string.IsNullOrWhiteSpace(st)) continue;
+                                                counts[st] = counts.TryGetValue(st, out var v) ? v + 1 : 1;
+                                            }
+                                            var trendTotal = counts.Values.Sum();
+                                            <div class="trend-bar">
+                                                @if (trendTotal == 0)
+                                                {
+                                                    <div class="trend-seg" style="height: 2px; background-color:#f0f0f0;"></div>
+                                                }
+                                                else
+                                                {
+                                                    @foreach (var st in strategies)
+                                                    {
+                                                        var val = counts.TryGetValue(st, out var v) ? v : 0;
+                                                        if (val == 0) { continue; }
+                                                        var percent = (val * 100.0 / trendTotal);
+                                                        var color = GetStrategyColor(st);
+                                                        <Tooltip Title="@($"{hour}:00 - {hour}:59 | {st}: {val} / {trendTotal} ({percent:0.0}%)")">
+                                                            <div class="trend-seg" style="height:@($"{percent:0.0}%"); background-color:@color;"></div>
+                                                        </Tooltip>
+                                                    }
+                                                }
+                                                <div class="trend-hour">@hour</div>
+                                            </div>
+                                        }
                                     </div>
                                 </div>
                             </ChildContent>
@@ -154,6 +230,15 @@
     color: #999;
     margin-top: 4px;
     }
+
+    .strategy-section { margin-top: 8px; }
+    .strategy-title { font-weight: 500; margin-bottom: 6px; }
+    .strategy-empty { color:#999; font-size: 12px; }
+    .strategy-row { display:flex; align-items:center; gap:8px; margin: 6px 0; }
+    .strategy-label { width: 160px; font-size: 12px; color:#555; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .strategy-bar { flex:1; height: 8px; background:#f0f0f0; border-radius: 4px; overflow:hidden; }
+    .strategy-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+    .strategy-val { width: 60px; text-align:right; font-size: 12px; color:#555; }
 </style>
 
 @code {
@@ -221,6 +306,18 @@
     private List<EndpointCallRecord> GetCallsForModel(string configId)
     {
         return callRecords.Where(c => c.LlmConfigId == configId).ToList();
+    }
+
+    private Dictionary<string, int> GetStrategyCountsForModel(string configId)
+    {
+        var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in callRecords.Where(c => c.LlmConfigId == configId))
+        {
+            var st = ParseSelectionStrategy(c.ResponseDataJson);
+            if (string.IsNullOrWhiteSpace(st)) continue;
+            dict[st] = dict.TryGetValue(st, out var v) ? v + 1 : 1;
+        }
+        return dict;
     }
     
     private int GetCallCount(string configId)
@@ -302,5 +399,37 @@
     private void ViewModelCalls(string configId)
     {
         NavigationManager.NavigateTo($"/endpoint-calls?configId={configId}");
+    }
+
+    private string? ParseSelectionStrategy(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                root.TryGetProperty("selection", out var sel) && sel.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                sel.TryGetProperty("strategy", out var st) && st.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return st.GetString();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private string GetStrategyColor(string strategy)
+    {
+        // 简单配色映射
+        return strategy switch
+        {
+            "app-config" => "#52c41a",
+            "app-endpoint-lb" => "#1890ff",
+            "config-name-direct-acquire" => "#fa8c16",
+            "endpoint-name-lb" => "#722ed1",
+            "endpoint-id-lb" => "#eb2f96",
+            _ => "#595959"
+        };
     }
 } 

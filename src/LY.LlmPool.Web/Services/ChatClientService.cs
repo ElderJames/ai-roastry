@@ -15,17 +15,20 @@ namespace LY.LlmPool.Web.Services;
 public class ChatClientService
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
-    private readonly ILogger<LoggingHttpHandler> _logger;
+    private readonly ILogger<ChatClientService> _logger;
+    private readonly ILogger<LoggingHttpHandler> _httpLogger;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public ChatClientService(
         IHttpContextAccessor httpContextAccessor,
-        ILogger<LoggingHttpHandler> logger,
-        IHttpClientFactory httpClientFactory)
+        ILogger<ChatClientService> logger,
+        IHttpClientFactory httpClientFactory,
+        ILogger<LoggingHttpHandler> httpLogger)
     {
         _httpContextAccessor = httpContextAccessor;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _httpLogger = httpLogger;
     }
 
     private string GetCurrentBaseUrl()
@@ -38,7 +41,7 @@ public class ChatClientService
 
     private Kernel CreateKernel(string apiKey, string baseUrl, string model)
     {
-        var handler = new LoggingHttpHandler(_logger);
+        var handler = new LoggingHttpHandler(_httpLogger);
         handler.InnerHandler = new HttpClientHandler();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
 
@@ -101,7 +104,7 @@ public class ChatClientService
 
     private Kernel CreateKernelWithTools(string apiKey, string baseUrl, string model, List<Models.Tool>? tools)
     {
-        var handler = new LoggingHttpHandler(_logger);
+        var handler = new LoggingHttpHandler(_httpLogger);
         handler.InnerHandler = new HttpClientHandler();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
 
@@ -208,6 +211,28 @@ public class ChatClientService
         return kernel;
     }
 
+    private Kernel CreateKernelWithObjects(string apiKey, string baseUrl, string model, IEnumerable<object> toolObjects)
+    {
+        var handler = new LoggingHttpHandler(_httpLogger);
+        handler.InnerHandler = new HttpClientHandler();
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
+
+        var builder = Kernel.CreateBuilder()
+            .AddOpenAIChatCompletion(model, apiKey, httpClient: httpClient);
+
+        var kernel = builder.Build();
+
+        foreach (var obj in toolObjects)
+        {
+            if (obj != null)
+            {
+                kernel.Plugins.AddFromObject(obj, obj.GetType().Name);
+            }
+        }
+
+        return kernel;
+    }
+
     private OpenAIPromptExecutionSettings CreateExecutionSettings(List<Models.Tool>? tools, Dictionary<string, object>? toolChoice)
     {
         var settings = new OpenAIPromptExecutionSettings();
@@ -252,7 +277,15 @@ public class ChatClientService
         return settings;
     }
 
-    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages)
+    private OpenAIPromptExecutionSettings CreateExecutionSettingsForObjects(Dictionary<string, object>? toolChoice)
+    {
+        var settings = new OpenAIPromptExecutionSettings();
+        // 优先自动调用本地 KernelFunctions
+        settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+        return settings;
+    }
+
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
         _logger.LogInformation("开始发送消息，配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
@@ -266,7 +299,14 @@ public class ChatClientService
             Kernel kernel;
             OpenAIPromptExecutionSettings settings;
 
-            if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
+            // 优先使用传入的本地方法对象
+            if (toolObjects != null && toolObjects.Any())
+            {
+                _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
+                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects);
+                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+            }
+            else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
             {
                 _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
                 try
@@ -347,7 +387,7 @@ public class ChatClientService
         }
     }
 
-    public async Task<ChatResponse> SendMessageAsync(LlmEndpoint config, List<ChatMessage> messages)
+    public async Task<ChatResponse> SendMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
         var baseUrl = GetCurrentBaseUrl();
         return await SendMessageAsync(new LlmConfig
@@ -355,36 +395,383 @@ public class ChatClientService
             ApiKey = config.Id,
             BaseUrl = baseUrl,
             Model = config.Name
-        }, messages);
+        }, messages, toolObjects);
     }
 
-    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages)
-    {
-        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages);
-    }
-
-    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages)
+    public async Task<ChatResponse> SendMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
     {
         var baseUrl = GetCurrentBaseUrl();
-        return SendStreamingMessageInternalAsync(config.Id, baseUrl, config.Name, messages);
+        var apiKey = "app-temp-key";
+
+        // 选择合适的 Kernel 与设置（支持本地 KernelFunction 对象或 OpenAI 风格 tools）
+        var firstMessage = messages.FirstOrDefault();
+        Kernel kernel;
+        OpenAIPromptExecutionSettings settings;
+        if (toolObjects != null && toolObjects.Any())
+        {
+            kernel = CreateKernelWithObjects(apiKey, baseUrl, appName, toolObjects);
+            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+        }
+        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
+        {
+            kernel = CreateKernelWithTools(apiKey, baseUrl, appName, firstMessage.Tools);
+            settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
+        }
+        else
+        {
+            kernel = CreateKernel(apiKey, baseUrl, appName);
+            settings = new OpenAIPromptExecutionSettings();
+        }
+
+        var chatHistory = BuildChatHistory(messages);
+        if (parameters != null && parameters.Count > 0)
+        {
+            // 将 app 参数作为系统消息注入，便于模型/插件感知
+            var json = JsonSerializer.Serialize(parameters);
+            chatHistory.AddSystemMessage($"[app_parameters]{json}");
+        }
+
+        var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+        try
+        {
+            var result = await chatCompletionService.GetChatMessageContentAsync(chatHistory, settings, kernel);
+
+            var response = new ChatResponse
+            {
+                Message = result.Content ?? string.Empty,
+                Status = "success"
+            };
+
+            if (result.Items != null)
+            {
+                var toolCalls = new List<ToolCall>();
+                foreach (var item in result.Items)
+                {
+                    if (item is Microsoft.SemanticKernel.FunctionCallContent f)
+                    {
+                        toolCalls.Add(new ToolCall
+                        {
+                            Id = f.Id ?? Guid.NewGuid().ToString(),
+                            Type = "function",
+                            Function = new ToolFunction
+                            {
+                                Name = f.FunctionName,
+                                Arguments = JsonSerializer.Serialize(f.Arguments)
+                            }
+                        });
+                    }
+                }
+                if (toolCalls.Count > 0) response.ToolCalls = toolCalls;
+            }
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            return new ChatResponse { Message = ex.Message, Status = "error" };
+        }
+    }
+
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    {
+        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, null, toolObjects);
+    }
+
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    {
+        var baseUrl = GetCurrentBaseUrl();
+        return SendStreamingMessageInternalAsync(config.Id, baseUrl, config.Name, messages, null, toolObjects);
+    }
+
+    public IAsyncEnumerable<string> SendStreamingMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+    {
+        var baseUrl = GetCurrentBaseUrl();
+        return SendStreamingMessageInternalAsync("app-temp-key", baseUrl, appName, messages, parameters, toolObjects);
+    }
+
+    private async IAsyncEnumerable<string> SendStreamingMessageViaHttpAsync(
+        string baseUrl, 
+        string model, 
+        List<ChatMessage> messages, 
+        Dictionary<string, object>? parameters,
+        IEnumerable<object>? toolObjects)
+    {
+        // 尽管方法名保留为 ViaHttp，这里切换为使用 Semantic Kernel 的流式能力
+        var apiKey = "app-temp-key";
+
+        var firstMessage = messages.FirstOrDefault();
+        Kernel kernel;
+        OpenAIPromptExecutionSettings settings;
+        if (toolObjects != null && toolObjects.Any())
+        {
+            kernel = CreateKernelWithObjects(apiKey, baseUrl, model, toolObjects);
+            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+        }
+        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
+        {
+            kernel = CreateKernelWithTools(apiKey, baseUrl, model, firstMessage.Tools);
+            settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
+        }
+        else
+        {
+            kernel = CreateKernel(apiKey, baseUrl, model);
+            settings = new OpenAIPromptExecutionSettings();
+        }
+
+        var chatHistory = BuildChatHistory(messages);
+        if (parameters != null && parameters.Count > 0)
+        {
+            var json = JsonSerializer.Serialize(parameters);
+            chatHistory.AddSystemMessage($"[app_parameters]{json}");
+        }
+
+        var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+        IAsyncEnumerable<StreamingChatMessageContent>? streamingResults = null;
+        string? error = null;
+        try
+        {
+            streamingResults = chatCompletionService.GetStreamingChatMessageContentsAsync(chatHistory, settings, kernel);
+        }
+        catch (Exception ex)
+        {
+            error = $"Error: {ex.Message}";
+        }
+        if (error != null)
+        {
+            yield return error;
+            yield break;
+        }
+
+        if (streamingResults != null)
+        {
+            await foreach (var update in streamingResults)
+            {
+                if (!string.IsNullOrEmpty(update.Content))
+                {
+                    yield return update.Content;
+                }
+            }
+        }
+    }
+
+    private static object BuildOpenAiToolsPayload(List<Tool> tools)
+    {
+        var list = new List<object>();
+        foreach (var t in tools)
+        {
+            list.Add(new
+            {
+                type = "function",
+                function = new
+                {
+                    name = t.Name,
+                    description = t.Description,
+                    parameters = t.InputSchema
+                }
+            });
+        }
+        return list.ToArray();
+    }
+
+    private string? ExtractContentFromStreamData(string data)
+    {
+        try
+        {
+            var jsonDoc = JsonDocument.Parse(data);
+            var delta = jsonDoc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+            if (delta.TryGetProperty("content", out var content))
+            {
+                return content.GetString();
+            }
+            // 工具调用在上层优先处理
+        }
+        catch (JsonException)
+        {
+            // 忽略JSON解析错误
+        }
+        return null;
+    }
+
+    private bool TryExtractToolCallFromStreamData(string data, out string? name, out string? argsJson)
+    {
+        name = null; argsJson = null;
+        try
+        {
+            var jsonDoc = JsonDocument.Parse(data);
+            var delta = jsonDoc.RootElement.GetProperty("choices")[0].GetProperty("delta");
+            if (delta.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var tc in toolCalls.EnumerateArray())
+                {
+                    if (tc.TryGetProperty("function", out var fn))
+                    {
+                        name = fn.TryGetProperty("name", out var n) ? n.GetString() : null;
+                        argsJson = fn.TryGetProperty("arguments", out var a) ? a.GetString() : null;
+                        if (!string.IsNullOrEmpty(name) && argsJson != null) return true;
+                    }
+                }
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static object BuildOpenAiToolsFromObjects(IEnumerable<object> toolObjects)
+    {
+        var list = new List<object>();
+        foreach (var obj in toolObjects)
+        {
+            if (obj == null) continue;
+            var type = obj.GetType();
+            var methods = type.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            foreach (var m in methods)
+            {
+                var kf = m.GetCustomAttributes(typeof(KernelFunctionAttribute), inherit: true).FirstOrDefault() as KernelFunctionAttribute;
+                if (kf == null) continue;
+                var descAttr = m.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true).FirstOrDefault() as System.ComponentModel.DescriptionAttribute;
+                var fnName = string.IsNullOrWhiteSpace(kf.Name) ? m.Name : kf.Name;
+
+                var properties = new Dictionary<string, object>();
+                var required = new List<string>();
+                foreach (var p in m.GetParameters())
+                {
+                    var pDesc = p.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true).FirstOrDefault() as System.ComponentModel.DescriptionAttribute;
+                    var pName = p.Name ?? string.Empty;
+                    if (string.IsNullOrEmpty(pName)) continue;
+                    var typeStr = p.ParameterType == typeof(int) || p.ParameterType == typeof(int?) ? "integer"
+                               : p.ParameterType == typeof(double) || p.ParameterType == typeof(double?) || p.ParameterType == typeof(float) || p.ParameterType == typeof(float?) ? "number"
+                               : p.ParameterType == typeof(bool) || p.ParameterType == typeof(bool?) ? "boolean"
+                               : "string";
+                    properties[pName] = new Dictionary<string, object>
+                    {
+                        ["type"] = typeStr,
+                        ["description"] = pDesc?.Description ?? $"Parameter {pName}"
+                    };
+                    if (!p.HasDefaultValue) required.Add(pName);
+                }
+
+                var inputSchema = new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = properties
+                };
+                if (required.Count > 0) inputSchema["required"] = required.ToArray();
+
+                list.Add(new
+                {
+                    type = "function",
+                    function = new
+                    {
+                        name = fnName,
+                        description = descAttr?.Description ?? string.Empty,
+                        parameters = inputSchema
+                    }
+                });
+            }
+        }
+        return list.ToArray();
+    }
+
+    public async Task<string> ExecuteLocalToolAsync(IEnumerable<object> toolObjects, string name, string argsJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
+            var root = doc.RootElement;
+
+            foreach (var obj in toolObjects)
+            {
+                var (method, parameters) = ResolveKernelFunctionOnObject(obj, name);
+                if (method == null) continue;
+                var args = new object?[parameters.Length];
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    var p = parameters[i];
+                    var pName = p.Name ?? string.Empty;
+                    object? value = null;
+                    if (!string.IsNullOrEmpty(pName) && root.ValueKind == JsonValueKind.Object && root.TryGetProperty(pName, out var valEl))
+                    {
+                        value = ConvertJson(valEl, p.ParameterType);
+                    }
+                    else if (p.HasDefaultValue)
+                    {
+                        value = p.DefaultValue;
+                    }
+                    else if (p.ParameterType.IsValueType && Nullable.GetUnderlyingType(p.ParameterType) == null)
+                    {
+                        value = Activator.CreateInstance(p.ParameterType);
+                    }
+                    args[i] = value;
+                }
+                await Task.Yield();
+                var result = method.Invoke(obj, args);
+                return result switch
+                {
+                    null => string.Empty,
+                    string s => s,
+                    IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                    _ => JsonSerializer.Serialize(result)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            return $"工具执行错误: {ex.Message}";
+        }
+        return $"未实现的工具: {name}";
+    }
+
+    private static (System.Reflection.MethodInfo? method, System.Reflection.ParameterInfo[] parameters) ResolveKernelFunctionOnObject(object obj, string name)
+    {
+        var methods = obj.GetType().GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+        foreach (var m in methods)
+        {
+            var attr = m.GetCustomAttributes(typeof(KernelFunctionAttribute), inherit: true).FirstOrDefault() as KernelFunctionAttribute;
+            if (attr == null) continue;
+            var fnName = string.IsNullOrWhiteSpace(attr.Name) ? m.Name : attr.Name;
+            if (string.Equals(fnName, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return (m, m.GetParameters());
+            }
+        }
+        return (null, Array.Empty<System.Reflection.ParameterInfo>());
     }
 
     private async IAsyncEnumerable<string> SendStreamingMessageInternalAsync(
         string apiKey,
         string baseUrl,
         string model,
-        List<ChatMessage> messages)
+        List<ChatMessage> messages,
+        Dictionary<string, object>? parameters,
+        IEnumerable<object>? toolObjects)
     {
         _logger.LogInformation("开始发送流式消息，模型: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             model, baseUrl, messages.Count);
 
+        // 如果是App调用（带参数），通过HTTP请求传递参数
+        if (parameters != null && apiKey == "app-temp-key")
+        {
+            await foreach (var chunk in SendStreamingMessageViaHttpAsync(baseUrl, model, messages, parameters, toolObjects))
+            {
+                yield return chunk;
+            }
+            yield break;
+        }
+
+        // 原有的kernel逻辑用于非App调用
         Kernel kernel;
         OpenAIPromptExecutionSettings settings;
         
         // 获取第一个消息的tools配置
         var firstMessage = messages.FirstOrDefault();
 
-        if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
+        if (toolObjects != null && toolObjects.Any())
+        {
+            _logger.LogInformation("检测到本地工具对象，启用自动调用");
+            kernel = CreateKernelWithObjects(apiKey, baseUrl, model, toolObjects);
+            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+        }
+        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
         {
             _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
             try
@@ -445,6 +832,23 @@ public class ChatClientService
         }
         
         _logger.LogInformation("流式响应完成，总块数: {Chunks}, 总长度: {Length}", totalChunks, totalLength);
+    }
+
+    private static object? ConvertJson(JsonElement el, Type target)
+    {
+        try
+        {
+            if (target == typeof(string)) return el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
+            if (target == typeof(int) || target == typeof(int?)) return el.ValueKind == JsonValueKind.Number ? el.GetInt32() : int.TryParse(el.GetString(), out var iv) ? iv : 0;
+            if (target == typeof(double) || target == typeof(double?)) return el.ValueKind == JsonValueKind.Number ? el.GetDouble() : double.TryParse(el.GetString(), out var dv) ? dv : 0d;
+            if (target == typeof(bool) || target == typeof(bool?)) return el.ValueKind == JsonValueKind.True || (el.ValueKind == JsonValueKind.False ? false : bool.TryParse(el.GetString(), out var bv) && bv);
+            if (target == typeof(DateTime) || target == typeof(DateTime?)) return el.ValueKind == JsonValueKind.String && DateTime.TryParse(el.GetString(), out var dt) ? dt : DateTime.Now;
+            return JsonSerializer.Deserialize(el.GetRawText(), target);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // Anthropic API 相关方法

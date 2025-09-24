@@ -1,0 +1,418 @@
+@page "/app-list"
+@using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Data.Entities
+@using AntDesign
+@using AntDesign.TableModels
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+@inject NavigationManager NavigationManager
+
+<PageTitle>App List</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>App List</div>
+            <div>
+                <Button Type="@ButtonType.Primary" OnClick="AddNewApp">
+                    <Icon Type="plus" />
+                    Add New App
+                </Button>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Table TItem="LlmApp"
+               DataSource="@_apps"
+               Loading="_loading">
+            <PropertyColumn Property="c=>c.Name" Title="Name">
+                <Space>
+                    <SpaceItem>
+                        <Icon Type="@(context.AppType == "Prompt" ? "message" : "robot")" />
+                    </SpaceItem>
+                    <SpaceItem>
+                        @context.Name
+                    </SpaceItem>
+                </Space>
+            </PropertyColumn>
+            <PropertyColumn Property="c=>c.AppType" Title="Type">
+                <Tag Color="@(context.AppType == "Prompt" ? "blue" : "green")">
+                    @context.AppType
+                </Tag>
+            </PropertyColumn>
+            <PropertyColumn Property="c=>c.Description" Title="Description" />
+            <Column Title="Prompt" TData="string">
+                @if (!string.IsNullOrEmpty(context.PromptId))
+                {
+                    <Tag>@context.Prompt?.Name</Tag>
+                }
+                else
+                {
+                    <span class="text-muted">Not Set</span>
+                }
+            </Column>
+            <Column Title="Configuration" TData="string">
+                @if (!string.IsNullOrEmpty(context.LlmConfigId))
+                {
+                    <Tag Color="@("blue")">Model: @context.LlmConfig?.Name</Tag>
+                }
+                else if (!string.IsNullOrEmpty(context.EndpointId))
+                {
+                    <Tag Color="@("green")">Endpoint: @context.Endpoint?.Name</Tag>
+                }
+                else
+                {
+                    <span class="text-muted">Not Set</span>
+                }
+            </Column>
+            <Column Title="Quick Copy" TData="string">
+                <div>
+                    <div>
+                        <span class="text-muted">Base URL: </span>
+                        <Text Copyable CopyConfig="copyableConfig">@(_apiBase)</Text>
+                    </div>
+                    <div>
+                        <span class="text-muted">Model Name: </span>
+                        <Text Copyable CopyConfig="copyableConfig">@context.Name</Text>
+                    </div>
+                </div>
+            </Column>
+            <PropertyColumn Property="c=>c.IsEnabled" Title="Status">
+                @if (context.IsEnabled)
+                {
+                    <Badge Status="@BadgeStatus.Success" Text="Enabled" />
+                }
+                else
+                {
+                    <Badge Status="@BadgeStatus.Default" Text="Disabled" />
+                }
+            </PropertyColumn>
+            <PropertyColumn Property="c=>c.UpdatedAt" Title="Last Modified" Format="yyyy-MM-dd HH:mm:ss" />
+            <ActionColumn Title="Action">
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="() => EditApp(context)">
+                            <Icon Type="edit" />
+                            Edit
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Default" OnClick="() => TestApp(context)">
+                            <Icon Type="play-circle" />
+                            Test
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="Are you sure to delete this app?"
+                                   OkText="Yes"
+                                   CancelText="No"
+                                   OnConfirm="() => DeleteApp(context)">
+                            <Button Danger>
+                                <Icon Type="delete" />
+                            </Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </ChildContent>
+</Card>
+
+<!-- App Edit Modal -->
+<Modal Title="@(_isEditing ? "Edit App" : "Create App")"
+       Visible="_showEditModal"
+       OnOk="SaveApp"
+       OnCancel="CancelEdit"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       ConfirmLoading="_saving"
+       Width="800">
+    <Form Model="_editingApp" ValidateOnChange="true">
+        <Row Gutter="16">
+            <AntDesign.Col Span="12">
+                <FormItem Label="Name" Required>
+                    <Input @bind-Value="_editingApp.Name" Placeholder="Enter app name" />
+                </FormItem>
+            </AntDesign.Col>
+            <AntDesign.Col Span="12">
+                <FormItem Label="Type" Required>
+                    <Select TItemValue="string" TItem="string" @bind-Value="_editingApp.AppType" 
+                            Placeholder="Select app type"
+                            DataSource="LlmAppTypes.All" />
+                </FormItem>
+            </AntDesign.Col>
+        </Row>
+        
+        <FormItem Label="Description">
+            <TextArea @bind-Value="_editingApp.Description" Placeholder="Enter description" Rows="3" />
+        </FormItem>
+
+        <Row Gutter="16">
+            <AntDesign.Col Span="12">
+                <FormItem Label="Prompt">
+                    <Select TItemValue="string" TItem="LlmPrompt" @bind-Value="_editingApp.PromptId" 
+                            ValueName="Id"
+                            LabelName="Name"
+                            Placeholder="Select a prompt (optional)" 
+                            AllowClear="true"
+                            DataSource="_prompts" />
+                </FormItem>
+            </AntDesign.Col>
+            <AntDesign.Col Span="12">
+                <FormItem Label="Configuration Type">
+                    <RadioGroup @bind-Value="_configType">
+                        <Radio Value="@("model")">Model Configuration</Radio>
+                        <Radio Value="@("endpoint")">Endpoint Configuration</Radio>
+                    </RadioGroup>
+                </FormItem>
+            </AntDesign.Col>
+        </Row>
+
+        @if (_configType == "model")
+        {
+            <FormItem Label="Model Configuration">
+                <Select TItemValue="string" TItem="LlmConfig" @bind-Value="_editingApp.LlmConfigId" 
+                        ValueName="Id"
+                        LabelName="Name"
+                        Placeholder="Select a model configuration"
+                        OnSelectedItemChanged="OnModelConfigChanged"
+                        DataSource="_llmConfigs" />
+            </FormItem>
+        }
+        else if (_configType == "endpoint")
+        {
+            <FormItem Label="Endpoint Configuration">
+                <Select TItemValue="string" TItem="LlmEndpoint" @bind-Value="_editingApp.EndpointId" 
+                        ValueName="Id"
+                        LabelName="Name"
+                        Placeholder="Select an endpoint configuration"
+                        OnSelectedItemChanged="OnEndpointConfigChanged"
+                        DataSource="_endpoints" />
+            </FormItem>
+        }
+
+        <FormItem>
+            <Checkbox @bind-Value="_editingApp.IsEnabled">Enabled</Checkbox>
+        </FormItem>
+
+        @if (!string.IsNullOrEmpty(_selectedConfigInfo))
+        {
+            <Alert Type="@AlertType.Info" Message="Configuration Info" Description="@_selectedConfigInfo" ShowIcon="true" />
+        }
+
+        <FormItem Label="Quick Copy">
+            <div>
+                <div>
+                    <span class="text-muted">Base URL: </span>
+                    <Text Copyable CopyConfig="copyableConfig">@_apiBase</Text>
+                </div>
+                <div>
+                    <span class="text-muted">Model Name: </span>
+                    <Text Copyable CopyConfig="copyableConfig">@_editingApp.Name</Text>
+                </div>
+                <div>
+                    <span class="text-muted">Endpoint: </span>
+                    <code>/v1/chat/completions</code>
+                </div>
+            </div>
+        </FormItem>
+    </Form>
+</Modal>
+
+@code {
+    private List<LlmApp> _apps = new();
+    private List<LlmPrompt> _prompts = new();
+    private List<LlmConfig> _llmConfigs = new();
+    private List<LlmEndpoint> _endpoints = new();
+    private bool _loading;
+    private bool _showEditModal;
+    private bool _saving;
+    private bool _isEditing;
+    private LlmApp _editingApp = new();
+    private string _configType = "model";
+    private string? _selectedConfigInfo;
+    private TypographyCopyableConfig? copyableConfig;
+
+    private string _apiBase => NavigationManager.BaseUri.TrimEnd('/') + "/v1";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+        await LoadSelectDataAsync();
+        copyableConfig = new() { OnCopy = () => { _message.Success("已复制"); } };
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _loading = true;
+        try
+        {
+            _apps = await LlmPoolService.GetAppsAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadSelectDataAsync()
+    {
+        _prompts = await LlmPoolService.GetPromptsAsync();
+        _llmConfigs = await LlmPoolService.GetConfigsAsync();
+        _endpoints = await LlmPoolService.GetEndpointsAsync();
+    }
+
+    private void AddNewApp()
+    {
+        _isEditing = false;
+        _editingApp = new LlmApp
+        {
+            AppType = LlmAppTypes.Prompt,
+            IsEnabled = true,
+            PromptId = string.Empty,
+            LlmConfigId = string.Empty,
+            EndpointId = string.Empty
+        };
+        _configType = "model";
+        _selectedConfigInfo = null;
+        _showEditModal = true;
+    }
+
+    private void EditApp(LlmApp app)
+    {
+        _isEditing = true;
+        _editingApp = new LlmApp
+        {
+            Id = app.Id,
+            Name = app.Name,
+            Description = app.Description,
+            AppType = app.AppType,
+            PromptId = app.PromptId ?? string.Empty,
+            LlmConfigId = app.LlmConfigId ?? string.Empty,
+            EndpointId = app.EndpointId ?? string.Empty,
+            IsEnabled = app.IsEnabled,
+            ConfigJson = app.ConfigJson
+        };
+
+        // Set config type based on what's configured
+        if (!string.IsNullOrEmpty(_editingApp.LlmConfigId))
+        {
+            _configType = "model";
+            OnModelConfigChanged();
+        }
+        else if (!string.IsNullOrEmpty(_editingApp.EndpointId))
+        {
+            _configType = "endpoint";
+            OnEndpointConfigChanged();
+        }
+
+        _showEditModal = true;
+    }
+
+    private void TestApp(LlmApp app)
+    {
+        NavigationManager.NavigateTo($"/chat-test?app={app.Name}");
+    }
+
+    private async Task DeleteApp(LlmApp app)
+    {
+        try
+        {
+            await LlmPoolService.DeleteAppAsync(app.Id!);
+            await LoadDataAsync();
+            _message.Success("App deleted successfully");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to delete app: {ex.Message}");
+        }
+    }
+
+    private void OnModelConfigChanged()
+    {
+        if (!string.IsNullOrEmpty(_editingApp.LlmConfigId))
+        {
+            var config = _llmConfigs.FirstOrDefault(c => c.Id == _editingApp.LlmConfigId);
+            if (config != null)
+            {
+                _selectedConfigInfo = $"Model: {config.Model}, Base URL: {config.BaseUrl}";
+            }
+            _editingApp.EndpointId = null; // Clear endpoint when model is selected
+        }
+        else
+        {
+            _selectedConfigInfo = null;
+        }
+        StateHasChanged();
+    }
+
+    private void OnEndpointConfigChanged()
+    {
+        if (!string.IsNullOrEmpty(_editingApp.EndpointId))
+        {
+            var endpoint = _endpoints.FirstOrDefault(e => e.Id == _editingApp.EndpointId);
+            if (endpoint != null)
+            {
+                _selectedConfigInfo = $"Endpoint: {endpoint.Name}, Description: {endpoint.Description}";
+            }
+            _editingApp.LlmConfigId = null; // Clear model when endpoint is selected
+        }
+        else
+        {
+            _selectedConfigInfo = null;
+        }
+        StateHasChanged();
+    }
+
+    private async Task SaveApp()
+    {
+        if (string.IsNullOrWhiteSpace(_editingApp.Name))
+        {
+            _message.Error("Name is required");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_editingApp.AppType))
+        {
+            _message.Error("App type is required");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_editingApp.LlmConfigId) && string.IsNullOrEmpty(_editingApp.EndpointId))
+        {
+            _message.Error("Please select either a model configuration or an endpoint configuration");
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            if (_isEditing)
+            {
+                await LlmPoolService.UpdateAppAsync(_editingApp);
+                _message.Success("App updated successfully");
+            }
+            else
+            {
+                await LlmPoolService.AddAppAsync(_editingApp);
+                _message.Success("App created successfully");
+            }
+
+            _showEditModal = false;
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to save app: {ex.Message}");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void CancelEdit()
+    {
+        _showEditModal = false;
+    }
+}
