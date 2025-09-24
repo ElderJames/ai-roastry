@@ -244,8 +244,7 @@ public class OpenAICompatController : ControllerBase
             string.IsNullOrEmpty(authHeader) ||
             !authHeader.ToString().StartsWith("Bearer "))
         {
-            Response.StatusCode = (int)HttpStatusCode.Unauthorized;
-            await Response.WriteAsJsonAsync(new { error = "Missing or invalid API key" });
+            await WriteAssistantMessageAsync(null, "缺少或无效的 API Key。");
             return;
         }
 
@@ -294,8 +293,7 @@ public class OpenAICompatController : ControllerBase
                         var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(appConfig.Id!);
                         if (!acquired)
                         {
-                            Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                            await Response.WriteAsJsonAsync(new { error = "All model configurations are busy. Please retry later." });
+                            await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
                             return;
                         }
                         selectionStrategy = "app-config";
@@ -331,8 +329,7 @@ public class OpenAICompatController : ControllerBase
 
                 if (config == null)
                 {
-                    Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                    await Response.WriteAsJsonAsync(new { error = $"App '{app.Name}' has no valid configuration" });
+                    await WriteAssistantMessageAsync(chatRequest.Model, $"应用 '{app.Name}' 没有有效的模型配置。");
                     return;
                 }
             }
@@ -343,30 +340,16 @@ public class OpenAICompatController : ControllerBase
                 var cfgByName = await _llmPoolService.GetConfigByNameAsync(chatRequest.Model);
                 if (cfgByName != null)
                 {
-                    var epForCfg = await _llmPoolService.GetEndpointForConfigAsync(cfgByName.Id!);
-                    if (epForCfg == null)
-                    {
-                        Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                        await Response.WriteAsJsonAsync(new { error = $"No endpoint contains config '{cfgByName.Name}'" });
-                        return;
-                    }
-
-                    // Try to acquire this specific config (non-blocking) to honor availability
                     var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(cfgByName.Id!);
                     if (!acquired)
                     {
-                        Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-                        await Response.WriteAsJsonAsync(new { error = "All model configurations are busy. Please retry later." });
+                        await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
                         return;
                     }
 
                     config = cfgByName;
                     actualModelName = cfgByName.Model;
-                    actualEndpointId = epForCfg.Id; // ensure call record is tied to an endpoint
-                    selectionStrategy = "config-name-direct-acquire";
-
-                    // Create call record for the selected endpoint
-                    callRecord = await _callRecordService.CreateAsync(epForCfg.Id, requestData);
+                    selectionStrategy = "config-name-direct";
                 }
                 else
                 {
@@ -425,7 +408,7 @@ public class OpenAICompatController : ControllerBase
                 Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
 
                 _logger.LogError("No available model found or invalid API key");
-                await Response.WriteAsJsonAsync(new { error = "No available model found or invalid API key" });
+                await WriteAssistantMessageAsync(chatRequest.Model, "未找到可用模型或 API Key 无效。");
                 return;
             }
 
@@ -502,12 +485,7 @@ public class OpenAICompatController : ControllerBase
                                 await _llmPoolService.UpdateCallRecordAsync(callRecord);
                             }
 
-                            Response.StatusCode = (int)HttpStatusCode.BadRequest;
-                            await Response.WriteAsJsonAsync(new
-                            {
-                                error = $"Missing required parameters: {string.Join(", ", missingParams)}",
-                                required_parameters = missingParams
-                            });
+                            await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
                             return;
                         }
 
@@ -852,8 +830,7 @@ public class OpenAICompatController : ControllerBase
                 }
 
                 _logger.LogError(ex, "Error processing request");
-                Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                await Response.WriteAsJsonAsync(new { error = "Internal server error" });
+                await WriteAssistantMessageAsync(chatRequest.Model, "服务器内部错误。");
             }
             finally
             {
@@ -866,8 +843,7 @@ public class OpenAICompatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in chat completions");
-            Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-            await Response.WriteAsJsonAsync(new { error = "Internal server error" });
+            await WriteAssistantMessageAsync(null, "服务器内部错误。");
         }
     }
 
@@ -1240,5 +1216,46 @@ public class OpenAICompatController : ControllerBase
         {
             return false;
         }
+    }
+
+    private async Task WriteOpenAIErrorAsync(string? model, string message, HttpStatusCode statusCode = HttpStatusCode.BadRequest, string type = "invalid_request_error", string? code = null)
+    {
+        Response.StatusCode = (int)statusCode;
+        var payload = new
+        {
+            error = new
+            {
+                message = message,
+                type = type,
+                param = (string?)null,
+                code = code
+            }
+        };
+
+        await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
+    }
+
+    private async Task WriteAssistantMessageAsync(string? model, string message)
+    {
+        Response.StatusCode = (int)HttpStatusCode.OK;
+        var payload = new
+        {
+            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+            Object = "chat.completion",
+            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            model = model,
+            choices = new[]
+            {
+                new
+                {
+                    message = new { role = "assistant", content = message },
+                    index = 0,
+                    finish_reason = "stop"
+                }
+            },
+            usage = new { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 }
+        };
+
+        await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
     }
 }
