@@ -5,33 +5,38 @@ using System.Text.Json;
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
 using System.Text;
+using System.ComponentModel;
 
 namespace LY.LlmPool.Client;
 
 public partial class LlmPoolClient
 {
-    private readonly string _baseUrl;
+    private readonly HttpClient _httpClient;
     private readonly string _apiKey;
 
     public LlmPoolClient(string baseUrl, string apiKey)
     {
-        _baseUrl = baseUrl.TrimEnd('/');
+        _httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
+        _apiKey = apiKey;
+    }
+
+    public LlmPoolClient(HttpClient httpClient, string apiKey)
+    {
+        _httpClient = httpClient;
         _apiKey = apiKey;
     }
 
     private Kernel CreateKernel(string model)
     {
-        var httpClient = new HttpClient { BaseAddress = new Uri(_baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
         var builder = Kernel.CreateBuilder()
-            .AddOpenAIChatCompletion(model, _apiKey, httpClient: httpClient);
+            .AddOpenAIChatCompletion(model, _apiKey, httpClient: _httpClient);
         return builder.Build();
     }
 
     private Kernel CreateKernelWithObjects(string model, IEnumerable<object> toolObjects)
     {
-        var httpClient = new HttpClient { BaseAddress = new Uri(_baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
         var builder = Kernel.CreateBuilder()
-            .AddOpenAIChatCompletion(model, _apiKey, httpClient: httpClient);
+            .AddOpenAIChatCompletion(model, _apiKey, httpClient: _httpClient);
         var kernel = builder.Build();
         foreach (var obj in toolObjects)
         {
@@ -45,7 +50,7 @@ public partial class LlmPoolClient
         if (toolObjects != null && toolObjects.Any())
         {
             var kernel = CreateKernelWithObjects(model, toolObjects);
-            var settings = new OpenAIPromptExecutionSettings { ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions };
+            var settings = new OpenAIPromptExecutionSettings { ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions };
             if (options?.Temperature is not null) settings.Temperature = options.Temperature;
             if (options?.TopP is not null) settings.TopP = options.TopP;
             if (options?.MaxTokens is not null) settings.MaxTokens = options.MaxTokens;
@@ -150,12 +155,19 @@ public partial class LlmPoolClient
 {
     private HttpClient CreateRawHttp()
     {
-        var http = new HttpClient { BaseAddress = new Uri(_baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
         if (!string.IsNullOrEmpty(_apiKey))
         {
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         }
-        return http;
+        if (!_httpClient.DefaultRequestHeaders.Accept.Any())
+        {
+            _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        }
+        if (!_httpClient.DefaultRequestHeaders.Contains("Accept-Charset"))
+        {
+            _httpClient.DefaultRequestHeaders.Add("Accept-Charset", "utf-8");
+        }
+        return _httpClient;
     }
 
     public async Task<string> ChatAppAsync(
@@ -302,5 +314,33 @@ public partial class LlmPoolClient
         if (toolsArr != null) payload["tools"] = toolsArr;
         if (toolChoice != null && toolChoice.Count > 0) payload["tool_choice"] = toolChoice;
         return payload;
+    }
+
+    // -------- App + Real ToolObjects (non-streaming) --------
+
+    public async Task<string> ChatAppAsync(
+        string modelId,
+        List<ClientMessage> messages,
+        IEnumerable<object> toolObjects,
+        Dictionary<string, object>? parameters = null,
+        OpenAIPromptExecutionSettings? settings = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Use Semantic Kernel to register and auto-invoke functions
+        var builder = Kernel.CreateBuilder()
+            .AddOpenAIChatCompletion(modelId, _apiKey, httpClient: _httpClient);
+        var kernel = builder.Build();
+
+        foreach (var obj in toolObjects)
+        {
+            if (obj != null) kernel.Plugins.AddFromObject(obj, obj.GetType().Name);
+        }
+
+        var exec = settings ?? new OpenAIPromptExecutionSettings();
+        exec.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+        var chatHistory = BuildChatHistory(messages);
+        var chat = kernel.GetRequiredService<IChatCompletionService>();
+        var result = await chat.GetChatMessageContentAsync(chatHistory, exec, kernel, cancellationToken);
+        return result.Content ?? string.Empty;
     }
 }

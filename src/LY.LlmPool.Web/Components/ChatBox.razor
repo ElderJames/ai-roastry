@@ -434,10 +434,7 @@
             return;
         }
 
-        // App 流程：使用客户端 SDK 的 ChatAppAsync，可靠透传 parameters
-        var baseUrl = HttpContextAccessor.HttpContext != null
-            ? $"{HttpContextAccessor.HttpContext.Request.Scheme}://{HttpContextAccessor.HttpContext.Request.Host}/v1"
-            : string.Empty;
+        // App 流程：使用 HttpClientFactory 的命名客户端（支持配置 BaseUrl，缺省回退 HttpContext）
         var isApp = App != null;
         var apiKey = isApp
             ? "app-temp-key"
@@ -450,35 +447,29 @@
             var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
                 ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
                 : null;
-            var client = new LY.LlmPool.Client.LlmPoolClient(baseUrl, apiKey);
+            var http = HttpClientFactory.CreateClient("LlmPoolApi");
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
             var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
             {
                 Role = m.Role,
                 Content = m.Content,
                 ContentItems = m.ContentItems
             }).ToList();
-            var clientTools = _simulateTools
-                ? BuildSimulatedTools().Select(t => new LY.LlmPool.Client.ClientTool
-                {
-                    Name = t.Name,
-                    Description = t.Description,
-                    InputSchema = t.InputSchema
-                }).ToList()
-                : null;
-            var toolChoice = _simulateTools ? new Dictionary<string, object> { ["type"] = "auto" } : null;
             var settings = new OpenAIPromptExecutionSettings();
             if (Config != null)
             {
                 settings.Temperature = Config.Temperature;
                 settings.MaxTokens = Config.MaxTokens;
             }
-            var text = await client.ChatAppAsync(model!, msgs, parms, clientTools, toolChoice, settings);
+            var toolObjects3 = _simulateTools ? new object[] { this } : Array.Empty<object>();
+            var text = await client.ChatAppAsync(model!, msgs, toolObjects3, parms, settings);
             AddAssistantMessage(text);
         }
         else
         {
             // 非 App：改为使用 LlmPoolClient（经 SK 调用 openai controller）
-            var client = new LY.LlmPool.Client.LlmPoolClient(baseUrl, apiKey);
+            var http = HttpClientFactory.CreateClient("LlmPoolApi");
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
             var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
             var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
             {
@@ -541,9 +532,6 @@
             else
             {
                 var isApp = App != null;
-                var originBase = HttpContextAccessor.HttpContext != null
-                    ? $"{HttpContextAccessor.HttpContext.Request.Scheme}://{HttpContextAccessor.HttpContext.Request.Host}/v1"
-                    : string.Empty;
                 var apiKey = isApp
                     ? "app-temp-key"
                     : (Config != null ? (Config.Id ?? Config.ApiKey) : (Endpoint?.Id)) ?? "app-temp-key";
@@ -555,7 +543,8 @@
                     var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
                         ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
                         : null;
-                    var client = new LY.LlmPool.Client.LlmPoolClient(originBase, apiKey);
+                    var http = HttpClientFactory.CreateClient("LlmPoolApi");
+                    var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
                     var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
                     {
                         Role = m.Role,
@@ -582,7 +571,8 @@
                 else
                 {
                     // 非 App：使用 LlmPoolClient 进行流式（经 SK）
-                    var client = new LY.LlmPool.Client.LlmPoolClient(originBase, apiKey);
+                    var http = HttpClientFactory.CreateClient("LlmPoolApi");
+                    var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
                     var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
                     var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
                     {

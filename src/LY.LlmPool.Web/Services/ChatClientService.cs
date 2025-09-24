@@ -31,19 +31,15 @@ public class ChatClientService
         _httpLogger = httpLogger;
     }
 
-    private string GetCurrentBaseUrl()
-    {
-        var request = _httpContextAccessor.HttpContext?.Request;
-        if (request == null) return string.Empty;
-
-        return $"{request.Scheme}://{request.Host}/v1";
-    }
+    // HttpClient BaseAddress 来自命名客户端 LlmPoolApi；无需再从 HttpContext 手动拼接
 
     private Kernel CreateKernel(string apiKey, string baseUrl, string model)
     {
-        var handler = new LoggingHttpHandler(_httpLogger);
-        handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
+        var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            httpClient.BaseAddress = new Uri(baseUrl);
+        }
 
         var builder = Kernel.CreateBuilder()
             .AddOpenAIChatCompletion(model, apiKey, httpClient: httpClient);
@@ -104,9 +100,11 @@ public class ChatClientService
 
     private Kernel CreateKernelWithTools(string apiKey, string baseUrl, string model, List<Models.Tool>? tools)
     {
-        var handler = new LoggingHttpHandler(_httpLogger);
-        handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
+        var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            httpClient.BaseAddress = new Uri(baseUrl);
+        }
 
         var builder = Kernel.CreateBuilder()
             .AddOpenAIChatCompletion(model, apiKey, httpClient: httpClient);
@@ -213,9 +211,11 @@ public class ChatClientService
 
     private Kernel CreateKernelWithObjects(string apiKey, string baseUrl, string model, IEnumerable<object> toolObjects)
     {
-        var handler = new LoggingHttpHandler(_httpLogger);
-        handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromMinutes(10) };
+        var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            httpClient.BaseAddress = new Uri(baseUrl);
+        }
 
         var builder = Kernel.CreateBuilder()
             .AddOpenAIChatCompletion(model, apiKey, httpClient: httpClient);
@@ -389,18 +389,16 @@ public class ChatClientService
 
     public async Task<ChatResponse> SendMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
-        var baseUrl = GetCurrentBaseUrl();
         return await SendMessageAsync(new LlmConfig
         {
             ApiKey = config.Id,
-            BaseUrl = baseUrl,
+            BaseUrl = string.Empty,
             Model = config.Name
         }, messages, toolObjects);
     }
 
     public async Task<ChatResponse> SendMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
     {
-        var baseUrl = GetCurrentBaseUrl();
         var apiKey = "app-temp-key";
 
         // 选择合适的 Kernel 与设置（支持本地 KernelFunction 对象或 OpenAI 风格 tools）
@@ -409,17 +407,17 @@ public class ChatClientService
         OpenAIPromptExecutionSettings settings;
         if (toolObjects != null && toolObjects.Any())
         {
-            kernel = CreateKernelWithObjects(apiKey, baseUrl, appName, toolObjects);
+            kernel = CreateKernelWithObjects(apiKey, string.Empty, appName, toolObjects);
             settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
         }
         else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
         {
-            kernel = CreateKernelWithTools(apiKey, baseUrl, appName, firstMessage.Tools);
+            kernel = CreateKernelWithTools(apiKey, string.Empty, appName, firstMessage.Tools);
             settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
         }
         else
         {
-            kernel = CreateKernel(apiKey, baseUrl, appName);
+            kernel = CreateKernel(apiKey, string.Empty, appName);
             settings = new OpenAIPromptExecutionSettings();
         }
 
@@ -479,14 +477,12 @@ public class ChatClientService
 
     public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
-        var baseUrl = GetCurrentBaseUrl();
-        return SendStreamingMessageInternalAsync(config.Id, baseUrl, config.Name, messages, null, toolObjects);
+        return SendStreamingMessageInternalAsync(config.Id, string.Empty, config.Name, messages, null, toolObjects);
     }
 
     public IAsyncEnumerable<string> SendStreamingMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
     {
-        var baseUrl = GetCurrentBaseUrl();
-        return SendStreamingMessageInternalAsync("app-temp-key", baseUrl, appName, messages, parameters, toolObjects);
+        return SendStreamingMessageInternalAsync("app-temp-key", string.Empty, appName, messages, parameters, toolObjects);
     }
 
     private async IAsyncEnumerable<string> SendStreamingMessageViaHttpAsync(
@@ -504,17 +500,17 @@ public class ChatClientService
         OpenAIPromptExecutionSettings settings;
         if (toolObjects != null && toolObjects.Any())
         {
-            kernel = CreateKernelWithObjects(apiKey, baseUrl, model, toolObjects);
+            kernel = CreateKernelWithObjects(apiKey, string.Empty, model, toolObjects);
             settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
         }
         else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
         {
-            kernel = CreateKernelWithTools(apiKey, baseUrl, model, firstMessage.Tools);
+            kernel = CreateKernelWithTools(apiKey, string.Empty, model, firstMessage.Tools);
             settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
         }
         else
         {
-            kernel = CreateKernel(apiKey, baseUrl, model);
+            kernel = CreateKernel(apiKey, string.Empty, model);
             settings = new OpenAIPromptExecutionSettings();
         }
 
@@ -904,8 +900,7 @@ public class ChatClientService
     {
         try
         {
-            var httpClient = _httpClientFactory.CreateClient();
-            var baseUrl = GetCurrentBaseUrl();
+            var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
             
             var anthropicMessages = ConvertToAnthropicMessages(messages);
             
@@ -923,9 +918,9 @@ public class ChatClientService
             });
 
             var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
-            httpClient.DefaultRequestHeaders.Add("x-api-key", config.ApiKey);
-
-            var response = await httpClient.PostAsync($"{baseUrl}/v1/messages", httpContent);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "messages") { Content = httpContent };
+            request.Headers.TryAddWithoutValidation("x-api-key", config.ApiKey);
+            var response = await httpClient.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
             
             if (!response.IsSuccessStatusCode)
@@ -1000,8 +995,7 @@ public class ChatClientService
 
     private async IAsyncEnumerable<string> SendAnthropicStreamingMessageInternalAsync(LlmConfig config, List<ChatMessage> messages)
     {
-        var httpClient = _httpClientFactory.CreateClient();
-        var baseUrl = GetCurrentBaseUrl();
+        var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
         
         var anthropicMessages = ConvertToAnthropicMessages(messages);
         
@@ -1019,7 +1013,6 @@ public class ChatClientService
         });
 
         var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
-        httpClient.DefaultRequestHeaders.Add("x-api-key", config.ApiKey);
 
         HttpResponseMessage? response = null;
         Stream? stream = null;
@@ -1027,7 +1020,9 @@ public class ChatClientService
         
         try
         {
-            response = await httpClient.PostAsync($"{baseUrl}/v1/messages", httpContent);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "messages") { Content = httpContent };
+            request.Headers.TryAddWithoutValidation("x-api-key", config.ApiKey);
+            response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             
             if (!response.IsSuccessStatusCode)
             {

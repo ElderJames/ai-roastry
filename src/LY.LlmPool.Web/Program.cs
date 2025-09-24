@@ -49,6 +49,35 @@ builder.Services.AddScoped<CallRecordService>();
 // Add HTTP client factory
 builder.Services.AddHttpClient();
 
+// Named HttpClient for LlmPool API with configurable BaseUrl and HttpContext fallback
+builder.Services.AddTransient<LoggingHttpHandler>();
+builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    var baseUrl = cfg["LlmPool:BaseUrl"]; // e.g. "https://your-host/v1"
+    if (string.IsNullOrWhiteSpace(baseUrl))
+    {
+        var accessor = sp.GetRequiredService<IHttpContextAccessor>();
+        var ctx = accessor.HttpContext;
+        if (ctx != null)
+        {
+            baseUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}/v1";
+        }
+    }
+    if (!string.IsNullOrWhiteSpace(baseUrl))
+    {
+        http.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+    }
+    http.Timeout = TimeSpan.FromMinutes(10);
+    http.DefaultRequestHeaders.Accept.Clear();
+    http.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+    if (!http.DefaultRequestHeaders.Contains("Accept-Charset"))
+    {
+        http.DefaultRequestHeaders.Add("Accept-Charset", "utf-8");
+    }
+})
+.AddHttpMessageHandler<LoggingHttpHandler>();
+
 // Add Ant Design
 builder.Services.AddAntDesign();
 
