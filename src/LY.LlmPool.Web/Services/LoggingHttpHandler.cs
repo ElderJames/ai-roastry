@@ -41,9 +41,14 @@ public class LoggingHttpHandler : DelegatingHandler
                 string.Join(", ", response.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}"))
             );
 
+            // Determine streaming (SSE or chunked). Under HTTP/2, SSE usually has no Transfer-Encoding header.
+            var isEventStream = response.Content?.Headers?.ContentType?.MediaType?.Equals("text/event-stream", StringComparison.OrdinalIgnoreCase) == true
+                                || (response.Content?.Headers?.ContentType?.ToString()?.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+            var isChunked = response.Headers.TransferEncoding.ToString().Contains("chunked", StringComparison.OrdinalIgnoreCase)
+                            || response.Headers.Contains("Transfer-Encoding");
+
             // Only log response content for non-streaming responses
-            if (!response.Headers.Contains("Transfer-Encoding") || 
-                !response.Headers.TransferEncoding.ToString().Contains("chunked"))
+            if (!isEventStream && !isChunked)
             {
                 var responseContent = response.Content != null ? 
                     await response.Content.ReadAsStringAsync(cancellationToken) : "";
@@ -71,6 +76,10 @@ public class LoggingHttpHandler : DelegatingHandler
                 return newResponse;
             }
 
+            if (isEventStream || isChunked)
+            {
+                _logger.LogInformation("Response {RequestId} is streaming ({Reason}). Skipping body logging.", requestId, isEventStream ? "event-stream" : "chunked");
+            }
             return response;
         }
         catch (Exception ex)

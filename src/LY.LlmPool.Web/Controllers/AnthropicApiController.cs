@@ -300,6 +300,13 @@ public class AnthropicApiController : ControllerBase
                 await responseStream.WriteAsync(eventBytes, cancellationToken);
                 await responseStream.FlushAsync(cancellationToken);
 
+                try
+                {
+                    _logger.LogInformation("[Anthropic Stream {CallId}]\n{Data}", callRecord.Id, eventData);
+                    await _callRecordService.AppendStreamEventAsync(callRecord, eventData);
+                }
+                catch { }
+
                 if (cancellationToken.IsCancellationRequested)
                     break;
             }
@@ -307,6 +314,12 @@ public class AnthropicApiController : ControllerBase
             var doneBytes = Encoding.UTF8.GetBytes("data: [DONE]\n\n");
             await responseStream.WriteAsync(doneBytes, cancellationToken);
             await responseStream.FlushAsync(cancellationToken);
+
+            try
+            {
+                await _callRecordService.AppendStreamEventAsync(callRecord, "data: [DONE]\n\n");
+            }
+            catch { }
 
             await _callRecordService.FinalizeAsync(
                 callRecord,

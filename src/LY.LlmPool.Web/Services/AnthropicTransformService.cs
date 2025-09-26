@@ -81,16 +81,22 @@ public class AnthropicTransformService
             {
                 // 解析参数 JSON
                 Dictionary<string, object>? inputParams = null;
-                if (!string.IsNullOrEmpty(toolCall.Function.Arguments))
+                var argsText = toolCall.Function.Arguments;
+                if (string.IsNullOrWhiteSpace(argsText))
+                {
+                    // 归一化空字符串为 {}，避免下游解析报错
+                    inputParams = new Dictionary<string, object>();
+                }
+                else
                 {
                     try
                     {
-                        inputParams = JsonSerializer.Deserialize<Dictionary<string, object>>(toolCall.Function.Arguments);
+                        inputParams = JsonSerializer.Deserialize<Dictionary<string, object>>(argsText);
                     }
                     catch
                     {
-                        // 如果解析失败，使用原始字符串
-                        inputParams = new Dictionary<string, object> { { "arguments", toolCall.Function.Arguments } };
+                        // 如果解析失败，退化为将原串包裹到 arguments 字段，避免抛错
+                        inputParams = new Dictionary<string, object> { { "arguments", argsText } };
                     }
                 }
 
@@ -418,21 +424,25 @@ public class AnthropicTransformService
     }
 
     /// <summary>
-    /// 转换 Anthropic tools 到内部 Tool 格式
+    /// 转换 Anthropic tools 到 OpenAI 工具形状
     /// </summary>
-    private List<Models.Tool>? ConvertTools(List<Models.Anthropic.AnthropicTool>? anthropicTools)
+    private List<Models.OpenAITool>? ConvertTools(List<Models.Anthropic.AnthropicTool>? anthropicTools)
     {
         if (anthropicTools == null || anthropicTools.Count == 0)
             return null;
 
-        var tools = new List<Models.Tool>();
+        var tools = new List<Models.OpenAITool>();
         foreach (var anthropicTool in anthropicTools)
         {
-            tools.Add(new Models.Tool
+            tools.Add(new Models.OpenAITool
             {
-                Name = anthropicTool.Name,
-                Description = anthropicTool.Description,
-                InputSchema = anthropicTool.InputSchema
+                Type = "function",
+                Function = new Models.OpenAIFunction
+                {
+                    Name = anthropicTool.Name,
+                    Description = anthropicTool.Description,
+                    Parameters = anthropicTool.InputSchema
+                }
             });
         }
 

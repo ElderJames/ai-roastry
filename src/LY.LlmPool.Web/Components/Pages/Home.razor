@@ -1,7 +1,221 @@
 ﻿@page "/"
 
-<PageTitle>Home</PageTitle>
+<PageTitle>LLM Pool</PageTitle>
 
-<h1>Hello, world!</h1>
+<h1>欢迎使用 LLM Pool</h1>
+<p style="color:#666;margin-top:-6px">统一管理模型配置、端点与应用，提供 OpenAI 兼容接口与可视化分析。</p>
 
-Welcome to your new app.
+<h2 style="margin-top:20px">使用指南</h2>
+<ol>
+		<li>
+				创建/配置端点：在 <a href="/endpoint-config">端点配置</a> 中添加你的上游服务（如 OpenAI、Azure OpenAI、DeepSeek 等）的 BaseUrl 与 API Key。
+		</li>
+		<li>
+				添加模型配置：在 <a href="/model-config">模型配置</a> 中为每个模型创建配置（模型名、BaseUrl、Key、并发上限等），可选择是否挂载到端点以参与负载均衡。
+		</li>
+		<li>
+				组装应用（可选）：在 <a href="/app-list">应用管理</a> 中将 Prompt 与模型配置关联，前端测试时可用应用名作为 `model`。
+		</li>
+		<li>
+				本地测试：打开 <a href="/chat-test">聊天测试</a>，或用 OpenAI 兼容接口进行调用（示例见下）。
+		</li>
+		<li>
+				观测与分析：在 <a href="/request-log">请求日志</a>、<a href="/model-stats">模型统计</a>、<a href="/endpoint-calls">端点调用</a> 中查看时序与明细。
+		</li>
+	</ol>
+
+<details style="margin-top:10px">
+	<summary><b>curl 调用示例（OpenAI 兼容，含 parameters）</b></summary>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+curl -X POST \
+	-H "Authorization: Bearer your-api-key" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"model": "your-app-or-config",
+		"messages": [
+			{"role": "user", "content": "你好，今天天气如何？"}
+		],
+		"parameters": {
+			"city": "上海",
+			"date": "2025-09-24"
+		}
+	}' \
+	http://localhost:5071/v1/chat/completions
+	</code></pre>
+</details>
+
+<details style="margin-top:10px">
+	<summary><b>.NET C# 客户端示例（LY.LlmPool.Client）</b></summary>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+using LY.LlmPool.Client;
+
+var client = new LlmPoolClient("http://localhost:5071/v1", "your-api-key");
+var reply = await client.ChatAsync(
+		model: "your-app-or-config",
+		messages: new [] {
+				new ClientMessage { Role = "user", Content = "你好" }
+		}
+);
+Console.WriteLine(reply);
+	</code></pre>
+</details>
+
+<details style="margin-top:10px">
+	<summary><b>.NET C# 工具调用（KernelFunction）</b></summary>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+using LY.LlmPool.Client;
+using Microsoft.SemanticKernel;
+
+public class MyTools
+{
+		[KernelFunction("get_time")]
+		public string GetTime(string? format = null)
+				=> string.IsNullOrWhiteSpace(format) ? DateTime.Now.ToString() : DateTime.Now.ToString(format);
+}
+
+var client = new LlmPoolClient("http://localhost:5071/v1", "your-api-key");
+var tools = new object[] { new MyTools() };
+var reply = await client.ChatAsync(
+		model: "your-app-or-config",
+		messages: new [] {
+				new ClientMessage { Role = "user", Content = "请调用 get_time 返回当前时间，格式 yyyy-MM-dd HH:mm:ss" }
+		},
+		toolObjects: tools
+);
+Console.WriteLine(reply);
+	</code></pre>
+</details>
+
+<details style="margin-top:10px">
+	<summary><b>流式调用示例（.NET 与 curl）</b></summary>
+	<div style="margin-bottom:6px"><b>.NET C#（逐 token 输出）</b></div>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+using LY.LlmPool.Client;
+
+var client = new LlmPoolClient("http://localhost:5071/v1", "your-api-key");
+await foreach (var token in client.ChatStreamAsync(
+		model: "your-app-or-config",
+		messages: new [] { new ClientMessage { Role = "user", Content = "讲个笑话" } }
+))
+{
+		Console.Write(token);
+}
+	</code></pre>
+	<div style="margin:8px 0 6px"><b>curl（SSE）</b></div>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+curl -N \
+	-H "Authorization: Bearer your-api-key" \
+	-H "Content-Type: application/json" \
+	-d '{"model":"your-app-or-config","stream":true,"messages":[{"role":"user","content":"讲个笑话"}]}' \
+	http://localhost:5071/v1/chat/completions
+	</code></pre>
+</details>
+
+<h2 style="margin-top:24px">快速链接</h2>
+<Row Gutter="16">
+	<Col Span="6">
+			<a href="/chat-test" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="experiment" />
+					<div>
+						<div style="font-weight:600">聊天测试</div>
+						<div style="color:#666">快速验证对话与工具调用</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6">
+			<a href="/request-log" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="search" />
+					<div>
+						<div style="font-weight:600">请求日志</div>
+						<div style="color:#666">按时间线查看请求详情</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6">
+			<a href="/model-config" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="robot" />
+					<div>
+						<div style="font-weight:600">模型配置</div>
+						<div style="color:#666">管理模型、并发与可用性</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6">
+			<a href="/endpoint-config" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="api" />
+					<div>
+						<div style="font-weight:600">端点配置</div>
+						<div style="color:#666">配置上游服务与凭据</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+
+	<Col Span="6" Style="margin-top:16px">
+			<a href="/app-list" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="appstore" />
+					<div>
+						<div style="font-weight:600">应用管理</div>
+						<div style="color:#666">用 Prompt + 模型组装应用</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6" Style="margin-top:16px">
+			<a href="/prompt-list" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="message" />
+					<div>
+						<div style="font-weight:600">Prompt 管理</div>
+						<div style="color:#666">管理与复用提示词</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6" Style="margin-top:16px">
+			<a href="/model-stats" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="area-chart" />
+					<div>
+						<div style="font-weight:600">模型统计</div>
+						<div style="color:#666">请求量与耗时分布</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+	<Col Span="6" Style="margin-top:16px">
+			<a href="/endpoint-calls" style="text-decoration:none">
+				<Card Hoverable="true">
+				<div style="display:flex;align-items:center;gap:10px">
+					<Icon Type="cloud" />
+					<div>
+						<div style="font-weight:600">端点调用</div>
+						<div style="color:#666">端点维度的调用明细</div>
+					</div>
+				</div>
+					</Card>
+		</a>
+	</Col>
+</Row>

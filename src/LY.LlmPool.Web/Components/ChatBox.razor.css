@@ -94,6 +94,31 @@
     margin-top: 0.25rem;
 }
 
+.thinking-section {
+    margin-bottom: 8px;
+    background: #fffbe6;
+    border-left: 3px solid #faad14;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.thinking-content {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #ffffff;
+    border-radius: 4px;
+    padding: 6px;
+    border: 1px dashed #faad14;
+}
+
 .chat-input {
     padding: 1rem;
     display: flex;

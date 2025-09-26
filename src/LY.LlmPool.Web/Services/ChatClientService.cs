@@ -98,7 +98,7 @@ public class ChatClientService
         return chatHistory;
     }
 
-    private Kernel CreateKernelWithTools(string apiKey, string baseUrl, string model, List<Models.Tool>? tools)
+    private Kernel CreateKernelWithTools(string apiKey, string baseUrl, string model, List<OpenAITool>? tools)
     {
         var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
         if (!string.IsNullOrWhiteSpace(baseUrl))
@@ -118,10 +118,10 @@ public class ChatClientService
 
             foreach (var tool in tools)
             {
-                // 从InputSchema中提取参数信息
+                // 保留参数名/类型/必填与描述：根据 OpenAI JSON Schema 提取
                 var parameters = new List<KernelParameterMetadata>();
-
-                if (tool.InputSchema != null && tool.InputSchema.TryGetValue("properties", out var propertiesObj))
+                var schema = tool.Function.Parameters;
+                if (schema != null && schema.TryGetValue("properties", out var propertiesObj))
                 {
                     if (propertiesObj is JsonElement propertiesElement && propertiesElement.ValueKind == JsonValueKind.Object)
                     {
@@ -130,30 +130,31 @@ public class ChatClientService
                             var paramName = property.Name;
                             var paramInfo = property.Value;
 
-                            // 获取参数类型和描述
-                            var paramType = typeof(string); // 默认为string类型
-                            var paramDescription = "";
+                            var paramType = typeof(string);
+                            var paramDescription = string.Empty;
                             var isRequired = false;
 
-                            if (paramInfo.TryGetProperty("type", out var typeElement))
+                            if (paramInfo.ValueKind == JsonValueKind.Object)
                             {
-                                var typeStr = typeElement.GetString();
-                                paramType = typeStr switch
+                                if (paramInfo.TryGetProperty("type", out var typeElement))
                                 {
-                                    "integer" => typeof(int),
-                                    "number" => typeof(double),
-                                    "boolean" => typeof(bool),
-                                    _ => typeof(string)
-                                };
+                                    var typeStr = typeElement.GetString();
+                                    paramType = typeStr switch
+                                    {
+                                        "integer" => typeof(int),
+                                        "number" => typeof(double),
+                                        "boolean" => typeof(bool),
+                                        _ => typeof(string)
+                                    };
+                                }
+
+                                if (paramInfo.TryGetProperty("description", out var descElement))
+                                {
+                                    paramDescription = descElement.GetString() ?? string.Empty;
+                                }
                             }
 
-                            if (paramInfo.TryGetProperty("description", out var descElement))
-                            {
-                                paramDescription = descElement.GetString() ?? "";
-                            }
-
-                            // 检查是否为必需参数
-                            if (tool.InputSchema.TryGetValue("required", out var requiredObj) &&
+                            if (schema.TryGetValue("required", out var requiredObj) &&
                                 requiredObj is JsonElement requiredElement &&
                                 requiredElement.ValueKind == JsonValueKind.Array)
                             {
@@ -189,15 +190,30 @@ public class ChatClientService
                     }
                 }
 
-                // 创建函数定义，只用于工具声明，不执行实际逻辑
+                // 追加返回值信息（若 schema 中提供 returns/result 自定义字段）
+                string description = tool.Function.Description ?? string.Empty;
+                if (schema != null &&
+                    (schema.TryGetValue("returns", out var returnsObj) || schema.TryGetValue("result", out returnsObj)) &&
+                    returnsObj is JsonElement returnsElement && returnsElement.ValueKind == JsonValueKind.Object)
+                {
+                    string? retType = null;
+                    string? retDesc = null;
+                    if (returnsElement.TryGetProperty("type", out var rt)) retType = rt.GetString();
+                    if (returnsElement.TryGetProperty("description", out var rd)) retDesc = rd.GetString();
+                    var suffix = $" Return: {retType ?? "unknown"}{(string.IsNullOrWhiteSpace(retDesc) ? string.Empty : $" - {retDesc}")}";
+                    description = string.IsNullOrWhiteSpace(description) ? suffix.Trim() : ($"{description}\n{suffix}");
+                }
+
+                // 创建函数定义：用于工具声明（不在此处执行实际逻辑）
+                var funcName = string.IsNullOrWhiteSpace(tool.Function.Name) ? "func" : tool.Function.Name;
                 var function = KernelFunctionFactory.CreateFromMethod(
-                    method: () => $"Tool {tool.Name} would be called here",
-                    functionName: tool.Name,
-                    description: tool.Description ?? "",
+                    method: () => $"Tool {tool.Function.Name} would be called here",
+                    functionName: funcName,
+                    description: description,
                     parameters: parameters
                 );
 
-                functions[tool.Name] = function;
+                functions[funcName] = function;
             }
 
             if (functions.Count > 0)
@@ -207,6 +223,26 @@ public class ChatClientService
         }
 
         return kernel;
+    }
+
+    private static string SanitizeFunctionName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "func";
+        var sb = new StringBuilder(name.Length);
+        foreach (var ch in name)
+        {
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_')
+            {
+                sb.Append(ch);
+            }
+            else
+            {
+                sb.Append('_');
+            }
+        }
+        var s = sb.ToString();
+        if (!(char.IsLetter(s[0]) || s[0] == '_')) s = "_" + s;
+        return s;
     }
 
     private Kernel CreateKernelWithObjects(string apiKey, string baseUrl, string model, IEnumerable<object> toolObjects)
@@ -233,7 +269,7 @@ public class ChatClientService
         return kernel;
     }
 
-    private OpenAIPromptExecutionSettings CreateExecutionSettings(List<Models.Tool>? tools, Dictionary<string, object>? toolChoice)
+    private OpenAIPromptExecutionSettings CreateExecutionSettings(List<OpenAITool>? tools, Dictionary<string, object>? toolChoice)
     {
         var settings = new OpenAIPromptExecutionSettings();
 
@@ -280,7 +316,6 @@ public class ChatClientService
     private OpenAIPromptExecutionSettings CreateExecutionSettingsForObjects(Dictionary<string, object>? toolChoice)
     {
         var settings = new OpenAIPromptExecutionSettings();
-        // 优先自动调用本地 KernelFunctions
         settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
         return settings;
     }
@@ -296,14 +331,14 @@ public class ChatClientService
             var firstMessage = messages.FirstOrDefault();
 
             // 如果有工具，尝试使用带工具的 kernel，否则使用普通 kernel
+            var hasLocalTools = toolObjects != null && toolObjects.Any();
             Kernel kernel;
             OpenAIPromptExecutionSettings settings;
 
-            // 优先使用传入的本地方法对象
-            if (toolObjects != null && toolObjects.Any())
+            if (hasLocalTools)
             {
                 _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
-                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects);
+                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects!);
                 settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
             }
             else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
@@ -336,43 +371,21 @@ public class ChatClientService
             var result = await chatCompletionService.GetChatMessageContentsAsync(chatHistory, settings, kernel);
             _logger.LogInformation("聊天完成服务调用成功，结果数量: {ResultCount}", result.Count);
 
+            var primary = result.FirstOrDefault();
+            if (primary == null)
+            {
+                _logger.LogWarning("模型返回为空响应");
+                return new ChatResponse { Message = string.Empty, Status = "success" };
+            }
+
             var response = new ChatResponse
             {
-                Message = result[0].Content ?? string.Empty,
-                Status = "success"
+                Message = primary.Content ?? string.Empty,
+                Status = "success",
+                ToolCalls = ExtractToolCalls(primary)
             };
 
             _logger.LogInformation("响应内容长度: {Length}", response.Message.Length);
-
-            // 检查是否有工具调用
-            if (result[0].Items != null)
-            {
-                var toolCalls = new List<ToolCall>();
-
-                foreach (var item in result[0].Items)
-                {
-                    if (item is Microsoft.SemanticKernel.FunctionCallContent functionCall)
-                    {
-                        _logger.LogInformation("检测到工具调用: {FunctionName}", functionCall.FunctionName);
-                        toolCalls.Add(new ToolCall
-                        {
-                            Id = functionCall.Id ?? Guid.NewGuid().ToString(),
-                            Type = "function",
-                            Function = new ToolFunction
-                            {
-                                Name = functionCall.FunctionName,
-                                Arguments = JsonSerializer.Serialize(functionCall.Arguments)
-                            }
-                        });
-                    }
-                }
-
-                if (toolCalls.Count > 0)
-                {
-                    _logger.LogInformation("总工具调用数量: {Count}", toolCalls.Count);
-                    response.ToolCalls = toolCalls;
-                }
-            }
 
             return response;
         }
@@ -434,35 +447,12 @@ public class ChatClientService
         {
             var result = await chatCompletionService.GetChatMessageContentAsync(chatHistory, settings, kernel);
 
-            var response = new ChatResponse
+            return new ChatResponse
             {
                 Message = result.Content ?? string.Empty,
-                Status = "success"
+                Status = "success",
+                ToolCalls = ExtractToolCalls(result)
             };
-
-            if (result.Items != null)
-            {
-                var toolCalls = new List<ToolCall>();
-                foreach (var item in result.Items)
-                {
-                    if (item is Microsoft.SemanticKernel.FunctionCallContent f)
-                    {
-                        toolCalls.Add(new ToolCall
-                        {
-                            Id = f.Id ?? Guid.NewGuid().ToString(),
-                            Type = "function",
-                            Function = new ToolFunction
-                            {
-                                Name = f.FunctionName,
-                                Arguments = JsonSerializer.Serialize(f.Arguments)
-                            }
-                        });
-                    }
-                }
-                if (toolCalls.Count > 0) response.ToolCalls = toolCalls;
-            }
-
-            return response;
         }
         catch (Exception ex)
         {
@@ -550,67 +540,7 @@ public class ChatClientService
         }
     }
 
-    private static object BuildOpenAiToolsPayload(List<Tool> tools)
-    {
-        var list = new List<object>();
-        foreach (var t in tools)
-        {
-            list.Add(new
-            {
-                type = "function",
-                function = new
-                {
-                    name = t.Name,
-                    description = t.Description,
-                    parameters = t.InputSchema
-                }
-            });
-        }
-        return list.ToArray();
-    }
-
-    private string? ExtractContentFromStreamData(string data)
-    {
-        try
-        {
-            var jsonDoc = JsonDocument.Parse(data);
-            var delta = jsonDoc.RootElement.GetProperty("choices")[0].GetProperty("delta");
-            if (delta.TryGetProperty("content", out var content))
-            {
-                return content.GetString();
-            }
-            // 工具调用在上层优先处理
-        }
-        catch (JsonException)
-        {
-            // 忽略JSON解析错误
-        }
-        return null;
-    }
-
-    private bool TryExtractToolCallFromStreamData(string data, out string? name, out string? argsJson)
-    {
-        name = null; argsJson = null;
-        try
-        {
-            var jsonDoc = JsonDocument.Parse(data);
-            var delta = jsonDoc.RootElement.GetProperty("choices")[0].GetProperty("delta");
-            if (delta.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var tc in toolCalls.EnumerateArray())
-                {
-                    if (tc.TryGetProperty("function", out var fn))
-                    {
-                        name = fn.TryGetProperty("name", out var n) ? n.GetString() : null;
-                        argsJson = fn.TryGetProperty("arguments", out var a) ? a.GetString() : null;
-                        if (!string.IsNullOrEmpty(name) && argsJson != null) return true;
-                    }
-                }
-            }
-        }
-        catch { }
-        return false;
-    }
+  
 
     private static object BuildOpenAiToolsFromObjects(IEnumerable<object> toolObjects)
     {
@@ -666,71 +596,6 @@ public class ChatClientService
             }
         }
         return list.ToArray();
-    }
-
-    public async Task<string> ExecuteLocalToolAsync(IEnumerable<object> toolObjects, string name, string argsJson)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argsJson) ? "{}" : argsJson);
-            var root = doc.RootElement;
-
-            foreach (var obj in toolObjects)
-            {
-                var (method, parameters) = ResolveKernelFunctionOnObject(obj, name);
-                if (method == null) continue;
-                var args = new object?[parameters.Length];
-                for (int i = 0; i < parameters.Length; i++)
-                {
-                    var p = parameters[i];
-                    var pName = p.Name ?? string.Empty;
-                    object? value = null;
-                    if (!string.IsNullOrEmpty(pName) && root.ValueKind == JsonValueKind.Object && root.TryGetProperty(pName, out var valEl))
-                    {
-                        value = ConvertJson(valEl, p.ParameterType);
-                    }
-                    else if (p.HasDefaultValue)
-                    {
-                        value = p.DefaultValue;
-                    }
-                    else if (p.ParameterType.IsValueType && Nullable.GetUnderlyingType(p.ParameterType) == null)
-                    {
-                        value = Activator.CreateInstance(p.ParameterType);
-                    }
-                    args[i] = value;
-                }
-                await Task.Yield();
-                var result = method.Invoke(obj, args);
-                return result switch
-                {
-                    null => string.Empty,
-                    string s => s,
-                    IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
-                    _ => JsonSerializer.Serialize(result)
-                };
-            }
-        }
-        catch (Exception ex)
-        {
-            return $"工具执行错误: {ex.Message}";
-        }
-        return $"未实现的工具: {name}";
-    }
-
-    private static (System.Reflection.MethodInfo? method, System.Reflection.ParameterInfo[] parameters) ResolveKernelFunctionOnObject(object obj, string name)
-    {
-        var methods = obj.GetType().GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-        foreach (var m in methods)
-        {
-            var attr = m.GetCustomAttributes(typeof(KernelFunctionAttribute), inherit: true).FirstOrDefault() as KernelFunctionAttribute;
-            if (attr == null) continue;
-            var fnName = string.IsNullOrWhiteSpace(attr.Name) ? m.Name : attr.Name;
-            if (string.Equals(fnName, name, StringComparison.OrdinalIgnoreCase))
-            {
-                return (m, m.GetParameters());
-            }
-        }
-        return (null, Array.Empty<System.Reflection.ParameterInfo>());
     }
 
     private async IAsyncEnumerable<string> SendStreamingMessageInternalAsync(
@@ -830,21 +695,43 @@ public class ChatClientService
         _logger.LogInformation("流式响应完成，总块数: {Chunks}, 总长度: {Length}", totalChunks, totalLength);
     }
 
-    private static object? ConvertJson(JsonElement el, Type target)
+    private static List<ToolCall>? ExtractToolCalls(ChatMessageContent? message)
     {
-        try
-        {
-            if (target == typeof(string)) return el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
-            if (target == typeof(int) || target == typeof(int?)) return el.ValueKind == JsonValueKind.Number ? el.GetInt32() : int.TryParse(el.GetString(), out var iv) ? iv : 0;
-            if (target == typeof(double) || target == typeof(double?)) return el.ValueKind == JsonValueKind.Number ? el.GetDouble() : double.TryParse(el.GetString(), out var dv) ? dv : 0d;
-            if (target == typeof(bool) || target == typeof(bool?)) return el.ValueKind == JsonValueKind.True || (el.ValueKind == JsonValueKind.False ? false : bool.TryParse(el.GetString(), out var bv) && bv);
-            if (target == typeof(DateTime) || target == typeof(DateTime?)) return el.ValueKind == JsonValueKind.String && DateTime.TryParse(el.GetString(), out var dt) ? dt : DateTime.Now;
-            return JsonSerializer.Deserialize(el.GetRawText(), target);
-        }
-        catch
+        if (message?.Items == null || message.Items.Count == 0)
         {
             return null;
         }
+
+        var map = new Dictionary<string, ToolCall>(StringComparer.Ordinal);
+
+        foreach (var item in message.Items)
+        {
+            if (item is FunctionCallContent call)
+            {
+                var callId = string.IsNullOrEmpty(call.Id) ? $"call_{Guid.NewGuid():N}" : call.Id!;
+                var argumentsJson = call.Arguments != null && call.Arguments.Count > 0
+                    ? JsonSerializer.Serialize(call.Arguments)
+                    : "{}";
+
+                if (string.IsNullOrWhiteSpace(argumentsJson))
+                {
+                    argumentsJson = "{}";
+                }
+
+                map[callId] = new ToolCall
+                {
+                    Id = callId,
+                    Type = "function",
+                    Function = new ToolFunction
+                    {
+                        Name = call.FunctionName,
+                        Arguments = argumentsJson
+                    }
+                };
+            }
+        }
+
+        return map.Count > 0 ? map.Values.ToList() : null;
     }
 
     // Anthropic API 相关方法

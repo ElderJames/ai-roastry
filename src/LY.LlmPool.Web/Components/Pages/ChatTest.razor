@@ -1,11 +1,11 @@
 @page "/chat-test"
+@using AntDesign
 @using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Models
 @using LY.LlmPool.Web.Services
 @using Microsoft.AspNetCore.Components
 @inject LlmPoolService LlmPoolService
 @inject NavigationManager NavigationManager
-
-<PageTitle>聊天测试</PageTitle>
 
 <Row Gutter="16">
     <AntDesign.Col Span="6">
@@ -144,7 +144,7 @@
                         <Alert Message="@_configSourceLabel" Type="@AlertType.Info" ShowIcon="true" />
                     }
                 }
-                <ChatBox Config="_selectedConfig" Endpoint="_selectedEndpoint" App="_selectedApp" />
+                <ChatBox ModelName="@GetCurrentModelName()" Parameters="_appParameters" />
             </div>
         }
         else
@@ -177,6 +177,9 @@
     private string? _configSourceLabel;
     private string? _configWarning;
 
+    private string[]? _appParameters;
+    private string systemPrompt = string.Empty;
+
     [Parameter]
     [SupplyParameterFromQuery]
     public string? App { get; set; }
@@ -184,14 +187,14 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
-        
+
         // 如果URL中有app参数，自动选择对应的应用
         if (!string.IsNullOrEmpty(App))
         {
             var app = _apps.FirstOrDefault(a => a.Name == App);
             if (app != null)
             {
-                 SelectApp(app);
+                SelectApp(app);
                 _activeTabKey = "apps";
             }
         }
@@ -240,6 +243,13 @@
         _configSourceLabel = null;
         _configWarning = null;
 
+        systemPrompt = app.Prompt?.Content ?? string.Empty;
+        if (!string.IsNullOrEmpty(systemPrompt))
+        {
+            var service = new PromptParameterService();
+            _appParameters = service.ExtractParameterNames(systemPrompt).ToArray();
+        }
+
         StateHasChanged();
     }
 
@@ -250,6 +260,7 @@
         _selectedEndpoint = null;
         _configSourceLabel = null;
         _configWarning = null;
+        _appParameters = null;
         StateHasChanged();
     }
 
@@ -260,6 +271,27 @@
         _selectedConfig = null;
         _configSourceLabel = null;
         _configWarning = null;
+        _appParameters = null;
         StateHasChanged();
     }
-} 
+
+    private string? GetCurrentModelName()
+    {
+        if (_selectedApp != null)
+        {
+            return _selectedApp.Name;
+        }
+
+        if (_selectedConfig != null)
+        {
+            return _selectedConfig.Name;
+        }
+
+        if (_selectedEndpoint != null)
+        {
+            return _selectedEndpoint.Name;
+        }
+
+        return null;
+    }
+}

@@ -93,6 +93,8 @@ public class CallRecordService
         record.ModelResponseEndedAt = DateTime.UtcNow;
         record.IsSuccessful = true;
 
+        // Preserve any existing stream array if present
+        object? existingStream = null;
         if (record.ResponseData is JsonElement je)
         {
             string? modelStr = je.TryGetProperty("model", out var m) ? m.GetString() : model;
@@ -103,6 +105,10 @@ public class CallRecordService
             string? selConfigId = configId;
             string? selConfigName = configName;
             string? selAppName = appName;
+            if (je.TryGetProperty("stream", out var st))
+            {
+                existingStream = st;
+            }
             if (je.TryGetProperty("selection", out var sel) && sel.ValueKind == JsonValueKind.Object)
             {
                 selStrategy = sel.TryGetProperty("strategy", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : selStrategy;
@@ -117,6 +123,7 @@ public class CallRecordService
                 model = modelStr,
                 message = messageStr,
                 tool_calls = toolCallsObj,
+                stream = existingStream,
                 selection = new { strategy = selStrategy, endpoint_id = selEndpointId, config_id = selConfigId, config_name = selConfigName, app_name = selAppName },
                 timings = new
                 {
@@ -133,6 +140,7 @@ public class CallRecordService
             {
                 model,
                 tool_calls = (object?)null,
+                stream = existingStream,
                 selection = new { strategy = selectionStrategy, endpoint_id = endpointId, config_id = configId, config_name = configName, app_name = appName },
                 timings = new
                 {
@@ -177,5 +185,59 @@ public class CallRecordService
             }
         }
         catch { }
+    }
+
+    public async Task AppendStreamEventAsync(EndpointCallRecord record, string data)
+    {
+        // Ensure ResponseData has a stream array and append the event data
+        List<string> stream;
+        if (record.ResponseData is JsonElement je && je.ValueKind == JsonValueKind.Object)
+        {
+            if (je.TryGetProperty("stream", out var st) && st.ValueKind == JsonValueKind.Array)
+            {
+                stream = st.EnumerateArray().Select(x => x.GetString() ?? string.Empty).ToList();
+            }
+            else
+            {
+                stream = new List<string>();
+            }
+        }
+        else
+        {
+            stream = new List<string>();
+        }
+
+        stream.Add(data);
+
+        // Recompose minimal response payload preserving existing selection if possible
+        string? model = null;
+        string? selStrategy = null; string? selEndpointId = null; string? selConfigId = null; string? selConfigName = null; string? selAppName = null;
+        if (record.ResponseData is JsonElement je2 && je2.ValueKind == JsonValueKind.Object)
+        {
+            if (je2.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String) model = m.GetString();
+            if (je2.TryGetProperty("selection", out var sel) && sel.ValueKind == JsonValueKind.Object)
+            {
+                selStrategy = sel.TryGetProperty("strategy", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+                selEndpointId = sel.TryGetProperty("endpoint_id", out var ei) && ei.ValueKind == JsonValueKind.String ? ei.GetString() : null;
+                selConfigId = sel.TryGetProperty("config_id", out var ci) && ci.ValueKind == JsonValueKind.String ? ci.GetString() : null;
+                selConfigName = sel.TryGetProperty("config_name", out var cn) && cn.ValueKind == JsonValueKind.String ? cn.GetString() : null;
+                selAppName = sel.TryGetProperty("app_name", out var an) && an.ValueKind == JsonValueKind.String ? an.GetString() : null;
+            }
+        }
+
+        record.ResponseData = new
+        {
+            model,
+            stream,
+            selection = new { strategy = selStrategy, endpoint_id = selEndpointId, config_id = selConfigId, config_name = selConfigName, app_name = selAppName },
+            timings = new
+            {
+                request_received_at = record.RequestReceivedAt,
+                model_call_started_at = record.ModelCallStartedAt,
+                model_response_started_at = record.ModelResponseStartedAt,
+                model_response_ended_at = record.ModelResponseEndedAt
+            }
+        };
+        await _llmPoolService.UpdateCallRecordAsync(record);
     }
 }

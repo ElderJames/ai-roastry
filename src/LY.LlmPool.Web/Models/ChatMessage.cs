@@ -8,7 +8,7 @@ public class ChatMessage
     public string Content { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
     public bool IsStreaming { get; set; }
-    public List<Tool>? Tools { get; set; }
+    public List<OpenAITool>? Tools { get; set; }
     public Dictionary<string, object>? ToolChoice { get; set; }
     
     /// <summary>
@@ -17,10 +17,4 @@ public class ChatMessage
     /// </summary>
     public ChatMessageContentItemCollection? ContentItems { get; set; }
 }
-
-public class Tool
-{
-    public string Name { get; set; } = string.Empty;
-    public string? Description { get; set; }
-    public Dictionary<string, object> InputSchema { get; set; } = new();
-} 
+ 

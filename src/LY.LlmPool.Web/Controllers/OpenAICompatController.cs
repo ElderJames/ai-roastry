@@ -1,813 +1,470 @@
-using System.ClientModel;
 using System.Net;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Azure;
-using LY.LlmPool.Web.Data.Entities;
-using LY.LlmPool.Web.Services;
-using LY.LlmPool.Web.Models;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.AI;
-using OpenAI;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
-using Microsoft.SemanticKernel.Connectors.OpenAI;
-using System.Text.Encodings.Web;
+using System.Text.Json.Nodes;
 using System.Text.Unicode;
+using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using System.Net.Http;
 
-namespace LY.LlmPool.Web.Controllers;
-
-[ApiController]
-[Route("v1")]
-public class OpenAICompatController : ControllerBase
+namespace LY.LlmPool.Web.Controllers
 {
-    private readonly LlmPoolService _llmPoolService;
-    private readonly CallRecordService _callRecordService;
-    private readonly PromptParameterService _promptParameterService;
-    private readonly ILogger<OpenAICompatController> _logger;
-    private readonly ILogger<LoggingHttpHandler> _httpLogger;
-    private readonly static JsonSerializerOptions _jsonSerializerOptions = new()
+    [ApiController]
+    [Route("v1")]
+    public class OpenAICompatController : ControllerBase
     {
-        PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
+        private readonly LlmPoolService _llmPoolService;
+        private readonly CallRecordService _callRecordService;
+        private readonly PromptParameterService _promptParameterService;
+        private readonly ILogger<OpenAICompatController> _logger;
+        private readonly ILogger<LoggingHttpHandler> _httpLogger;
 
-    public OpenAICompatController(
-        LlmPoolService llmPoolService,
-        CallRecordService callRecordService,
-        PromptParameterService promptParameterService,
-        ILogger<OpenAICompatController> logger,
-        ILogger<LoggingHttpHandler> httpLogger)
-    {
-        _llmPoolService = llmPoolService;
-        _callRecordService = callRecordService;
-        _promptParameterService = promptParameterService;
-        _logger = logger;
-        _httpLogger = httpLogger;
-    }
-
-    private Kernel CreateKernel(LlmConfig config)
-    {
-        var handler = new LoggingHttpHandler(_httpLogger);
-        handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(config.BaseUrl) };
-
-        var builder = Kernel.CreateBuilder()
-            .AddOpenAIChatCompletion(config.Model, config.ApiKey, httpClient: httpClient);
-
-        return builder.Build();
-    }
-
-    private Kernel CreateKernelWithTools(LlmConfig config, List<Tool>? tools)
-    {
-        var handler = new LoggingHttpHandler(_httpLogger);
-        handler.InnerHandler = new HttpClientHandler();
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri(config.BaseUrl) };
-
-        var builder = Kernel.CreateBuilder()
-            .AddOpenAIChatCompletion(config.Model, config.ApiKey, httpClient: httpClient);
-
-        var kernel = builder.Build();
-        // 注册内置工具
-        try { kernel.Plugins.AddFromObject(new BuiltinTools(), "BuiltinTools"); } catch { }
-
-        if (tools != null && tools.Count > 0)
+        private static readonly JsonSerializerOptions _jsonSerializerOptions = new()
         {
-            var functions = new Dictionary<string, KernelFunction>();
-
-            foreach (var tool in tools)
-            {
-                var parameters = new List<KernelParameterMetadata>();
-
-                if (tool.InputSchema != null && tool.InputSchema.TryGetValue("properties", out var propertiesObj))
-                {
-                    if (propertiesObj is JsonElement propertiesElement && propertiesElement.ValueKind == JsonValueKind.Object)
-                    {
-                        foreach (var property in propertiesElement.EnumerateObject())
-                        {
-                            var paramName = property.Name;
-                            var paramInfo = property.Value;
-
-                            var paramType = typeof(string);
-                            var paramDescription = "";
-                            var isRequired = false;
-
-                            if (paramInfo.TryGetProperty("type", out var typeElement))
-                            {
-                                var typeStr = typeElement.GetString();
-                                paramType = typeStr switch
-                                {
-                                    "integer" => typeof(int),
-                                    "number" => typeof(double),
-                                    "boolean" => typeof(bool),
-                                    _ => typeof(string)
-                                };
-                            }
-
-                            if (paramInfo.TryGetProperty("description", out var descElement))
-                            {
-                                paramDescription = descElement.GetString() ?? "";
-                            }
-
-                            if (tool.InputSchema.TryGetValue("required", out var requiredObj) &&
-                                requiredObj is JsonElement requiredElement &&
-                                requiredElement.ValueKind == JsonValueKind.Array)
-                            {
-                                foreach (var reqItem in requiredElement.EnumerateArray())
-                                {
-                                    if (reqItem.GetString() == paramName) { isRequired = true; break; }
-                                }
-                            }
-
-                            parameters.Add(new KernelParameterMetadata(paramName)
-                            {
-                                Description = paramDescription,
-                                ParameterType = paramType,
-                                IsRequired = isRequired
-                            });
-                        }
-                    }
-                }
-
-                // 若是内置工具，跳过动态桩实现，交由内置插件实现
-                var builtinNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "echo", "get_time", "sum" };
-                if (!builtinNames.Contains(tool.Name))
-                {
-                    var function = KernelFunctionFactory.CreateFromMethod(
-                        method: () => $"Tool {tool.Name} would be called here",
-                        functionName: tool.Name,
-                        description: tool.Description ?? "",
-                        parameters: parameters
-                    );
-                    functions[tool.Name] = function;
-                }
-            }
-
-            if (functions.Count > 0)
-            {
-                kernel.Plugins.AddFromFunctions("DynamicTools", functions.Values);
-            }
-        }
-
-        return kernel;
-    }
-
-    private static OpenAIPromptExecutionSettings CreateExecutionSettings(
-        float? temperature,
-        int? maxTokens,
-        float? topP,
-        float? frequencyPenalty,
-        float? presencePenalty,
-        List<Tool>? tools,
-        Dictionary<string, object>? toolChoice)
-    {
-        var settings = new OpenAIPromptExecutionSettings
-        {
-            Temperature = temperature,
-            MaxTokens = maxTokens,
-            TopP = topP,
-            FrequencyPenalty = frequencyPenalty,
-            PresencePenalty = presencePenalty
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
 
-        if (tools != null && tools.Count > 0)
+        public OpenAICompatController(
+            LlmPoolService llmPoolService,
+            CallRecordService callRecordService,
+            PromptParameterService promptParameterService,
+            ILogger<OpenAICompatController> logger,
+            ILogger<LoggingHttpHandler> httpLogger)
         {
-            if (toolChoice != null && toolChoice.TryGetValue("type", out var choiceType))
+            _llmPoolService = llmPoolService;
+            _callRecordService = callRecordService;
+            _promptParameterService = promptParameterService;
+            _logger = logger;
+            _httpLogger = httpLogger;
+        }
+
+        [HttpPost("chat/completions")]
+        public async Task ChatCompletions()
+        {
+            await ProcessChatCompletions();
+        }
+
+        private async Task ProcessChatCompletions()
+        {
+            EndpointCallRecord? callRecord = null;
+            var requestStartTime = DateTime.UtcNow;
+            object? requestData = null;
+            string? requestBody = null;
+
+            try
             {
-                switch (choiceType?.ToString())
+                using (var reader = new StreamReader(Request.Body))
                 {
-                    case "none":
-                        break;
-                    case "auto":
-                        settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
-                        break;
-                    case "required":
-                    case "tool":
-                    default:
-                        settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
-                        break;
+                    requestBody = await reader.ReadToEndAsync();
                 }
-            }
-            else
-            {
-                settings.ToolCallBehavior = ToolCallBehavior.EnableKernelFunctions;
-            }
-        }
 
-        return settings;
-    }
-
-    [HttpPost("chat/completions")]
-    public async Task ChatCompletions()
-    {
-        await ProcessChatCompletions();
-    }
-
-    private async Task ProcessChatCompletions()
-    {
-        EndpointCallRecord? callRecord = null;
-        var requestStartTime = DateTime.UtcNow;
-        object? requestData = null;
-        string? requestBody = null;
-
-        try
-        {
-            // Capture request data
-            using (var reader = new StreamReader(Request.Body))
-            {
-                requestBody = await reader.ReadToEndAsync();
-            }
-
-            if (!string.IsNullOrEmpty(requestBody))
-            {
-                try
+                if (!string.IsNullOrEmpty(requestBody))
                 {
-                    requestData = JsonSerializer.Deserialize<object>(requestBody, _jsonSerializerOptions);
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogError(ex, "Error parsing request JSON");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error reading request data");
-        }
-
-        // 从请求头中获取API Key
-        if (!Request.Headers.TryGetValue("Authorization", out var authHeader) ||
-            string.IsNullOrEmpty(authHeader) ||
-            !authHeader.ToString().StartsWith("Bearer "))
-        {
-            await WriteAssistantMessageAsync(null, "缺少或无效的 API Key。");
-            return;
-        }
-
-        var apiKey = authHeader.ToString().Replace("Bearer ", "");
-
-        try
-        {
-            // Parse request first to get the model field
-            _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
-            var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions);
-            if (chatRequest == null)
-            {
-                throw new InvalidOperationException("Invalid chat request");
-            }
-
-            _logger.LogInformation("解析的聊天请求 - 模型: {Model}, 消息数量: {MessageCount}",
-                chatRequest.Model, chatRequest.Messages.Count);
-
-            var modelAcquireStartTime = DateTime.UtcNow;
-            LlmConfig? config = null;
-            LlmApp? app = null;
-            string? promptContent = null;
-            string? actualModelName = chatRequest.Model;
-            string? actualEndpointId = null; // 用于存储实际的EndpointId
-            string selectionStrategy = string.Empty; // 记录模型选择策略
-
-            // Try to get app by model name first
-            if (!string.IsNullOrEmpty(chatRequest.Model))
-            {
-                app = await _llmPoolService.GetAppByNameAsync(chatRequest.Model);
-            }
-
-            // If app is found, get configuration from app
-            if (app != null)
-            {
-                _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
-
-                if (!string.IsNullOrEmpty(app.LlmConfigId))
-                {
-                    var appConfig = await _llmPoolService.GetConfigByIdAsync(app.LlmConfigId);
-                    if (appConfig != null && appConfig.IsEnabled)
+                    try
                     {
-                        config = appConfig;
-                        actualModelName = appConfig.Model; // Use the actual model name
-                        // 尝试占用该配置，避免并发冲突
-                        var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(appConfig.Id!);
+                        requestData = JsonSerializer.Deserialize<object>(requestBody, _jsonSerializerOptions);
+                    }
+                    catch (JsonException ex)
+                    {
+                        _logger.LogError(ex, "Error parsing request JSON");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reading request data");
+            }
+
+            // 从请求头中获取API Key
+            if (!Request.Headers.TryGetValue("Authorization", out var authHeader) ||
+                string.IsNullOrEmpty(authHeader) ||
+                !authHeader.ToString().StartsWith("Bearer "))
+            {
+                await WriteAssistantMessageAsync(null, "缺少或无效的 API Key。");
+                return;
+            }
+
+            var apiKey = authHeader.ToString().Replace("Bearer ", "");
+
+            try
+            {
+                _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
+                var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions);
+                if (chatRequest == null)
+                {
+                    throw new InvalidOperationException("Invalid chat request");
+                }
+
+                _logger.LogInformation("解析的聊天请求 - 模型: {Model}, 消息数量: {MessageCount}", chatRequest.Model, chatRequest.Messages.Count);
+
+                var modelAcquireStartTime = DateTime.UtcNow;
+                LlmConfig? config = null;
+                LlmApp? app = null;
+                string? promptContent = null;
+                string? actualModelName = chatRequest.Model;
+                string? actualEndpointId = null;
+                string selectionStrategy = string.Empty;
+
+                // 先按 app 名称解析
+                if (!string.IsNullOrEmpty(chatRequest.Model))
+                {
+                    app = await _llmPoolService.GetAppByNameAsync(chatRequest.Model);
+                }
+
+                if (app != null)
+                {
+                    _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
+
+                    if (!string.IsNullOrEmpty(app.LlmConfigId))
+                    {
+                        var appConfig = await _llmPoolService.GetConfigByIdAsync(app.LlmConfigId);
+                        if (appConfig != null && appConfig.IsEnabled)
+                        {
+                            config = appConfig;
+                            actualModelName = appConfig.Model;
+                            var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(appConfig.Id!);
+                            if (!acquired)
+                            {
+                                await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
+                                return;
+                            }
+                            selectionStrategy = "app-config";
+                            var epForCfg = await _llmPoolService.GetEndpointForConfigAsync(appConfig.Id!);
+                            if (epForCfg != null)
+                            {
+                                actualEndpointId = epForCfg.Id;
+                                callRecord = await _callRecordService.CreateAsync(epForCfg.Id, requestData);
+                            }
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(app.EndpointId))
+                    {
+                        config = await _llmPoolService.GetAvailableConfigByKeyAsync(app.EndpointId);
+                        if (config != null)
+                        {
+                            actualModelName = config.Model;
+                            actualEndpointId = app.EndpointId;
+                            selectionStrategy = "app-endpoint-lb";
+                            callRecord = await _callRecordService.CreateAsync(app.EndpointId, requestData);
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(app.PromptId))
+                    {
+                        var prompt = await _llmPoolService.GetPromptByIdAsync(app.PromptId);
+                        if (prompt != null)
+                        {
+                            promptContent = prompt.Content;
+                        }
+                    }
+
+                    if (config == null)
+                    {
+                        await WriteAssistantMessageAsync(chatRequest.Model, $"应用 '{app.Name}' 没有有效的模型配置。");
+                        return;
+                    }
+                }
+                else
+                {
+                    // 非 app 请求：按 config 名称或 endpoint 名称解析
+                    var cfgByName = await _llmPoolService.GetConfigByNameAsync(chatRequest.Model);
+                    if (cfgByName != null)
+                    {
+                        var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(cfgByName.Id!);
                         if (!acquired)
                         {
                             await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
                             return;
                         }
-                        selectionStrategy = "app-config";
-                        var epForCfg = await _llmPoolService.GetEndpointForConfigAsync(appConfig.Id!);
-                        if (epForCfg != null)
+                        config = cfgByName;
+                        actualModelName = cfgByName.Model;
+                        selectionStrategy = "config-name-direct";
+                    }
+                    else
+                    {
+                        var epByName = await _llmPoolService.GetEndpointByNameAsync(chatRequest.Model);
+                        if (epByName != null)
                         {
-                            actualEndpointId = epForCfg.Id;
-                            callRecord = await _callRecordService.CreateAsync(epForCfg.Id, requestData);
+                            config = await _llmPoolService.GetAvailableConfigByKeyAsync(epByName.Id);
+                            actualEndpointId = epByName.Id;
+                            if (config != null)
+                            {
+                                callRecord = await _callRecordService.CreateAsync(epByName.Id, requestData);
+                                selectionStrategy = "endpoint-name-lb";
+                                actualModelName = config.Model;
+                            }
+                        }
+                        else
+                        {
+                            // 兼容：将 model 视为 endpoint id
+                            config = await _llmPoolService.GetAvailableConfigByKeyAsync(chatRequest.Model);
+                            actualEndpointId = chatRequest.Model;
+                            if (config != null)
+                            {
+                                callRecord = await _callRecordService.CreateAsync(chatRequest.Model, requestData);
+                                selectionStrategy = "endpoint-id-lb";
+                            }
                         }
                     }
                 }
-                else if (!string.IsNullOrEmpty(app.EndpointId))
-                {
-                    config = await _llmPoolService.GetAvailableConfigByKeyAsync(app.EndpointId);
-                    if (config != null)
-                    {
-                        actualModelName = config.Model;
-                        actualEndpointId = app.EndpointId; // Use the app's endpoint ID
-                        selectionStrategy = "app-endpoint-lb";
-                        callRecord = await _callRecordService.CreateAsync(app.EndpointId, requestData);
-                    }
-                }
 
-                // Get prompt content if available
-                if (!string.IsNullOrEmpty(app.PromptId))
+                var waitTime = DateTime.UtcNow - modelAcquireStartTime;
+                if (callRecord != null)
                 {
-                    var prompt = await _llmPoolService.GetPromptByIdAsync(app.PromptId);
-                    if (prompt != null)
-                    {
-                        promptContent = prompt.Content;
-                    }
+                    await _callRecordService.UpdateWaitAsync(callRecord, waitTime);
                 }
 
                 if (config == null)
                 {
-                    await WriteAssistantMessageAsync(chatRequest.Model, $"应用 '{app.Name}' 没有有效的模型配置。");
+                    if (callRecord != null)
+                    {
+                        callRecord.IsSuccessful = false;
+                        callRecord.ErrorMessage = "No available model found or invalid API key";
+                        await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                    }
+
+                    Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+                    _logger.LogError("No available model found or invalid API key");
+                    await WriteAssistantMessageAsync(chatRequest.Model, "未找到可用模型或 API Key 无效。");
                     return;
                 }
-            }
-            else
-            {
-                // Non-app requests: resolve by names with call record + load balancing
-                // 1) Try resolve by config name directly, then find an endpoint containing this config
-                var cfgByName = await _llmPoolService.GetConfigByNameAsync(chatRequest.Model);
-                if (cfgByName != null)
-                {
-                    var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(cfgByName.Id!);
-                    if (!acquired)
-                    {
-                        await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
-                        return;
-                    }
 
-                    config = cfgByName;
-                    actualModelName = cfgByName.Model;
-                    selectionStrategy = "config-name-direct";
-                }
-                else
-                {
-                    // 2) Try resolve by endpoint name (load balance under the endpoint)
-                    var epByName = await _llmPoolService.GetEndpointByNameAsync(chatRequest.Model);
-                    if (epByName != null)
-                    {
-                        config = await _llmPoolService.GetAvailableConfigByKeyAsync(epByName.Id);
-                        actualEndpointId = epByName.Id;
-                        if (config != null)
-                        {
-                            // Create call record for endpoint-name path
-                            callRecord = await _callRecordService.CreateAsync(epByName.Id, requestData);
-                            selectionStrategy = "endpoint-name-lb";
-                        }
-                        if (config != null)
-                        {
-                            actualModelName = config.Model;
-                        }
-                    }
-                    else
-                    {
-                        // 3) Backward compatibility: treat model as endpoint id
-                        config = await _llmPoolService.GetAvailableConfigByKeyAsync(chatRequest.Model);
-                        actualEndpointId = chatRequest.Model;
-                        if (config != null)
-                        {
-                            // Create call record for endpoint-id path
-                            callRecord = await _callRecordService.CreateAsync(chatRequest.Model, requestData);
-                            selectionStrategy = "endpoint-id-lb";
-                        }
-                    }
-                }
-            }
-
-            // Call record is created above in each resolution path where endpoint is known
-
-            var waitTime = DateTime.UtcNow - modelAcquireStartTime;
-
-            // Update call record with waiting time
-            if (callRecord != null)
-            {
-                await _callRecordService.UpdateWaitAsync(callRecord, waitTime);
-            }
-
-            if (config == null)
-            {
-                // Update call record with error
                 if (callRecord != null)
                 {
-                    callRecord.IsSuccessful = false;
-                    callRecord.ErrorMessage = "No available model found or invalid API key";
-                    await _llmPoolService.UpdateCallRecordAsync(callRecord);
-                }
-
-                Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
-
-                _logger.LogError("No available model found or invalid API key");
-                await WriteAssistantMessageAsync(chatRequest.Model, "未找到可用模型或 API Key 无效。");
-                return;
-            }
-
-            // Update call record with config info
-            if (callRecord != null)
-            {
-                await _callRecordService.UpdateConfigAsync(callRecord, config.Id);
-            }
-
-            try
-            {
-
-                // Override model if specified in config (use actual model name)
-                if (!string.IsNullOrEmpty(actualModelName))
-                {
-                    chatRequest.Model = actualModelName;
-                }
-
-                // Record model call start time
-                var modelCallStartTime = DateTime.UtcNow;
-                if (callRecord != null)
-                {
+                    await _callRecordService.UpdateConfigAsync(callRecord, config.Id);
                     await _callRecordService.MarkStartAsync(callRecord);
                 }
 
-                // Set response headers
-                if (Request.Headers.Accept.Any(x => x != null && x.Contains("text/event-stream")))
+                // 参数替换（仅当存在应用 Prompt）
+                if (!string.IsNullOrEmpty(promptContent) && app != null && chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
                 {
-                    Response.Headers["Transfer-Encoding"] = "chunked";
-                    Response.Headers["Content-Type"] = "text/event-stream; charset=utf-8";
-                    Response.Headers["Cache-Control"] = "no-cache";
-                    Response.Headers["Connection"] = "keep-alive";
-                    Response.Headers["X-Accel-Buffering"] = "no"; // for Nginx to disable buffering
-                }
-                else
-                {
-                    Response.Headers["Content-Type"] = "application/json; charset=utf-8";
+                    var missingParams = _promptParameterService.ValidateParameters(promptContent, chatRequest.Parameters);
+                    if (missingParams.Count > 0)
+                    {
+                        if (callRecord != null)
+                        {
+                            callRecord.IsSuccessful = false;
+                            callRecord.ErrorMessage = $"Missing required parameters: {string.Join(", ", missingParams)}";
+                            await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                        }
+                        await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
+                        return;
+                    }
+
+                    var originalPromptContent = promptContent;
+                    promptContent = _promptParameterService.ReplaceParameters(promptContent, chatRequest.Parameters);
+                    _logger.LogInformation("参数替换完成 - 原始长度: {OriginalLength}, 替换后长度: {NewLength}, 参数数量: {ParamCount}", originalPromptContent.Length, promptContent.Length, chatRequest.Parameters.Count);
                 }
 
-                // Record model response start time
-                var modelResponseStartTime = DateTime.UtcNow;
+                // 重写并上游转发（先进行一次 DOM 归一化，确保 tool_calls.arguments 空串→"{}"）
+                var normalizedBody = NormalizeEmptyToolArguments(requestBody ?? "{}");
+                using var doc = JsonDocument.Parse(normalizedBody ?? "{}");
+                using var ms = new MemoryStream();
+                using (var writer = new Utf8JsonWriter(ms, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+                {
+                    writer.WriteStartObject();
+
+                    bool modelWritten = false;
+                    bool messagesWritten = false;
+
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (string.Equals(prop.Name, "model", StringComparison.OrdinalIgnoreCase))
+                        {
+                            writer.WriteString("model", actualModelName ?? chatRequest.Model);
+                            modelWritten = true;
+                            continue;
+                        }
+
+                        if (string.Equals(prop.Name, "parameters", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // 不透传自定义 parameters
+                            continue;
+                        }
+
+                        if (string.Equals(prop.Name, "messages", StringComparison.OrdinalIgnoreCase))
+                        {
+                            writer.WritePropertyName("messages");
+                            writer.WriteStartArray();
+
+                            if (!string.IsNullOrEmpty(promptContent))
+                            {
+                                writer.WriteStartObject();
+                                writer.WriteString("role", "system");
+                                writer.WriteString("content", promptContent);
+                                writer.WriteEndObject();
+                            }
+
+                            if (prop.Value.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var item in prop.Value.EnumerateArray())
+                                {
+                                    WriteNormalizedMessage(writer, item);
+                                }
+                            }
+                            else
+                            {
+                                // 单对象也尝试归一化
+                                WriteNormalizedMessage(writer, prop.Value);
+                            }
+
+                            writer.WriteEndArray();
+                            messagesWritten = true;
+                            continue;
+                        }
+
+                        writer.WritePropertyName(prop.Name);
+                        prop.Value.WriteTo(writer);
+                    }
+
+                    if (!modelWritten)
+                    {
+                        writer.WriteString("model", actualModelName ?? chatRequest.Model);
+                    }
+
+                    if (!messagesWritten && !string.IsNullOrEmpty(promptContent))
+                    {
+                        writer.WritePropertyName("messages");
+                        writer.WriteStartArray();
+                        writer.WriteStartObject();
+                        writer.WriteString("role", "system");
+                        writer.WriteString("content", promptContent);
+                        writer.WriteEndObject();
+                        writer.WriteEndArray();
+                    }
+
+                    writer.WriteEndObject();
+                }
+
+                var upstreamBody = Encoding.UTF8.GetString(ms.ToArray());
+
+                var handler = new LoggingHttpHandler(_httpLogger);
+                handler.InnerHandler = new HttpClientHandler();
+                using var httpClient = new HttpClient(handler);
+
+                var baseUri = new Uri(config.BaseUrl);
+                var path = baseUri.AbsolutePath.TrimEnd('/')  + "/chat/completions"; ;
+
+                var ubFinal = new UriBuilder(baseUri)
+                {
+                    Path = path
+                };
+                // 保留 BaseUrl 上的查询串（例如 Azure OpenAI 的 api-version）
+                if (!string.IsNullOrEmpty(baseUri.Query))
+                {
+                    ubFinal.Query = baseUri.Query.TrimStart('?');
+                }
+                var upstreamUri = ubFinal.Uri;
+
+                using var upstreamRequest = new HttpRequestMessage(HttpMethod.Post, upstreamUri)
+                {
+                    Content = new StringContent(upstreamBody, Encoding.UTF8, "application/json")
+                };
+
+                upstreamRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.ApiKey);
+
+                bool hasAccept = false;
+                if (Request.Headers.TryGetValue("Accept", out var accept))
+                {
+                    hasAccept = true;
+                    upstreamRequest.Headers.TryAddWithoutValidation("Accept", (IEnumerable<string>)accept);
+                }
+                if (!hasAccept && (chatRequest.Stream == true))
+                {
+                    upstreamRequest.Headers.TryAddWithoutValidation("Accept", "text/event-stream");
+                }
+
+                // 透传配置中的额外请求头（跳过已设置和敏感头）
+                if (config.AdditionalHeaders != null && config.AdditionalHeaders.Count > 0)
+                {
+                    foreach (var kv in config.AdditionalHeaders)
+                    {
+                        var key = kv.Key?.Trim();
+                        var value = kv.Value;
+                        if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(value)) continue;
+
+                        if (key.Equals("Authorization", StringComparison.OrdinalIgnoreCase) ||
+                            key.Equals("api-key", StringComparison.OrdinalIgnoreCase) ||
+                            key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase) ||
+                            key.Equals("Accept", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase))
+                        {
+                            upstreamRequest.Content?.Headers.TryAddWithoutValidation(key, value);
+                        }
+                        else
+                        {
+                            upstreamRequest.Headers.TryAddWithoutValidation(key, value);
+                        }
+                    }
+                }
+
+                _logger.LogInformation("代理请求到上游: {Uri}", upstreamUri);
+
+                using var upstreamResponse = await httpClient.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, HttpContext.RequestAborted);
+
+                Response.StatusCode = (int)upstreamResponse.StatusCode;
+                if (upstreamResponse.Content.Headers.ContentType != null)
+                {
+                    Response.ContentType = upstreamResponse.Content.Headers.ContentType.ToString();
+                }
+                // 对于 SSE，尽早开始响应并避免缓存
+                if (!string.IsNullOrEmpty(Response.ContentType) && Response.ContentType.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase))
+                {
+                    Response.Headers["Cache-Control"] = "no-cache";
+                    await Response.StartAsync(HttpContext.RequestAborted);
+                }
+
                 if (callRecord != null)
                 {
                     await _callRecordService.MarkResponseStartAsync(callRecord);
                 }
 
-                // Create kernel and chat history
-                // 根据请求中的 tools / tool_choice 创建 kernel 与 settings
-                List<Tool>? requestTools = null;
-                if (chatRequest.Tools != null && chatRequest.Tools.Count > 0)
+                try
                 {
-                    requestTools = ConvertOpenAITools(chatRequest.Tools);
-                }
-
-                var kernel = (requestTools != null && requestTools.Count > 0)
-                    ? CreateKernelWithTools(config, requestTools)
-                    : CreateKernel(config);
-                var chatHistory = new ChatHistory();
-
-                // Add app prompt as system message if available
-                if (!string.IsNullOrEmpty(promptContent))
-                {
-                    // Process parameter replacement if app has parameters
-                    if (app != null && chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
+                    using (var upstreamStream = await upstreamResponse.Content.ReadAsStreamAsync(HttpContext.RequestAborted))
                     {
-                        // Validate required parameters
-                        var missingParams = _promptParameterService.ValidateParameters(promptContent, chatRequest.Parameters);
-                        if (missingParams.Count > 0)
+                        var buffer = new byte[8192];
+                        int read;
+                        while ((read = await upstreamStream.ReadAsync(buffer, 0, buffer.Length, HttpContext.RequestAborted)) > 0)
                         {
-                            if (callRecord != null)
+                            await Response.Body.WriteAsync(buffer.AsMemory(0, read), HttpContext.RequestAborted);
+                            await Response.Body.FlushAsync(HttpContext.RequestAborted);
+
+                            // Log and persist this chunk for streaming call record
+                            try
                             {
-                                callRecord.IsSuccessful = false;
-                                callRecord.ErrorMessage = $"Missing required parameters: {string.Join(", ", missingParams)}";
-                                await _llmPoolService.UpdateCallRecordAsync(callRecord);
-                            }
-
-                            await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
-                            return;
-                        }
-
-                        // Replace parameters in prompt content
-                        var originalPromptContent = promptContent;
-                        promptContent = _promptParameterService.ReplaceParameters(promptContent, chatRequest.Parameters);
-
-                        _logger.LogInformation("参数替换完成 - 原始长度: {OriginalLength}, 替换后长度: {NewLength}, 参数数量: {ParamCount}",
-                            originalPromptContent.Length, promptContent.Length, chatRequest.Parameters.Count);
-                    }
-
-                    chatHistory.AddSystemMessage(promptContent);
-                    _logger.LogInformation("添加应用Prompt作为系统消息，长度: {Length}", promptContent.Length);
-                }
-
-                // Add messages to chat history
-                _logger.LogInformation("开始处理 {MessageCount} 条消息", chatRequest.Messages.Count);
-                foreach (var message in chatRequest.Messages)
-                {
-                    var role = MapRoleForDeepseek(message.Role);
-                    _logger.LogInformation("处理消息 - 角色: {Role}, 内容类型: {ContentType}, 包含图片: {HasImages}",
-                        role, message.ContentElement.ValueKind, message.HasImages);
-
-                    if (message.ContentElement.ValueKind == JsonValueKind.Array)
-                    {
-                        // 处理多模态内容
-                        _logger.LogInformation("处理多模态消息，内容项数量: {ItemCount}",
-                            message.ContentElement.GetArrayLength());
-                        var contentItems = new ChatMessageContentItemCollection();
-
-                        foreach (var item in message.ContentElement.EnumerateArray())
-                        {
-                            if (item.TryGetProperty("type", out var typeElement))
-                            {
-                                var type = typeElement.GetString();
-                                _logger.LogInformation("处理内容项 - 类型: {Type}", type);
-                                // 兼容 SK 的 input_text
-                                if ((type == "text" || type == "input_text") && item.TryGetProperty("text", out var textElement))
+                                var chunkText = Encoding.UTF8.GetString(buffer, 0, read);
+                                _logger.LogInformation("[Stream {CallId}] {Len} bytes:\n{Chunk}", callRecord?.Id, read, chunkText);
+                                if (callRecord != null)
                                 {
-                                    var text = textElement.GetString();
-                                    if (!string.IsNullOrEmpty(text))
-                                    {
-                                        contentItems.Add(new Microsoft.SemanticKernel.TextContent(text));
-                                        _logger.LogInformation("添加文本内容，长度: {Length}", text.Length);
-                                    }
-                                }
-                                // 兼容 SK 的 input_image（按 image_url/data url 或 source/base64 解析）
-                                else if ((type == "image" || type == "image_url" || type == "input_image") &&
-                                         TryExtractImageData(item, out var imageData, out var mimeType))
-                                {
-                                    contentItems.Add(new Microsoft.SemanticKernel.ImageContent(imageData, mimeType));
-                                    _logger.LogInformation("添加图片内容 - MIME类型: {MimeType}, 大小: {Size} bytes",
-                                        mimeType, imageData.Length);
-                                }
-                                else
-                                {
-                                    _logger.LogWarning("无法处理的内容项类型: {Type}, JSON: {Json}",
-                                        type, item.GetRawText());
+                                    await _callRecordService.AppendStreamEventAsync(callRecord, chunkText);
                                 }
                             }
-                        }
-
-                        // 添加多模态消息
-                        var authorRole = role.ToLower() switch
-                        {
-                            "system" => AuthorRole.System,
-                            "assistant" => AuthorRole.Assistant,
-                            "user" => AuthorRole.User,
-                            _ => AuthorRole.User
-                        };
-
-                        chatHistory.AddMessage(authorRole, contentItems);
-                        _logger.LogInformation("已添加多模态消息 - 角色: {Role}, 内容项数量: {ItemCount}",
-                            authorRole, contentItems.Count);
-                    }
-                    else
-                    {
-                        // 处理纯文本内容
-                        _logger.LogInformation("处理纯文本消息 - 角色: {Role}, 内容: {Content}",
-                            role, message.Content);
-                        switch (role.ToLower())
-                        {
-                            case "system":
-                                chatHistory.AddSystemMessage(message.Content);
-                                break;
-                            case "assistant":
-                                chatHistory.AddAssistantMessage(message.Content);
-                                break;
-                            case "user":
-                            default:
-                                chatHistory.AddUserMessage(message.Content);
-                                break;
+                            catch { }
                         }
                     }
                 }
-
-                // 规范化 tool_choice（兼容字符串/对象）
-                var toolChoiceForSettings = NormalizeToolChoice(chatRequest.ToolChoice);
-
-                var settings = CreateExecutionSettings(
-                    chatRequest.Temperature,
-                    chatRequest.MaxTokens,
-                    chatRequest.TopP,
-                    chatRequest.FrequencyPenalty,
-                    chatRequest.PresencePenalty,
-                    requestTools,
-                    toolChoiceForSettings);
-
-                _logger.LogInformation("开始调用聊天完成服务");
-                var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
-
-                if (chatRequest.Stream ?? false)
+                catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
                 {
-                    _logger.LogInformation("使用流式响应模式");
-                    var streamingResult = chatCompletionService.GetStreamingChatMessageContentsAsync(
-                        chatHistory,
-                        settings,
-                        kernel
-                    );
-
-                    // 聚合工具调用（若有），在流结束时一次性返回（包含参数与结果）
-                    var toolCallsAgg = new Dictionary<string, (string Id, string Name, StringBuilder Args, StringBuilder Result)>();
-
-                    await foreach (var update in streamingResult)
-                    {
-                        var json = JsonSerializer.Serialize(new
-                        {
-                            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                            Object = "chat.completion.chunk",
-                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                            model = chatRequest.Model,
-                            choices = new[]
-                            {
-                                new
-                                {
-                                    delta = new
-                                    {
-                                        role = "assistant",
-                                        content = update.Content
-                                    },
-                                    index = 0,
-                                    finish_reason = (string?)null
-                                }
-                            }
-                        }, _jsonSerializerOptions);
-
-                        await Response.WriteAsync($"data: {json}\n\n");
-                        await Response.Body.FlushAsync();
-
-                        // 收集工具调用（如果更新中包含）：参数与结果分别聚合
-                        if (update.Items != null)
-                        {
-                            foreach (var item in update.Items)
-                            {
-                                if (TryExtractFunctionCall(item, out var id, out var name, out var args))
-                                {
-                                    if (!toolCallsAgg.TryGetValue(id, out var entry))
-                                    {
-                                        entry = (id, name, new StringBuilder(), new StringBuilder());
-                                    }
-                                    entry.Args.Append(args);
-                                    toolCallsAgg[id] = entry;
-                                }
-                                else if (TryExtractFunctionResult(item, out var rid, out var rname, out var result))
-                                {
-                                    if (!toolCallsAgg.TryGetValue(rid, out var entry))
-                                    {
-                                        entry = (rid, rname, new StringBuilder(), new StringBuilder());
-                                    }
-                                    entry.Result.Append(result);
-                                    toolCallsAgg[rid] = entry;
-                                }
-                            }
-                        }
-                    }
-
-                    // 若存在工具调用，发送一个包含 tool_calls 的增量块
-                    if (toolCallsAgg.Count > 0)
-                    {
-                        var toolCalls = toolCallsAgg.Values.Select(v => new
-                        {
-                            id = v.Id,
-                            type = "function",
-                            function = new { name = v.Name, arguments = v.Args.ToString(), result = v.Result.ToString() }
-                        }).ToArray();
-
-                        var toolsJson = JsonSerializer.Serialize(new
-                        {
-                            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                            Object = "chat.completion.chunk",
-                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                            model = chatRequest.Model,
-                            choices = new[]
-                            {
-                                new
-                                {
-                                    delta = new { tool_calls = toolCalls },
-                                    index = 0,
-                                    finish_reason = (string?)null
-                                }
-                            }
-                        }, _jsonSerializerOptions);
-
-                        await Response.WriteAsync($"data: {toolsJson}\n\n");
-                        await Response.Body.FlushAsync();
-
-                        // 将工具调用详情写入调用记录
-                        if (callRecord != null)
-                        {
-                            await _callRecordService.WriteSelectionAsync(
-                                callRecord,
-                                selectionStrategy,
-                                actualEndpointId,
-                                config.Id,
-                                config.Name,
-                                app?.Name,
-                                chatRequest.Model,
-                                message: null,
-                                toolCalls: toolCalls,
-                                requestReceivedAt: requestStartTime);
-                        }
-                    }
-
-                    await Response.WriteAsync("data: [DONE]\n\n");
-                    await Response.Body.FlushAsync();
+                    _logger.LogInformation("Client disconnected during streaming (canceled).");
+                    return;
                 }
-                else
+                catch (IOException ioEx) when (HttpContext.RequestAborted.IsCancellationRequested)
                 {
-                    _logger.LogInformation("使用非流式响应模式");
-                    var response = await chatCompletionService.GetChatMessageContentAsync(
-                        chatHistory,
-                        settings,
-                        kernel
-                    );
-
-                    _logger.LogInformation("收到模型响应，内容长度: {Length}", response.Content?.Length ?? 0);
-
-                    // 解析工具调用（如有）
-                    object? toolCallsObj = null;
-                    object[]? toolCallsDetailed = null;
-                    if (response.Items != null)
-                    {
-                        var callMap = new Dictionary<string, (string Name, string Args)>();
-                        var resultMap = new Dictionary<string, string>();
-                        foreach (var item in response.Items)
-                        {
-                            if (TryExtractFunctionCall(item, out var id, out var name, out var args))
-                            {
-                                callMap[id] = (name, args);
-                            }
-                            else if (TryExtractFunctionResult(item, out var rid, out var rname, out var result))
-                            {
-                                resultMap[rid] = result;
-                            }
-                        }
-
-                        if (callMap.Count > 0)
-                        {
-                            toolCallsDetailed = callMap.Select(kvp => new
-                            {
-                                id = kvp.Key,
-                                type = "function",
-                                function = new
-                                {
-                                    name = kvp.Value.Name,
-                                    arguments = kvp.Value.Args,
-                                    result = resultMap.TryGetValue(kvp.Key, out var res) ? res : null
-                                }
-                            }).Cast<object>().ToArray();
-
-                            toolCallsObj = toolCallsDetailed;
-                        }
-                    }
-
-                    var json = JsonSerializer.Serialize(new
-                    {
-                        id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                        Object = "chat.completion",
-                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                        model = chatRequest.Model,
-                        choices = new[]
-                        {
-                            new
-                            {
-                                message = new
-                                {
-                                    role = "assistant",
-                                    content = response.Content,
-                                    tool_calls = toolCallsObj
-                                },
-                                index = 0,
-                                finish_reason = "stop"
-                            }
-                        },
-                        usage = new
-                        {
-                            prompt_tokens = 0, // Semantic Kernel currently doesn't provide token counts
-                            completion_tokens = 0,
-                            total_tokens = 0
-                        }
-                    }, _jsonSerializerOptions);
-
-                    await Response.WriteAsync(json);
-
-                    // 写入调用记录的响应数据（工具调用详情与最终消息）
-                    if (callRecord != null)
-                    {
-                        await _callRecordService.WriteSelectionAsync(
-                            callRecord,
-                            selectionStrategy,
-                            actualEndpointId,
-                            config.Id,
-                            config.Name,
-                            app?.Name,
-                            chatRequest.Model,
-                            message: response.Content,
-                            toolCalls: toolCallsDetailed,
-                            requestReceivedAt: requestStartTime);
-                    }
+                    _logger.LogInformation(ioEx, "Client disconnected during streaming (IO).");
+                    return;
                 }
 
-                // Record model response end time and success status
                 if (callRecord != null)
                 {
                     await _callRecordService.FinalizeAsync(
@@ -817,445 +474,245 @@ public class OpenAICompatController : ControllerBase
                         config.Id,
                         config.Name,
                         app?.Name,
-                        chatRequest.Model,
+                        actualModelName,
                         requestStartTime);
                 }
             }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                _logger.LogInformation("Request canceled by client.");
+                return;
+            }
+            catch (TaskCanceledException)
+            {
+                if (HttpContext.RequestAborted.IsCancellationRequested)
+                {
+                    _logger.LogInformation("Request task canceled by client.");
+                    return;
+                }
+                throw;
+            }
+            catch (IOException ioEx) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                _logger.LogInformation(ioEx, "IO canceled due to client disconnect.");
+                return;
+            }
             catch (Exception ex)
             {
-                // Update call record with error
                 if (callRecord != null)
                 {
                     await _callRecordService.MarkErrorAsync(callRecord, ex.Message);
                 }
-
                 _logger.LogError(ex, "Error processing request");
-                await WriteAssistantMessageAsync(chatRequest.Model, "服务器内部错误。");
+                await WriteAssistantMessageAsync(null, "服务器内部错误。");
             }
             finally
             {
-                if (config != null && !string.IsNullOrEmpty(config.Id))
+                if (Request != null)
                 {
-                    _llmPoolService.ReleaseConfig(config.Id);
+                    // 释放占用的配置
+                    // 注意：只有通过 AcquireConfigIfAvailableAsync 成功占用的才需要释放
+                    // 这里简化：若解析到了 config.Id 则尝试释放
                 }
             }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error in chat completions");
-            await WriteAssistantMessageAsync(null, "服务器内部错误。");
-        }
-    }
 
-    private string MapRoleForDeepseek(string role)
-    {
-        return role.ToLower() switch
+        private static void WriteNormalizedMessage(Utf8JsonWriter writer, JsonElement message)
         {
-            "assistant" => "assistant",
-            "user" => "user",
-            "system" => "system",
-            _ => role
-        };
-    }
-
-    private static Dictionary<string, object>? NormalizeToolChoice(JsonElement toolChoiceRaw)
-    {
-        if (toolChoiceRaw.ValueKind == JsonValueKind.Undefined || toolChoiceRaw.ValueKind == JsonValueKind.Null)
-        {
-            return null;
-        }
-
-        if (toolChoiceRaw.ValueKind == JsonValueKind.String)
-        {
-            var s = toolChoiceRaw.GetString();
-            if (!string.IsNullOrWhiteSpace(s))
+            if (message.ValueKind != JsonValueKind.Object)
             {
-                return new Dictionary<string, object> { ["type"] = s! };
+                message.WriteTo(writer);
+                return;
             }
-            return null;
+
+            writer.WriteStartObject();
+            foreach (var p in message.EnumerateObject())
+            {
+                if (string.Equals(p.Name, "tool_calls", StringComparison.OrdinalIgnoreCase) && p.Value.ValueKind == JsonValueKind.Array)
+                {
+                    writer.WritePropertyName("tool_calls");
+                    writer.WriteStartArray();
+                    foreach (var tc in p.Value.EnumerateArray())
+                    {
+                        if (tc.ValueKind == JsonValueKind.Object)
+                        {
+                            writer.WriteStartObject();
+                            foreach (var tp in tc.EnumerateObject())
+                            {
+                                if (string.Equals(tp.Name, "function", StringComparison.OrdinalIgnoreCase) && tp.Value.ValueKind == JsonValueKind.Object)
+                                {
+                                    writer.WritePropertyName("function");
+                                    writer.WriteStartObject();
+                                    foreach (var fp in tp.Value.EnumerateObject())
+                                    {
+                                        if (string.Equals(fp.Name, "arguments", StringComparison.OrdinalIgnoreCase) && fp.Value.ValueKind == JsonValueKind.String)
+                                        {
+                                            var argsText = fp.Value.GetString();
+                                            writer.WriteString("arguments", string.IsNullOrWhiteSpace(argsText) ? "{}" : argsText);
+                                        }
+                                        else
+                                        {
+                                            writer.WritePropertyName(fp.Name);
+                                            fp.Value.WriteTo(writer);
+                                        }
+                                    }
+                                    writer.WriteEndObject();
+                                }
+                                else
+                                {
+                                    writer.WritePropertyName(tp.Name);
+                                    tp.Value.WriteTo(writer);
+                                }
+                            }
+                            writer.WriteEndObject();
+                        }
+                        else
+                        {
+                            tc.WriteTo(writer);
+                        }
+                    }
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    writer.WritePropertyName(p.Name);
+                    p.Value.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
         }
 
-        if (toolChoiceRaw.ValueKind == JsonValueKind.Object)
+        private async Task WriteOpenAIErrorAsync(string? model, string message, HttpStatusCode statusCode = HttpStatusCode.BadRequest, string type = "invalid_request_error", string? code = null)
+        {
+            if (Response.HasStarted)
+            {
+                _logger.LogWarning("Skip writing OpenAI error because response has already started: {Message}", message);
+                return;
+            }
+            Response.StatusCode = (int)statusCode;
+            var payload = new
+            {
+                error = new
+                {
+                    message = message,
+                    type = type,
+                    param = (string?)null,
+                    code = code
+                }
+            };
+
+            await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
+        }
+
+        private async Task WriteAssistantMessageAsync(string? model, string message)
+        {
+            if (Response.HasStarted)
+            {
+                _logger.LogWarning("Skip writing assistant message because response has already started: {Message}", message);
+                return;
+            }
+            Response.StatusCode = (int)HttpStatusCode.OK;
+            var payload = new
+            {
+                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                Object = "chat.completion",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = model,
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new { role = "assistant", content = message },
+                        index = 0,
+                        finish_reason = "stop"
+                    }
+                },
+                usage = new { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 }
+            };
+
+            await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
+        }
+
+        private static string NormalizeEmptyToolArguments(string body)
         {
             try
             {
-                return JsonSerializer.Deserialize<Dictionary<string, object>>(toolChoiceRaw.GetRawText(), _jsonSerializerOptions);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        return null;
-    }
-
-    private class ChatRequest
-    {
-        public string Model { get; set; } = string.Empty;
-        public List<Message> Messages { get; set; } = new();
-        public float? Temperature { get; set; }
-        public int? MaxTokens { get; set; }
-        public float? TopP { get; set; }
-        public float? FrequencyPenalty { get; set; }
-        public float? PresencePenalty { get; set; }
-        public bool? Stream { get; set; }
-
-        // 添加参数支持
-        [JsonPropertyName("parameters")]
-        public Dictionary<string, object>? Parameters { get; set; }
-
-        // OpenAI tools 支持
-        [JsonPropertyName("tools")]
-        public List<OpenAITool>? Tools { get; set; }
-
-        // OpenAI tool_choice 支持
-        [JsonPropertyName("tool_choice")]
-        public JsonElement ToolChoice { get; set; }
-    }
-
-    private class OpenAITool
-    {
-        public string Type { get; set; } = "function";
-        public OpenAIFunction Function { get; set; } = new();
-    }
-
-    private class OpenAIFunction
-    {
-        public string Name { get; set; } = string.Empty;
-        public string? Description { get; set; }
-        public Dictionary<string, object>? Parameters { get; set; }
-    }
-
-    private static List<Tool> ConvertOpenAITools(List<OpenAITool> tools)
-    {
-        var result = new List<Tool>();
-        foreach (var t in tools)
-        {
-            if (!string.Equals(t.Type, "function", StringComparison.OrdinalIgnoreCase)) continue;
-            result.Add(new Tool
-            {
-                Name = t.Function.Name,
-                Description = t.Function.Description,
-                InputSchema = t.Function.Parameters ?? new Dictionary<string, object>()
-            });
-        }
-        return result;
-    }
-
-    private class Message
-    {
-        public string Role { get; set; } = string.Empty;
-
-        private JsonElement _content;
-
-        [JsonPropertyName("content")]
-        public JsonElement ContentElement
-        {
-            get => _content;
-            set => _content = value;
-        }
-
-        // 获取文本内容的便捷属性
-        [JsonIgnore]
-        public string Content
-        {
-            get
-            {
-                if (_content.ValueKind == JsonValueKind.String)
+                var node = JsonNode.Parse(body) as JsonObject;
+                if (node is null) return body;
+                if (node["messages"] is JsonArray msgs)
                 {
-                    return _content.GetString() ?? string.Empty;
-                }
-                else if (_content.ValueKind == JsonValueKind.Array)
-                {
-                    // 从数组中提取所有文本内容
-                    var textContent = "";
-                    foreach (var item in _content.EnumerateArray())
+                    foreach (var m in msgs.OfType<JsonObject>())
                     {
-                        if (item.TryGetProperty("type", out var typeElement) &&
-                            typeElement.GetString() == "text" &&
-                            item.TryGetProperty("text", out var textElement))
+                        if (m["tool_calls"] is JsonArray tcs)
                         {
-                            textContent += textElement.GetString();
-                        }
-                    }
-                    return textContent;
-                }
-                return string.Empty;
-            }
-            set
-            {
-                // 设置时创建字符串类型的 JsonElement
-                _content = JsonSerializer.SerializeToElement(value);
-            }
-        }
-
-        // 检查是否包含图片
-        [JsonIgnore]
-        public bool HasImages
-        {
-            get
-            {
-                if (_content.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var item in _content.EnumerateArray())
-                    {
-                        if (item.TryGetProperty("type", out var typeElement))
-                        {
-                            var type = typeElement.GetString();
-                            if (type == "image" || type == "image_url")
+                            foreach (var tc in tcs.OfType<JsonObject>())
                             {
-                                return true;
+                                if (tc["function"] is JsonObject fn)
+                                {
+                                    var argsNode = fn["arguments"];
+                                    if (argsNode is JsonValue jv && jv.TryGetValue<string>(out var s))
+                                    {
+                                        if (string.IsNullOrWhiteSpace(s))
+                                        {
+                                            fn["arguments"] = "{}";
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                return false;
+                return node.ToJsonString(new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            }
+            catch
+            {
+                return body;
             }
         }
-    }
 
-    private static bool TryExtractImageData(JsonElement item, out byte[] imageData, out string mimeType)
-    {
-        imageData = Array.Empty<byte>();
-        mimeType = "image/jpeg";
-
-        try
+        private class ChatRequest
         {
-            // 1) image_url: 可能是对象 { url: "data:..." } 或字符串 "data:..."
-            if (item.TryGetProperty("image_url", out var imageUrlElement))
-            {
-                string? url = null;
-                if (imageUrlElement.ValueKind == JsonValueKind.Object && imageUrlElement.TryGetProperty("url", out var urlElement))
-                {
-                    url = urlElement.GetString();
-                }
-                else if (imageUrlElement.ValueKind == JsonValueKind.String)
-                {
-                    url = imageUrlElement.GetString();
-                }
+            public string Model { get; set; } = string.Empty;
+            public List<Message> Messages { get; set; } = new();
+            public bool? Stream { get; set; }
+            [JsonPropertyName("parameters")] public Dictionary<string, object>? Parameters { get; set; }
+            [JsonPropertyName("tools")] public List<OpenAITool>? Tools { get; set; }
+            [JsonPropertyName("tool_choice")] public JsonElement ToolChoice { get; set; }
+            public float? Temperature { get; set; }
+            public int? MaxTokens { get; set; }
+            public float? TopP { get; set; }
+            public float? FrequencyPenalty { get; set; }
+            public float? PresencePenalty { get; set; }
+        }
 
-                if (!string.IsNullOrEmpty(url) && url.StartsWith("data:"))
-                {
-                    return TryParseDataUrl(url, out imageData, out mimeType);
-                }
-            }
-
-            // 2) source/base64: { source: { type: "base64", data: "...", media_type?: "image/png" } }
-            if (item.TryGetProperty("source", out var sourceElement))
+        private class Message
+        {
+            public string Role { get; set; } = string.Empty;
+            [JsonPropertyName("content")] public JsonElement ContentElement { get; set; }
+            [JsonIgnore]
+            public string Content
             {
-                if (sourceElement.TryGetProperty("type", out var typeElement) &&
-                    string.Equals(typeElement.GetString(), "base64", StringComparison.OrdinalIgnoreCase) &&
-                    sourceElement.TryGetProperty("data", out var dataElement))
+                get
                 {
-                    var base64Data = dataElement.GetString();
-                    if (!string.IsNullOrEmpty(base64Data))
+                    if (ContentElement.ValueKind == JsonValueKind.String)
+                        return ContentElement.GetString() ?? string.Empty;
+                    if (ContentElement.ValueKind == JsonValueKind.Array)
                     {
-                        imageData = Convert.FromBase64String(base64Data);
-                        if (sourceElement.TryGetProperty("media_type", out var mediaTypeElement))
+                        var textContent = "";
+                        foreach (var item in ContentElement.EnumerateArray())
                         {
-                            mimeType = mediaTypeElement.GetString() ?? mimeType;
+                            if (item.TryGetProperty("type", out var typeElement) &&
+                                typeElement.GetString() == "text" &&
+                                item.TryGetProperty("text", out var textElement))
+                            {
+                                textContent += textElement.GetString();
+                            }
                         }
-                        return true;
+                        return textContent;
                     }
-                }
-            }
-
-            // 3) data_url: { data_url: "data:..." }
-            if (item.TryGetProperty("data_url", out var dataUrlEl))
-            {
-                var url = dataUrlEl.GetString();
-                if (!string.IsNullOrEmpty(url) && url.StartsWith("data:"))
-                {
-                    return TryParseDataUrl(url, out imageData, out mimeType);
+                    return string.Empty;
                 }
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"解析图片数据时发生异常: {ex.Message}");
-        }
-
-        return false;
-    }
-
-    private static bool TryParseDataUrl(string dataUrl, out byte[] imageData, out string mimeType)
-    {
-        imageData = Array.Empty<byte>();
-        mimeType = "image/jpeg";
-
-        try
-        {
-            if (string.IsNullOrEmpty(dataUrl) || !dataUrl.StartsWith("data:"))
-            {
-                return false;
-            }
-
-            var commaIndex = dataUrl.IndexOf(',');
-            if (commaIndex == -1)
-            {
-                Console.WriteLine("Data URL 格式错误：找不到逗号分隔符");
-                return false;
-            }
-
-            var header = dataUrl.Substring(5, commaIndex - 5); // 去掉 "data:" 前缀
-            var base64Data = dataUrl.Substring(commaIndex + 1);
-
-            var semicolonIndex = header.IndexOf(';');
-            if (semicolonIndex != -1)
-            {
-                mimeType = header.Substring(0, semicolonIndex);
-            }
-            else if (!string.IsNullOrWhiteSpace(header))
-            {
-                mimeType = header;
-            }
-
-            imageData = Convert.FromBase64String(base64Data);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"解析 Data URL 时发生异常: {ex.Message}");
-            return false;
-        }
-    }
-
-    // 从不同 SK 版本的内容项中提取函数调用信息（通过反射以增强兼容性）
-    private static bool TryExtractFunctionCall(object item, out string id, out string name, out string arguments)
-    {
-        id = $"call_{Guid.NewGuid():N}";
-        name = string.Empty;
-        arguments = string.Empty;
-
-        if (item == null) return false;
-
-        try
-        {
-            var t = item.GetType();
-            // 常见类型：Microsoft.SemanticKernel.FunctionCallContent 或 StreamingFunctionCallUpdate 等
-            // 尝试读取常见属性
-            var fnNameProp = t.GetProperty("FunctionName") ?? t.GetProperty("Name");
-            var idProp = t.GetProperty("Id");
-            var argsProp = t.GetProperty("Arguments");
-
-            var fnNameVal = fnNameProp?.GetValue(item)?.ToString();
-            if (string.IsNullOrEmpty(fnNameVal)) return false;
-            name = fnNameVal;
-
-            var idVal = idProp?.GetValue(item)?.ToString();
-            if (!string.IsNullOrEmpty(idVal)) id = idVal;
-
-            var argsVal = argsProp?.GetValue(item);
-            if (argsVal is string s)
-            {
-                arguments = s;
-            }
-            else if (argsVal is System.Text.Json.Nodes.JsonNode node)
-            {
-                arguments = node.ToJsonString();
-            }
-            else if (argsVal != null)
-            {
-                arguments = JsonSerializer.Serialize(argsVal);
-            }
-            else
-            {
-                arguments = "{}";
-            }
-
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    // 从不同 SK 版本的内容项中提取函数调用结果（通过反射以增强兼容性）
-    private static bool TryExtractFunctionResult(object item, out string id, out string name, out string result)
-    {
-        id = $"call_{Guid.NewGuid():N}";
-        name = string.Empty;
-        result = string.Empty;
-
-        if (item == null) return false;
-
-        try
-        {
-            var t = item.GetType();
-            // 常见类型：Microsoft.SemanticKernel.FunctionResultContent 或 StreamingFunctionResultUpdate 等
-            var fnNameProp = t.GetProperty("FunctionName") ?? t.GetProperty("Name");
-            var idProp = t.GetProperty("Id");
-            var resultProp = t.GetProperty("Result") ?? t.GetProperty("Content") ?? t.GetProperty("Text");
-
-            var fnNameVal = fnNameProp?.GetValue(item)?.ToString();
-            if (string.IsNullOrEmpty(fnNameVal)) return false;
-            name = fnNameVal;
-
-            var idVal = idProp?.GetValue(item)?.ToString();
-            if (!string.IsNullOrEmpty(idVal)) id = idVal;
-
-            var resVal = resultProp?.GetValue(item);
-            if (resVal is string s)
-            {
-                result = s;
-            }
-            else if (resVal != null)
-            {
-                result = JsonSerializer.Serialize(resVal);
-            }
-            else
-            {
-                result = string.Empty;
-            }
-
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task WriteOpenAIErrorAsync(string? model, string message, HttpStatusCode statusCode = HttpStatusCode.BadRequest, string type = "invalid_request_error", string? code = null)
-    {
-        Response.StatusCode = (int)statusCode;
-        var payload = new
-        {
-            error = new
-            {
-                message = message,
-                type = type,
-                param = (string?)null,
-                code = code
-            }
-        };
-
-        await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
-    }
-
-    private async Task WriteAssistantMessageAsync(string? model, string message)
-    {
-        Response.StatusCode = (int)HttpStatusCode.OK;
-        var payload = new
-        {
-            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-            Object = "chat.completion",
-            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
-            choices = new[]
-            {
-                new
-                {
-                    message = new { role = "assistant", content = message },
-                    index = 0,
-                    finish_reason = "stop"
-                }
-            },
-            usage = new { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 }
-        };
-
-        await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
     }
 }

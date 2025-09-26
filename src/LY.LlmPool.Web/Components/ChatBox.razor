@@ -8,6 +8,7 @@
 @using Microsoft.SemanticKernel.Connectors.OpenAI
 @using Microsoft.SemanticKernel
 @using System.Text
+@using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Forms
 @using System.ComponentModel
 @using System.Text.Json
@@ -20,7 +21,7 @@
 @inject IHttpClientFactory HttpClientFactory
 @inject IHttpContextAccessor HttpContextAccessor
 
-@if (Config == null && Endpoint == null && App == null)
+@if (string.IsNullOrEmpty(ModelName))
 {
     <Alert Message="请选择一个模型、终端点或应用" Type="@AlertType.Warning" ShowIcon="true" />
     return;
@@ -28,48 +29,95 @@
 <InputFile hidden id="inputfile" OnChange="OnImageUpload" multiple accept="image/*" />
 <Card Style="height: 100%;">
     <Body>
-        <div class="chat-container">
-            <div class="chat-messages" @ref="_messagesContainer">
-                @foreach (var message in _messages)
+        <div class="chat-container" style="display:flex; gap:16px; height:100%;">
+            <div class="chat-messages" style="flex:1;" @ref="_messagesContainer">
+                @for (var index = 0; index < _messages.Count; index++)
                 {
-                    <div class="message @(message.Role == "assistant" ? "message-assistant" : "message-user")">
+                    var messageIndex = index;
+                    var message = _messages[messageIndex];
+                    var isAssistant = string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase);
+                    var isStreaming = isAssistant && message.IsStreaming;
+                    var segments = ParseMessageSegments(message.Content);
+
+                    <div class="message @(isAssistant ? "message-assistant" : "message-user")">
                         <div class="message-content">
-                            @if (message.Role == "assistant" && message.IsStreaming)
+                            @if (isStreaming && string.IsNullOrEmpty(message.Content))
                             {
-                                if (string.IsNullOrEmpty(message.Content))
+                                <div class="loading-dots">
+                                    <span class="dot"></span>
+                                    <span class="dot"></span>
+                                    <span class="dot"></span>
+                                </div>
+                            }
+                            else if (message.ContentItems != null && message.ContentItems.Count > 0)
+                            {
+                                foreach (var item in message.ContentItems)
                                 {
-                                    <div class="loading-dots">
-                                        <span class="dot"></span>
-                                        <span class="dot"></span>
-                                        <span class="dot"></span>
-                                    </div>
-                                }
-                                else
-                                {
-                                    <span class="message-text">@message.Content<span class="cursor-effect"></span></span>
+                                    if (item is TextContent textContent)
+                                    {
+                                        var itemSegments = ParseMessageSegments(textContent.Text);
+                                        if (itemSegments.HasThinking)
+                                        {
+                                            var expanded = IsThinkingExpanded(messageIndex);
+                                            <div class="thinking-section">
+                                                <div class="thinking-header">
+                                                    <Tag Color="TagColor.Orange">思维链</Tag>
+                                                    <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="@(() => ToggleThinking(messageIndex))">
+                                                        @(expanded ? "收起" : "展开")
+                                                    </Button>
+                                                </div>
+                                                @if (expanded)
+                                                {
+                                                    <pre class="thinking-content">@itemSegments.Thinking</pre>
+                                                }
+                                            </div>
+                                        }
+
+                                        if (!string.IsNullOrEmpty(itemSegments.Visible))
+                                        {
+                                            <div class="message-text">@itemSegments.Visible</div>
+                                        }
+                                    }
+                                    else if (item is ImageContent imageContent && !string.IsNullOrEmpty(imageContent.Uri?.ToString()))
+                                    {
+                                        <div class="message-image">
+                                            <img src="@imageContent.Uri" alt="用户上传的图片" style="max-width: 300px; max-height: 300px; border-radius: 8px;" />
+                                        </div>
+                                    }
                                 }
                             }
                             else
                             {
-                                @if (message.ContentItems != null && message.ContentItems.Count > 0)
+                                if (segments.HasThinking)
                                 {
-                                    @foreach (var item in message.ContentItems)
-                                    {
-                                        @if (item is TextContent textContent)
+                                    var expanded = IsThinkingExpanded(messageIndex);
+                                    <div class="thinking-section">
+                                        <div class="thinking-header">
+                                            <Tag Color="TagColor.Orange">思维链</Tag>
+                                            <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="@(() => ToggleThinking(messageIndex))">
+                                                @(expanded ? "收起" : "展开")
+                                            </Button>
+                                        </div>
+                                        @if (expanded)
                                         {
-                                            <div class="message-text">@textContent.Text</div>
+                                            <pre class="thinking-content">@segments.Thinking</pre>
                                         }
-                                        else if (item is ImageContent imageContent && !string.IsNullOrEmpty(imageContent.Uri?.ToString()))
-                                        {
-                                            <div class="message-image">
-                                                <img src="@imageContent.Uri" alt="用户上传的图片" style="max-width: 300px; max-height: 300px; border-radius: 8px;" />
-                                            </div>
-                                        }
-                                    }
+                                    </div>
                                 }
-                                else
+
+                                if (!string.IsNullOrEmpty(segments.Visible))
                                 {
-                                    @message.Content
+                                    <div class="message-text">
+                                        @segments.Visible
+                                        @if (isStreaming)
+                                        {
+                                            <span class="cursor-effect"></span>
+                                        }
+                                    </div>
+                                }
+                                else if (isStreaming)
+                                {
+                                    <span class="cursor-effect"></span>
                                 }
                             }
                         </div>
@@ -81,13 +129,9 @@
             </div>
             <div class="chat-input">
                 <div class="chat-input-info">
-                    @if (Config != null)
+                    @if (!string.IsNullOrEmpty(ModelName))
                     {
-                        <Tag Color="TagColor.Blue">模型: @Config.Name</Tag>
-                    }
-                    @if (Endpoint != null)
-                    {
-                        <Tag Color="TagColor.Green">终端: @Endpoint.Name</Tag>
+                        <Tag Color="TagColor.Blue">model Name: @ModelName</Tag>
                     }
                     <Switch Checked="_useStreaming" CheckedChildren="流式响应" UnCheckedChildren="普通响应" OnChange="@(value => _useStreaming = value)" />
                     <Switch Checked="_useAnthropicApi" CheckedChildren="Anthropic API" UnCheckedChildren="直接调用" OnChange="@(value => _useAnthropicApi = value)" />
@@ -109,7 +153,7 @@
                     </div>
                 }
                 
-                @if (App != null && _appParameters.Count > 0)
+                @if (_appParameters.Count > 0)
                 {
                     <div class="parameters-input" style="margin-bottom: 16px; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
                         <div style="margin-bottom: 8px; font-weight: 500;">参数设置</div>
@@ -144,22 +188,70 @@
                     <Button Type="@ButtonType.Primary" OnClick="SendMessage" Loading="_isLoading">发送</Button>
                 </div>
             </div>
+
+            <!-- 工具调用过程面板 -->
+            <div class="tool-calls-panel" style="width:320px; min-width:280px; max-height:100%; display:flex; flex-direction:column;">
+                <Card Title="工具调用" Size="CardSize.Small" Style="flex:1; overflow:auto;">
+                    <Body>
+                        @if (_toolEvents.Count == 0)
+                        {
+                            <Empty Description="@("无工具调用")" />
+                        }
+                        else
+                        {
+                            <Space Direction="SpaceDirection.Vertical" Size="SpaceSize.Small" Style="width:100%">
+                                @foreach (var ev in _toolEvents)
+                                {
+                                    <Card Size="CardSize.Small" Hoverable>
+                                        <Body>
+                                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                                <span style="font-weight:600;">@ev.Name</span>
+                                                <Tag>@ev.Time.ToLocalTime().ToString("HH:mm:ss")</Tag>
+                                            </div>
+                                            <div style="margin-top:6px;">
+                                                <Text Type="TextElementType.Secondary">参数</Text>
+                                                <pre style="white-space:pre-wrap; word-break:break-word; background:#fafafa; padding:6px; border-radius:4px;">@ev.Arguments</pre>
+                                            </div>
+                                            <div style="margin-top:6px;">
+                                                <Text Type="TextElementType.Secondary">结果</Text>
+                                                @if (string.IsNullOrEmpty(ev.Result))
+                                                {
+                                                    <div style="display:flex; align-items:center; gap:6px;">
+                                                        <Spin Size="SpinSize.Small" />
+                                                        <span>等待结果…</span>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f6ffed; padding:6px; border-radius:4px;">@ev.Result</pre>
+                                                }
+                                            </div>
+                                        </Body>
+                                    </Card>
+                                }
+                            </Space>
+                        }
+                    </Body>
+                    <Extra>
+                        <Space>
+                            <Button Size="ButtonSize.Small" OnClick="@(() => _toolEvents.Clear())">清空</Button>
+                        </Space>
+                    </Extra>
+                </Card>
+            </div>
         </div>
     </Body>
 </Card>
 
 @code {
     [Parameter]
-    public LlmConfig? Config { get; set; }
+    public string? ModelName { get; set; }
 
     [Parameter]
-    public LlmEndpoint? Endpoint { get; set; }
+    public string? SystemPrompt { get; set; } = string.Empty;
 
     [Parameter]
-    public LlmApp? App { get; set; }
-
-    [Parameter]
-    public string? SystemPrompt { get; set; }
+    public string[]? Parameters { get; set; }
 
     private List<ChatMessage> _messages = new();
     private string _currentMessage = string.Empty;
@@ -167,78 +259,102 @@
     private bool _useStreaming = true;
     private bool _useAnthropicApi = false;
     private bool _simulateTools = false;
+    private HashSet<int> _expandedThinking = new();
     private ElementReference _messagesContainer;
     private List<SelectedImage> _selectedImages = new();
     private List<AppParameter> _appParameters = new();
-    
-    private List<Tool> BuildSimulatedTools()
+    private List<ToolCallView> _toolEvents = new();
+
+    private class ToolCallView
     {
-        var tools = new List<Tool>();
-        if (!_simulateTools) return tools;
-
-        tools.Add(new Tool
-        {
-            Name = "echo",
-            Description = "回显输入的文本",
-            InputSchema = new Dictionary<string, object>
-            {
-                ["type"] = "object",
-                ["properties"] = new Dictionary<string, object>
-                {
-                    ["text"] = new Dictionary<string, object>
-                    {
-                        ["type"] = "string",
-                        ["description"] = "要回显的内容"
-                    }
-                },
-                ["required"] = new[] { "text" }
-            }
-        });
-
-        tools.Add(new Tool
-        {
-            Name = "get_time",
-            Description = "返回当前时间，可选格式化",
-            InputSchema = new Dictionary<string, object>
-            {
-                ["type"] = "object",
-                ["properties"] = new Dictionary<string, object>
-                {
-                    ["format"] = new Dictionary<string, object>
-                    {
-                        ["type"] = "string",
-                        ["description"] = ".NET 日期时间格式化字符串"
-                    }
-                }
-            }
-        });
-
-        tools.Add(new Tool
-        {
-            Name = "sum",
-            Description = "计算两个整数的和",
-            InputSchema = new Dictionary<string, object>
-            {
-                ["type"] = "object",
-                ["properties"] = new Dictionary<string, object>
-                {
-                    ["a"] = new Dictionary<string, object>
-                    {
-                        ["type"] = "integer",
-                        ["description"] = "加数 A"
-                    },
-                    ["b"] = new Dictionary<string, object>
-                    {
-                        ["type"] = "integer",
-                        ["description"] = "加数 B"
-                    }
-                },
-                ["required"] = new[] { "a", "b" }
-            }
-        });
-
-        return tools;
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Arguments { get; set; } = string.Empty;
+        public string? Result { get; set; }
+        public DateTime Time { get; set; } = DateTime.Now;
     }
+
+    private sealed class MessageSegments
+    {
+        public string Thinking { get; set; } = string.Empty;
+        public string Visible { get; set; } = string.Empty;
+        public bool HasThinking => !string.IsNullOrWhiteSpace(Thinking);
+    }
+
+    private MessageSegments ParseMessageSegments(string? content)
+    {
+        if (string.IsNullOrEmpty(content))
+        {
+            return new MessageSegments { Visible = string.Empty };
+        }
+
+        const string startTag = "<think>";
+        const string endTag = "</think>";
+
+        var text = content;
+        var startIdx = text.IndexOf(startTag, StringComparison.OrdinalIgnoreCase);
+        var endIdx = text.IndexOf(endTag, StringComparison.OrdinalIgnoreCase);
+
+        string thinking = string.Empty;
+        string visible;
+
+        if (startIdx >= 0 && endIdx > startIdx)
+        {
+            var before = text.Substring(0, startIdx);
+            var start = startIdx + startTag.Length;
+            thinking = text.Substring(start, endIdx - start);
+            visible = before + text.Substring(endIdx + endTag.Length);
+        }
+        else if (startIdx >= 0 && (endIdx == -1 || endIdx < startIdx))
+        {
+            var before = text.Substring(0, startIdx);
+            var start = startIdx + startTag.Length;
+            thinking = text.Substring(start);
+            visible = before;
+        }
+        else if (startIdx == -1 && endIdx >= 0)
+        {
+            thinking = text.Substring(0, endIdx);
+            visible = text.Substring(endIdx + endTag.Length);
+        }
+        else
+        {
+            visible = text;
+        }
+
+        thinking = thinking
+            .Replace(startTag, string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace(endTag, string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Trim('\r', '\n');
+
+        visible = visible
+            .Replace(startTag, string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace(endTag, string.Empty, StringComparison.OrdinalIgnoreCase)
+            .TrimStart('\r', '\n');
+
+        return new MessageSegments
+        {
+            Thinking = thinking,
+            Visible = visible
+        };
+    }
+
+    private bool IsThinkingExpanded(int index) => _expandedThinking.Contains(index);
+
+    private void ToggleThinking(int index)
+    {
+        if (_expandedThinking.Contains(index))
+        {
+            _expandedThinking.Remove(index);
+        }
+        else
+        {
+            _expandedThinking.Add(index);
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
 
     public class SelectedImage
     {
@@ -256,9 +372,15 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (App != null && !string.IsNullOrEmpty(App.PromptId))
+        if (Parameters?.Any() == true)
         {
-            await LoadAppParameters();
+            _appParameters = Parameters.Length > 0
+                ? Parameters.Select(p => new AppParameter { Key = p, Value = string.Empty }).ToList()
+				: new List<AppParameter>();
+        }
+        else if (_appParameters.Count > 0)
+        {
+            _appParameters.Clear();
         }
     }
 
@@ -272,36 +394,6 @@
                 Content = SystemPrompt,
                 Timestamp = DateTime.Now
             });
-        }
-    }
-
-    private async Task LoadAppParameters()
-    {
-        try
-        {
-            var prompt = await LlmPoolService.GetPromptByIdAsync(App!.PromptId!);
-            if (prompt != null)
-            {
-                // 使用PromptParameterService提取参数
-                var promptParameterService = new PromptParameterService();
-                var paramNames = promptParameterService.ExtractParameterNames(prompt.Content);
-
-                _appParameters.Clear();
-                foreach (var paramName in paramNames)
-                {
-                    _appParameters.Add(new AppParameter 
-                    { 
-                        Key = paramName, 
-                        Value = string.Empty 
-                    });
-                }
-
-                StateHasChanged();
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageService.Error($"加载应用参数失败: {ex.Message}");
         }
     }
 
@@ -366,26 +458,20 @@
         _currentMessage = string.Empty;
         _selectedImages.Clear();
         _isLoading = true;
+        _toolEvents.Clear();
 
         try
         {
             StateHasChanged();
             await ScrollToBottom();
 
-            if (_useAnthropicApi)
+            if (_useStreaming)
             {
-                await SendAnthropicApiMessage();
+                await SendStreamingMessage();
             }
             else
             {
-                if (_useStreaming)
-                {
-                    await SendStreamingMessage();
-                }
-                else
-                {
-                    await SendNormalMessage();
-                }
+                await SendNormalMessage();
             }
         }
         catch (Exception ex)
@@ -405,89 +491,30 @@
     {
         ChatResponse response;
         var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
-        if (_useAnthropicApi)
-        {
-            // 保持 Anthropic 走原服务
-            if (Config != null)
-            {
-                response = await ChatClientService.SendMessageAsync(Config, _messages, toolObjects);
-            }
-            else if (Endpoint != null)
-            {
-                response = await ChatClientService.SendMessageAsync(Endpoint, _messages, toolObjects);
-            }
-            else if (App != null)
-            {
-                var parameters = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value)) 
-                    ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value))
-                                  .ToDictionary(p => p.Key, p => (object)p.Value)
-                    : null;
-                response = await ChatClientService.SendMessageAsyncByAppName(App.Name, _messages, parameters, toolObjects);
-            }
-            else
-            {
-                throw new Exception("未选择模型、终端点或应用");
-            }
 
-            if (response.Status == "error") throw new Exception(response.Message);
-            AddAssistantMessage(response.Message);
-            return;
-        }
-
-        // App 流程：使用 HttpClientFactory 的命名客户端（支持配置 BaseUrl，缺省回退 HttpContext）
-        var isApp = App != null;
-        var apiKey = isApp
-            ? "app-temp-key"
-            : (Config != null ? (Config.Id ?? Config.ApiKey) : (Endpoint?.Id)) ?? "app-temp-key";
-    var model = isApp ? App!.Name : (Config?.Name ?? Endpoint?.Name);
+        var model = ModelName;
         if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
 
-        if (isApp)
-        {
-            var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-                ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-                : null;
-            var http = HttpClientFactory.CreateClient("LlmPoolApi");
-            var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
-            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+        var http = HttpClientFactory.CreateClient("LlmPoolApi");
+        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk");
+        var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
             {
                 Role = m.Role,
                 Content = m.Content,
                 ContentItems = m.ContentItems
             }).ToList();
-            var settings = new OpenAIPromptExecutionSettings();
-            if (Config != null)
+        var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+             ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+             : null;
+        var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
-                settings.Temperature = Config.Temperature;
-                settings.MaxTokens = Config.MaxTokens;
-            }
-            var toolObjects3 = _simulateTools ? new object[] { this } : Array.Empty<object>();
-            var text = await client.ChatAppAsync(model!, msgs, toolObjects3, parms, settings);
-            AddAssistantMessage(text);
-        }
-        else
-        {
-            // 非 App：改为使用 LlmPoolClient（经 SK 调用 openai controller）
-            var http = HttpClientFactory.CreateClient("LlmPoolApi");
-            var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
-            var toolObjects2 = _simulateTools ? new object[] { this } : Array.Empty<object>();
-            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-            {
-                Role = m.Role,
-                Content = m.Content,
-                ContentItems = m.ContentItems
-            }).ToList();
-
-            var chatOptions = new LY.LlmPool.Client.ChatOptions
-            {
-                Temperature = Config?.Temperature,
-                MaxTokens = Config?.MaxTokens,
+                Temperature = 0.7,
+                MaxTokens = 10000,
                 TopP = null
             };
 
-            var text = await client.ChatAsync(model!, msgs, null, toolObjects2, chatOptions);
-            AddAssistantMessage(text);
-        }
+        var text = await client.ChatAsync(model!, msgs, parms, toolObjects, chatOptions);
+        AddAssistantMessage(text);
     }
 
     private async Task SendStreamingMessage()
@@ -507,144 +534,34 @@
         {
             IAsyncEnumerable<string> streamingResult;
             var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
-            if (_useAnthropicApi)
+            var model = ModelName;
+            if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
+
+            var http = HttpClientFactory.CreateClient("LlmPoolApi");
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx");
+            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
             {
-                if (Config != null)
-                {
-                    streamingResult = ChatClientService.SendStreamingMessageAsync(Config, _messages, toolObjects);
-                }
-                else if (Endpoint != null)
-                {
-                    streamingResult = ChatClientService.SendStreamingMessageAsync(Endpoint, _messages, toolObjects);
-                }
-                else if (App != null)
-                {
-                    var parameters = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-                        ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-                        : null;
-                    streamingResult = ChatClientService.SendStreamingMessageAsyncByAppName(App.Name, _messages, parameters, toolObjects);
-                }
-                else
-                {
-                    throw new Exception("未选择模型、终端点或应用");
-                }
-            }
-            else
+                Role = m.Role,
+                Content = m.Content,
+                ContentItems = m.ContentItems
+            }).ToList();
+
+            var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
-                var isApp = App != null;
-                var apiKey = isApp
-                    ? "app-temp-key"
-                    : (Config != null ? (Config.Id ?? Config.ApiKey) : (Endpoint?.Id)) ?? "app-temp-key";
-                var model = isApp ? App!.Name : (Config?.Name ?? Endpoint?.Name);
-                if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
-
-                if (isApp)
-                {
-                    if (_simulateTools)
-                    {
-                        var appParms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-                            ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-                            : null;
-                        var http2 = HttpClientFactory.CreateClient("LlmPoolApi");
-                        var client2 = new LY.LlmPool.Client.LlmPoolClient(http2, apiKey);
-                        var msgs2 = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-                        {
-                            Role = m.Role,
-                            Content = m.Content,
-                            ContentItems = m.ContentItems
-                        }).ToList();
-                        var settings2 = new OpenAIPromptExecutionSettings();
-                        if (Config != null)
-                        {
-                            settings2.Temperature = Config.Temperature;
-                            settings2.MaxTokens = Config.MaxTokens;
-                        }
-                        var toolObjs2 = new object[] { this };
-                        var text2 = await client2.ChatAppAsync(model!, msgs2, toolObjs2, appParms, settings2);
-                        assistantMessage.Content += text2;
-                        StateHasChanged();
-                        return;
-                    }
-                    var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-                        ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-                        : null;
-                    var http = HttpClientFactory.CreateClient("LlmPoolApi");
-                    var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
-                    var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-                    {
-                        Role = m.Role,
-                        Content = m.Content,
-                        ContentItems = m.ContentItems
-                    }).ToList();
-                    var clientTools = _simulateTools
-                        ? BuildSimulatedTools().Select(t => new LY.LlmPool.Client.ClientTool
-                        {
-                            Name = t.Name,
-                            Description = t.Description,
-                            InputSchema = t.InputSchema
-                        }).ToList()
-                        : null;
-                    var toolChoice = _simulateTools ? new Dictionary<string, object> { ["type"] = "auto" } : null;
-                    var settings = new OpenAIPromptExecutionSettings();
-                    if (Config != null)
-                    {
-                        settings.Temperature = Config.Temperature;
-                        settings.MaxTokens = Config.MaxTokens;
-                    }
-                    streamingResult = client.ChatAppStreamAsync(model!, msgs, parms, clientTools, toolChoice, settings);
-                }
-                else
-                {
-                    // 非 App
-                    if (_simulateTools)
-                    {
-                        var http3 = HttpClientFactory.CreateClient("LlmPoolApi");
-                        var client3 = new LY.LlmPool.Client.LlmPoolClient(http3, apiKey);
-                        var msgs3 = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-                        {
-                            Role = m.Role,
-                            Content = m.Content,
-                            ContentItems = m.ContentItems
-                        }).ToList();
-                        var chatOptions3 = new LY.LlmPool.Client.ChatOptions
-                        {
-                            Temperature = Config?.Temperature,
-                            MaxTokens = Config?.MaxTokens,
-                            TopP = null
-                        };
-                        var text3 = await client3.ChatAsync(model!, msgs3, null, new object[] { this }, chatOptions3);
-                        assistantMessage.Content += text3;
-                        StateHasChanged();
-                        return;
-                    }
-                    else
-                    {
-                        // 使用 LlmPoolClient 进行流式（经 SK）
-                        var http = HttpClientFactory.CreateClient("LlmPoolApi");
-                        var client = new LY.LlmPool.Client.LlmPoolClient(http, apiKey);
-                        var toolObjects2 = Array.Empty<object>();
-                        var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-                        {
-                            Role = m.Role,
-                            Content = m.Content,
-                            ContentItems = m.ContentItems
-                        }).ToList();
-
-                        var chatOptions = new LY.LlmPool.Client.ChatOptions
-                        {
-                            Temperature = Config?.Temperature,
-                            MaxTokens = Config?.MaxTokens,
-                            TopP = null
-                        };
-
-                        streamingResult = client.ChatStreamAsync(model!, msgs, null, toolObjects2, chatOptions);
-                    }
-                }
-            }
-
-            await foreach (var chunk in streamingResult)
+                Temperature = 0.7,
+                MaxTokens = 10000,
+                TopP = null
+            };
+            var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
+                  ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                  : null;
+            var stream = client.ChatStreamAsync(model!, msgs, parms, toolObjects, chatOptions);
+            await foreach (var chunk in stream)
             {
-                assistantMessage.Content += chunk;
+                if (!string.IsNullOrEmpty(chunk.Content))
+                {
+                    assistantMessage.Content += chunk.Content;
+                }
                 StateHasChanged();
                 await ScrollToBottom();
             }
@@ -743,99 +660,6 @@
         StateHasChanged();
     }
 
-    // Anthropic API 调用方法
-    private async Task SendAnthropicApiMessage()
-    {
-        try
-        {
-            if (_useStreaming)
-            {
-                await HandleAnthropicStreamingResponse();
-            }
-            else
-            {
-                await HandleAnthropicNormalResponse();
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageService.Error($"Anthropic API 调用失败: {ex.Message}");
-            _isLoading = false;
-            StateHasChanged();
-        }
-    }
-
-    private async Task HandleAnthropicNormalResponse()
-    {
-        ChatResponse response;
-        
-        if (Config != null)
-        {
-            response = await ChatClientService.SendAnthropicMessageAsync(Config, _messages);
-        }
-        else if (Endpoint != null)
-        {
-            response = await ChatClientService.SendAnthropicMessageAsync(Endpoint, _messages);
-        }
-        else
-        {
-            throw new Exception("未配置模型或终端点");
-        }
-
-        if (response.Status == "success")
-        {
-            AddAssistantMessage(response.Message);
-        }
-        else
-        {
-            throw new Exception(response.Message);
-        }
-    }
-
-    private async Task HandleAnthropicStreamingResponse()
-    {
-        var assistantMessage = new ChatMessage
-        {
-            Role = "assistant",
-            Content = "",
-            IsStreaming = true,
-            Timestamp = DateTime.Now
-        };
-        _messages.Add(assistantMessage);
-        StateHasChanged();
-        await ScrollToBottom();
-
-        try
-        {
-            IAsyncEnumerable<string> streamingResults;
-            
-            if (Config != null)
-            {
-                streamingResults = ChatClientService.SendAnthropicStreamingMessageAsync(Config, _messages);
-            }
-            else if (Endpoint != null)
-            {
-                streamingResults = ChatClientService.SendAnthropicStreamingMessageAsync(Endpoint, _messages);
-            }
-            else
-            {
-                throw new Exception("未配置模型或终端点");
-            }
-
-            await foreach (var chunk in streamingResults)
-            {
-                assistantMessage.Content += chunk;
-                StateHasChanged();
-                await ScrollToBottom();
-            }
-        }
-        finally
-        {
-            assistantMessage.IsStreaming = false;
-            StateHasChanged();
-        }
-    }
-
     // 示例工具方法：在模拟工具调用时，会通过 ChatClientService 注册为 Kernel 插件
     [KernelFunction("echo")]
     [Description("回显输入的文本")]
@@ -855,8 +679,8 @@
     [KernelFunction("sum")]
     [Description("计算两个整数的和")]
     public int Sum(
-        [Description("加数 A")] int a,
-        [Description("加数 B")] int b)
+        [Description("加数 A")] int a = 0,
+        [Description("加数 B")] int b = 0)
     {
         return a + b;
     }
