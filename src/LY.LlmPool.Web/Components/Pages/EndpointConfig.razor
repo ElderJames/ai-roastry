@@ -120,6 +120,8 @@ Width="800">
                     @bind-Value="@configItem.LlmConfigId"
                     ValueName="@nameof(LlmConfig.Id)"
                     LabelName="@nameof(LlmConfig.Name)"
+                    EnableSearch
+                    AutoClearSearchValue="false"
                     Style="width: 100%;">
                         <ItemTemplate Context="item">
                             @item.Name
@@ -215,7 +217,7 @@ Width="800">
         {
             await LlmPoolService.UpdateEndpointAsync(_editingEndpoint);
         }
-
+        _message.Success($"Saved successfully");
         CloseDialog();
         await LoadDataAsync();
     }

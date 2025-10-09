@@ -374,7 +374,8 @@
         {
             await LlmPoolService.UpdateConfigAsync(_editingConfig);
         }
-
+         
+        _message.Success($"Saved successfully");
         CloseConfigDialog();
         await LoadConfigsAsync();
     }

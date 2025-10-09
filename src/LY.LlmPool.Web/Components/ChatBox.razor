@@ -27,7 +27,7 @@
     return;
 }
 <InputFile hidden id="inputfile" OnChange="OnImageUpload" multiple accept="image/*" />
-<Card Style="height: 100%;">
+<Card Style="height: 100%;" BodyStyle="height: 100%;">
     <Body>
         <div class="chat-container" style="display:flex; gap:16px; height:100%;">
             <div class="chat-messages" style="flex:1;" @ref="_messagesContainer">
@@ -526,7 +526,7 @@
             IsStreaming = true,
             Timestamp = DateTime.Now
         };
-        _messages.Add(assistantMessage);
+        
         StateHasChanged();
         await ScrollToBottom();
 
@@ -556,6 +556,7 @@
                   ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
                   : null;
             var stream = client.ChatStreamAsync(model!, msgs, parms, toolObjects, chatOptions);
+            _messages.Add(assistantMessage);
             await foreach (var chunk in stream)
             {
                 if (!string.IsNullOrEmpty(chunk.Content))

@@ -567,16 +567,17 @@ public class LlmPoolService
             throw new KeyNotFoundException($"Prompt with ID {prompt.Id} not found.");
         }
 
+        //优化：更新Prompt时不需要额外记录版本
         // Create history record
-        var history = new LlmPromptHistory
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            PromptId = existing.Id!,
-            Content = existing.Content,
-            Version = existing.Version,
-            CreateTime = DateTime.UtcNow
-        };
-        dbContext.PromptHistory.Add(history);
+        //var history = new LlmPromptHistory
+        //{
+        //    Id = Guid.NewGuid().ToString("N"),
+        //    PromptId = existing.Id!,
+        //    Content = existing.Content,
+        //    Version = existing.Version,
+        //    CreateTime = DateTime.UtcNow
+        //};
+        //dbContext.PromptHistory.Add(history);
 
         // Update prompt
         existing.Name = prompt.Name;
@@ -637,6 +638,13 @@ public class LlmPoolService
         history.Id = Guid.NewGuid().ToString("N");
         history.Version = lastVersion + 1;
         history.CreateTime = DateTime.UtcNow;
+
+        //todo 同步更新prompt的版本号保持最新（避免history记录版本增加prompt没有同步更新）
+        var prompt = await dbContext.Prompts.FindAsync(history.PromptId);
+        if (prompt != null) 
+        {  
+            prompt.Version = history.Version;
+        }
 
         dbContext.PromptHistory.Add(history);
         await dbContext.SaveChangesAsync();
