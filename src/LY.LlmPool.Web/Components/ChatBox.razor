@@ -12,6 +12,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @using System.ComponentModel
 @using System.Text.Json
+@using LY.LlmPool.Web.Components.ChatHelpers
 
 @inject ChatClientService ChatClientService
 @inject IServiceProvider Services
@@ -38,6 +39,7 @@
                     var isAssistant = string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase);
                     var isStreaming = isAssistant && message.IsStreaming;
                     var segments = ParseMessageSegments(message.Content);
+                    var toolItems = GetMessageToolEvents(messageIndex);
 
                     <div class="message @(isAssistant ? "message-assistant" : "message-user")">
                         <div class="message-content">
@@ -114,6 +116,62 @@
                                             <span class="cursor-effect"></span>
                                         }
                                     </div>
+                                    @if (toolItems.Count > 0)
+                                    {
+                                        <div class="tool-calls-inline">
+                                            <div class="tool-calls-header">
+                                                <Tag Color="TagColor.Blue">工具调用</Tag>
+                                                <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="@(() => ToggleTools(messageIndex))">
+                                                    @(IsToolsExpanded(messageIndex) ? "收起" : $"展开 ({toolItems.Count})")
+                                                </Button>
+                                            </div>
+                                            @if (IsToolsExpanded(messageIndex))
+                                            {
+                                                <Space Direction="SpaceDirection.Vertical" Size="SpaceSize.Small" Style="width:100%">
+                                                    @foreach (var ev in toolItems)
+                                                    {
+                                                        <Card Size="CardSize.Small">
+                                                            <Body>
+                                                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                                                    <span style="font-weight:600;">@ev.Name</span>
+                                                                    <Tag>@ev.Time.ToLocalTime().ToString("HH:mm:ss")</Tag>
+                                                                </div>
+                                                                <div style="margin-top:6px;">
+                                                                    <Text Type="TextElementType.Secondary">输入</Text>
+                                                                    <pre style="white-space:pre-wrap; word-break:break-word; background:#fafafa; padding:6px; border-radius:4px;">@ev.Arguments</pre>
+                                                                </div>
+                                                                <div style="margin-top:6px;">
+                                                                    <Text Type="TextElementType.Secondary">输出</Text>
+                                                                    @if (!string.IsNullOrEmpty(ev.Error))
+                                                                    {
+                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#fff2f0; padding:6px; border-radius:4px; border-left: 4px solid #ff4d4f;">@ev.Error</pre>
+                                                                    }
+                                                                    else if (string.IsNullOrEmpty(ev.Result))
+                                                                    {
+                                                                        <div style="display:flex; align-items:center; gap:6px;">
+                                                                            <Spin Size="SpinSize.Small" />
+                                                                            <span>等待结果…</span>
+                                                                        </div>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#f6ffed; padding:6px; border-radius:4px;">@ev.Result</pre>
+                                                                    }
+                                                                </div>
+                                                                @if (ev.Logs.Count > 0)
+                                                                {
+                                                                    <div style="margin-top:6px;">
+                                                                        <Text Type="TextElementType.Secondary">运行日志</Text>
+                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#fffbe6; padding:6px; border-radius:4px;">@string.Join("\n", ev.Logs)</pre>
+                                                                    </div>
+                                                                }
+                                                            </Body>
+                                                        </Card>
+                                                    }
+                                                </Space>
+                                            }
+                                        </div>
+                                    }
                                 }
                                 else if (isStreaming)
                                 {
@@ -262,82 +320,18 @@
     private bool _simulateTools = false;
     private HashSet<int> _expandedThinking = new();
     private ElementReference _messagesContainer;
-    private List<SelectedImage> _selectedImages = new();
-    private List<AppParameter> _appParameters = new();
-    private List<ToolCallView> _toolEvents = new();
+    private List<ImageUtils.SelectedImage> _selectedImages = new();
+    private List<ParameterUtils.AppParameter> _appParameters = new();
+    private List<ToolCallUtils.ToolCallView> _toolEvents = new();
+    private Dictionary<int, List<ToolCallUtils.ToolCallView>> _messageToolEvents = new();
+    private HashSet<int> _expandedTools = new();
+    private Dictionary<string, ToolCallUtils.ToolCallView> _toolCallIdToEvent = new();
 
-    private class ToolCallView
+    // 使用 ToolCallUtils.ToolCallView
+
+    private ChatMessageUtils.MessageSegments ParseMessageSegments(string? content)
     {
-        public string Id { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Arguments { get; set; } = string.Empty;
-        public string? Result { get; set; }
-        public DateTime Time { get; set; } = DateTime.Now;
-    }
-
-    private sealed class MessageSegments
-    {
-        public string Thinking { get; set; } = string.Empty;
-        public string Visible { get; set; } = string.Empty;
-        public bool HasThinking => !string.IsNullOrWhiteSpace(Thinking);
-    }
-
-    private MessageSegments ParseMessageSegments(string? content)
-    {
-        if (string.IsNullOrEmpty(content))
-        {
-            return new MessageSegments { Visible = string.Empty };
-        }
-
-        const string startTag = "<think>";
-        const string endTag = "</think>";
-
-        var text = content;
-        var startIdx = text.IndexOf(startTag, StringComparison.OrdinalIgnoreCase);
-        var endIdx = text.IndexOf(endTag, StringComparison.OrdinalIgnoreCase);
-
-        string thinking = string.Empty;
-        string visible;
-
-        if (startIdx >= 0 && endIdx > startIdx)
-        {
-            var before = text.Substring(0, startIdx);
-            var start = startIdx + startTag.Length;
-            thinking = text.Substring(start, endIdx - start);
-            visible = before + text.Substring(endIdx + endTag.Length);
-        }
-        else if (startIdx >= 0 && (endIdx == -1 || endIdx < startIdx))
-        {
-            var before = text.Substring(0, startIdx);
-            var start = startIdx + startTag.Length;
-            thinking = text.Substring(start);
-            visible = before;
-        }
-        else if (startIdx == -1 && endIdx >= 0)
-        {
-            thinking = text.Substring(0, endIdx);
-            visible = text.Substring(endIdx + endTag.Length);
-        }
-        else
-        {
-            visible = text;
-        }
-
-        thinking = thinking
-            .Replace(startTag, string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace(endTag, string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Trim('\r', '\n');
-
-        visible = visible
-            .Replace(startTag, string.Empty, StringComparison.OrdinalIgnoreCase)
-            .Replace(endTag, string.Empty, StringComparison.OrdinalIgnoreCase)
-            .TrimStart('\r', '\n');
-
-        return new MessageSegments
-        {
-            Thinking = thinking,
-            Visible = visible
-        };
+        return ChatMessageUtils.ParseMessageSegments(content);
     }
 
     private bool IsThinkingExpanded(int index) => _expandedThinking.Contains(index);
@@ -356,28 +350,63 @@
         InvokeAsync(StateHasChanged);
     }
 
+    private bool IsToolsExpanded(int index) => _expandedTools.Contains(index);
 
-    public class SelectedImage
+    private void ToggleTools(int index)
     {
-        public string FileName { get; set; } = string.Empty;
-        public string DataUrl { get; set; } = string.Empty;
-        public byte[] Data { get; set; } = Array.Empty<byte>();
-        public string MimeType { get; set; } = string.Empty;
+        if (_expandedTools.Contains(index))
+        {
+            _expandedTools.Remove(index);
+        }
+        else
+        {
+            _expandedTools.Add(index);
+        }
+
+        InvokeAsync(StateHasChanged);
     }
 
-    public class AppParameter
+    private List<ToolCallUtils.ToolCallView> GetMessageToolEvents(int messageIndex)
     {
-        public string Key { get; set; } = string.Empty;
-        public string Value { get; set; } = string.Empty;
+        return _messageToolEvents.TryGetValue(messageIndex, out var list) ? list : new List<ToolCallUtils.ToolCallView>();
     }
+
+    private ToolCallUtils.ToolCallView StartToolEventForMessage(int messageIndex, string name, string argumentsJson)
+    {
+        var ev = ToolCallUtils.StartToolEvent(name, argumentsJson);
+        if (!_messageToolEvents.TryGetValue(messageIndex, out var list))
+        {
+            list = new List<ToolCallUtils.ToolCallView>();
+            _messageToolEvents[messageIndex] = list;
+        }
+        list.Add(ev);
+        _toolEvents.Add(ev);
+        return ev;
+    }
+
+    private void AppendToolLog(ToolCallUtils.ToolCallView ev, string log)
+    {
+        ToolCallUtils.AppendToolLog(ev, log);
+    }
+
+    private void CompleteToolEvent(ToolCallUtils.ToolCallView ev, string result)
+    {
+        ToolCallUtils.CompleteToolEvent(ev, result);
+    }
+
+    private void FailToolEvent(ToolCallUtils.ToolCallView ev, string error)
+    {
+        ToolCallUtils.FailToolEvent(ev, error);
+    }
+
+
+    // 使用 ImageUtils.SelectedImage 与 ParameterUtils.AppParameter
 
     protected override async Task OnParametersSetAsync()
     {
         if (Parameters?.Any() == true)
         {
-            _appParameters = Parameters.Length > 0
-                ? Parameters.Select(p => new AppParameter { Key = p, Value = string.Empty }).ToList()
-				: new List<AppParameter>();
+            _appParameters = ParameterUtils.CreateParametersFromArray(Parameters);
         }
         else if (_appParameters.Count > 0)
         {
@@ -460,6 +489,7 @@
         _selectedImages.Clear();
         _isLoading = true;
         _toolEvents.Clear();
+        _toolCallIdToEvent.Clear();
 
         try
         {
@@ -504,9 +534,7 @@
                 Content = m.Content,
                 ContentItems = m.ContentItems
             }).ToList();
-        var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-             ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-             : null;
+        var parms = ParameterUtils.GetValidParameters(_appParameters);
         var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
                 Temperature = 0.7,
@@ -560,10 +588,67 @@
             _messages.Add(assistantMessage);
             await foreach (var chunk in stream)
             {
-                if (!string.IsNullOrEmpty(chunk.Content))
+                var content = chunk.Content;
+                if (string.IsNullOrEmpty(content))
                 {
-                    assistantMessage.Content += chunk.Content;
+                    continue;
                 }
+
+                // 尝试解析为 JSON（假设 client 返回完整 JSON 行）
+                if (content.TrimStart().StartsWith("{"))
+                {
+                    try
+                    {
+                        var parseResult = ChatMessageUtils.ParseStreamingContent(content);
+
+                        switch (parseResult.MessageType)
+                        {
+                            case StreamingMessageType.ToolCalls:
+                                if (parseResult.ToolCalls != null)
+                                {
+                                    foreach (var tc in parseResult.ToolCalls)
+                                    {
+                                        // 触发工具开始事件
+                                        var toolEv = StartToolEventForMessage(_messages.IndexOf(assistantMessage), tc.Name, tc.Arguments);
+                                        _toolCallIdToEvent[tc.Id] = toolEv;
+                                    }
+                                }
+                                break;
+
+                            case StreamingMessageType.ToolResult:
+                                // 匹配并设置结果
+                                if (!string.IsNullOrEmpty(parseResult.ToolCallId) && _toolCallIdToEvent.TryGetValue(parseResult.ToolCallId, out var ev))
+                                {
+                                    ToolCallUtils.HandleToolResult(ev, parseResult.ToolContent);
+                                }
+                                break;
+
+                            case StreamingMessageType.AssistantContent:
+                                if (!string.IsNullOrEmpty(parseResult.Content))
+                                {
+                                    assistantMessage.Content += parseResult.Content;
+                                }
+                                break;
+
+                            case StreamingMessageType.PlainText:
+                            default:
+                                // 普通文本
+                                assistantMessage.Content += content;
+                                break;
+                        }
+                    }
+                    catch
+                    {
+                        // 不是有效 JSON，当普通文本处理
+                        assistantMessage.Content += content;
+                    }
+                }
+                else
+                {
+                    // 普通文本
+                    assistantMessage.Content += content;
+                }
+
                 StateHasChanged();
                 await ScrollToBottom();
             }
@@ -600,10 +685,10 @@
     // 图片处理方法
     private bool OnBeforeUpload(UploadFileItem file)
     {
-        // 限制图片大小 (5MB)
-        if (file.Size > 5 * 1024 * 1024)
+        var validation = ImageUtils.ValidateImageUpload(fileSize: file.Size, fileName: file.FileName);
+        if (!validation.IsValid && validation.ErrorMessage != null)
         {
-            MessageService.Error($"图片 {file.FileName} 超过5MB限制");
+            MessageService.Error(validation.ErrorMessage);
             return false;
         }
 
@@ -623,30 +708,15 @@
         {
             try
             {
-                // 限制文件大小 (10MB)
-                if (file.Size > 10 * 1024 * 1024)
+                var selectedImage = await ImageUtils.ProcessImageFileAsync(file);
+                if (selectedImage != null)
                 {
-                    MessageService.Warning($"文件 {file.Name} 太大，请选择小于 10MB 的图片");
-                    continue;
+                    _selectedImages.Add(selectedImage);
                 }
-
-                // 使用 Stream 读取文件内容
-                using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
-                var buffer = new byte[stream.Length];
-                await stream.ReadAsync(buffer, 0, (int)stream.Length);
-                
-                var base64String = Convert.ToBase64String(buffer);
-                var dataUrl = $"data:{file.ContentType};base64,{base64String}";
-                
-                var selectedImage = new SelectedImage
+                else
                 {
-                    FileName = file.Name,
-                    DataUrl = dataUrl,
-                    Data = buffer,
-                    MimeType = file.ContentType
-                };
-
-                _selectedImages.Add(selectedImage);
+                    MessageService.Error($"图片上传失败: {file.Name}");
+                }
             }
             catch (Exception ex)
             {
@@ -656,7 +726,7 @@
         StateHasChanged();
     }
 
-    private void RemoveImage(SelectedImage image)
+    private void RemoveImage(ImageUtils.SelectedImage image)
     {
         _selectedImages.Remove(image);
         StateHasChanged();
@@ -671,11 +741,10 @@
     }
 
     [KernelFunction("get_time")]
-    [Description("返回当前时间，可选格式化")]
-    public string GetTime([Description(".NET 日期时间格式化字符串")] string? format = "yyyy-MM-dd HH:mm:ss")
+    [Description("返回当前时间")]
+    public string GetTime()
     {
-        var fmt = string.IsNullOrWhiteSpace(format) ? "yyyy-MM-dd HH:mm:ss" : format;
-        return DateTime.Now.ToString(fmt);
+        return DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
     }
 
     [KernelFunction("sum")]

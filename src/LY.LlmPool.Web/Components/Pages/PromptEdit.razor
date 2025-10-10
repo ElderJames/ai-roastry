@@ -3,7 +3,6 @@
 @using LY.LlmPool.Web.Services
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Models
-@using LY.LlmPool.Web.Models
 @using LY.LlmPool.Web.Components
 @using AntDesign
 @using AntDesign.TableModels
@@ -11,7 +10,7 @@
 @using Microsoft.JSInterop
 @using System.Text.RegularExpressions
 @inject LlmPoolService LlmPoolService
-@inject ChatClientService ChatClientService
+@inject IChatClientService ChatClientService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
@@ -63,7 +62,7 @@
                             <TextArea @bind-Value="@_editingPrompt.Description" />
                         </FormItem>
                         <FormItem Label="Content" Required>
-                            <TextArea @bind-Value="@_editingPrompt.Content" Rows="15" @oninput="OnPromptContentChanged" />
+                            <TextArea @bind-Value="@_editingPrompt.Content" Rows="15" OnChange="OnPromptContentChanged" />
                         </FormItem>
                         @if (_promptParameters.Any())
                         {
@@ -94,15 +93,40 @@
             <Card Class="mt-3">
                 <TitleTemplate>
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>Test Input</div>
                         <div>
-                            <Button Type="@ButtonType.Primary" 
-                                    OnClick="RunTests" 
-                                    Loading="@_testLoading"
-                                    Disabled="@_testLoading">
-                                <Icon Type="play" />
-                                Run Tests
-                            </Button>
+                            <Icon Type="message" />
+                            <span style="margin-left: 8px;">Test Input</span>
+                        </div>
+                        <div>
+                            <Space>
+                                <SpaceItem>
+                                    <Switch @bind-Value="@_keepChatHistory" 
+                                            CheckedChildren="保留历史" 
+                                            UnCheckedChildren="不保留历史" />
+                                </SpaceItem>
+                                @if (_testConfigs.Any(c => c.ChatHistory.Any()))
+                                {
+                                    <SpaceItem>
+                                        <Popconfirm Title="确定要清空所有配置的聊天历史吗？"
+                                                   OkText="确定"
+                                                   CancelText="取消"
+                                                   OnConfirm="ClearAllChatHistory">
+                                            <Button Danger Size="@ButtonSize.Small" Icon="delete">
+                                                清空所有历史
+                                            </Button>
+                                        </Popconfirm>
+                                    </SpaceItem>
+                                }
+                                <SpaceItem>
+                                    <Button Type="@ButtonType.Primary" 
+                                            OnClick="RunTests" 
+                                            Loading="@_testLoading"
+                                            Disabled="@_testLoading"
+                                            Icon="play-circle">
+                                        Run Tests
+                                    </Button>
+                                </SpaceItem>
+                            </Space>
                         </div>
                     </div>
                 </TitleTemplate>
@@ -110,7 +134,9 @@
                     <TextArea @bind-Value="@_testContent" 
                              Rows="5" 
                              Placeholder="Enter your test message here..."
-                             Disabled="@_testLoading" />
+                             Disabled="@_testLoading" 
+                             ShowCount
+                             MaxLength="2000" />
                 </ChildContent>
             </Card>
         </div>
@@ -134,7 +160,7 @@
                     {
                         <Card Size="@CardSize.Small" Class="mb-2">
                             <TitleTemplate>
-                                <Space>
+                                <Space Size="@SpaceSize.Small" Wrap>
                                     <SpaceItem>
                                         <Icon Type="@(config.Type == "Model" ? "robot" : "api")" />
                                     </SpaceItem>
@@ -142,7 +168,8 @@
                                         <Select TItem="string"
                                                 TItemValue="string"
                                                 @bind-Value="@config.Type"
-                                                Style="width: 120px;"
+                                                Style="width: 100px;"
+                                                Size="@InputSize.Small"
                                                 Disabled="@_testLoading">
                                             <SelectOptions>
                                                 <SelectOption Value="@("Model")" Label="Model" />
@@ -159,7 +186,8 @@
                                                     @bind-Value="@config.ConfigId"
                                                     ValueName="@nameof(LlmConfig.Id)"
                                                     LabelName="@nameof(LlmConfig.Name)"
-                                                    Style="width: 200px;"
+                                                    Style="width: 180px;"
+                                                    Size="@InputSize.Small"
                                                     Disabled="@_testLoading" />
                                         }
                                         else
@@ -170,18 +198,46 @@
                                                     @bind-Value="@config.ConfigId"
                                                     ValueName="@nameof(LlmEndpoint.Id)"
                                                     LabelName="@nameof(LlmEndpoint.Name)"
-                                                    Style="width: 200px;"
+                                                    Style="width: 180px;"
+                                                    Size="@InputSize.Small"
                                                     Disabled="@_testLoading" />
                                         }
                                     </SpaceItem>
                                     <SpaceItem>
                                         <Input @bind-Value="@config.Parameters" 
-                                               Placeholder="temperature=0.7,max_tokens=100"
+                                               Placeholder="temp=0.7,tokens=100"
+                                               Style="width: 160px;"
+                                               Size="@InputSize.Small"
                                                Disabled="@_testLoading" />
                                     </SpaceItem>
                                     <SpaceItem>
-                                        <Button Danger OnClick="() => RemoveTestConfig(config)" Disabled="@_testLoading">
-                                            <Icon Type="delete" />
+                                        @if (config.ChatHistory.Any())
+                                        {
+                                            <Badge Count="@config.ChatHistory.Count" ShowZero="false">
+                                                <Button Size="@ButtonSize.Small" 
+                                                        OnClick="() => ShowChatHistory(config)" 
+                                                        Disabled="@_testLoading">
+                                                    <Icon Type="history" /> 查看聊天历史
+                                                </Button>
+                                            </Badge>
+                                        }
+                                        else
+                                        {
+                                            <Button Size="@ButtonSize.Small" 
+                                                    OnClick="() => ShowChatHistory(config)" 
+                                                    Disabled="@_testLoading"
+                                                    >
+                                                <Icon Type="history" /> 查看聊天历史
+                                            </Button>
+                                        }
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Button Danger 
+                                                Size="@ButtonSize.Small" 
+                                                OnClick="() => RemoveTestConfig(config)" 
+                                                Disabled="@_testLoading"
+                                                >
+                                            <Icon Type="delete" /> 删除配置
                                         </Button>
                                     </SpaceItem>
                                 </Space>
@@ -291,6 +347,46 @@
     </Table>
 </Drawer>
 
+<Drawer Title="@(_selectedConfigForHistory != null ? GetConfigName(_selectedConfigForHistory) + " - 聊天历史" : "聊天历史")"
+        Visible="@_showChatHistoryDrawer"
+        Width="700"
+        OnClose="CloseChatHistoryDrawer">
+    @if (_selectedConfigForHistory != null)
+    {
+        <div class="chat-history-drawer-content">
+            @if (_selectedConfigForHistory.ChatHistory.Any())
+            {
+                <div class="chat-history-header">
+                    <Space>
+                        <SpaceItem>
+                            <Text Strong>共 @_selectedConfigForHistory.ChatHistory.Count 条消息</Text>
+                        </SpaceItem>
+                    </Space>
+                </div>
+                <div class="chat-history-messages">
+                    @foreach (var msg in _selectedConfigForHistory.ChatHistory)
+                    {
+                        <div class="chat-message-item @msg.Role">
+                            <div class="message-header">
+                                <Tag Color="@(msg.Role == "user" ? "blue" : msg.Role == "system" ? "purple" : "green")">
+                                    @(msg.Role == "user" ? "👤 用户" : msg.Role == "system" ? "⚙️ 系统" : "🤖 助手")
+                                </Tag>
+                            </div>
+                            <div class="message-content">
+                                <pre>@msg.Content</pre>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <Empty Description="@("暂无聊天历史")" />
+            }
+        </div>
+    }
+</Drawer>
+
 <style>
     .prompt-edit-section {
         margin-bottom: 16px;
@@ -299,59 +395,180 @@
     .test-configs-list {
         max-height: calc(100vh - 250px);
         overflow-y: auto;
+        padding: 8px;
     }
 
     .parameters-container {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 12px;
     }
 
     .parameter-item {
         display: flex;
         align-items: center;
         gap: 16px;
+        padding: 8px;
+        background: #fafafa;
+        border-radius: 4px;
     }
 
     .response-container {
         position: relative;
-        background: #f5f5f5;
-        border-radius: 4px;
-        padding: 8px;
-        margin-top: 8px;
+        background: #fafafa;
+        border-radius: 6px;
+        padding: 12px;
+        margin-top: 12px;
+        border: 1px solid #e8e8e8;
     }
 
     .response-container pre {
         margin: 0;
         white-space: pre-wrap;
         word-wrap: break-word;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #333;
     }
 
     .streaming {
-        animation: typing 0.5s steps(40) infinite;
+        animation: typing 0.8s ease-in-out infinite;
     }
 
     @@keyframes typing {
-        from { border-right: 2px solid #1890ff; }
-        to { border-right: 2px solid transparent; }
+        0%, 100% { border-right: 3px solid #1890ff; }
+        50% { border-right: 3px solid transparent; }
     }
 
     .history-test-configs {
-        padding: 8px;
+        padding: 16px;
+        background: #fafafa;
+        border-radius: 4px;
     }
 
     .history-response {
         max-height: 200px;
         overflow-y: auto;
-        background: #f5f5f5;
+        background: #fff;
         border-radius: 4px;
-        padding: 8px;
+        padding: 12px;
+        border: 1px solid #e8e8e8;
     }
 
     .history-response pre {
         margin: 0;
         white-space: pre-wrap;
         word-wrap: break-word;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    /* 聊天历史抽屉样式 */
+    .chat-history-drawer-content {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .chat-history-header {
+        padding: 16px;
+        border-bottom: 1px solid #f0f0f0;
+        background: #fafafa;
+        border-radius: 4px;
+        margin-bottom: 16px;
+    }
+
+    .chat-history-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0 8px;
+    }
+
+    .chat-message-item {
+        margin-bottom: 20px;
+        animation: slideIn 0.3s ease-out;
+    }
+
+    @@keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .chat-message-item.user .message-content {
+        background: #e6f7ff;
+        border-left: 3px solid #1890ff;
+    }
+
+    .chat-message-item.assistant .message-content {
+        background: #f6ffed;
+        border-left: 3px solid #52c41a;
+    }
+
+    .chat-message-item.system .message-content {
+        background: #f9f0ff;
+        border-left: 3px solid #722ed1;
+    }
+
+    .message-header {
+        margin-bottom: 8px;
+    }
+
+    .message-content {
+        padding: 12px 16px;
+        border-radius: 6px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+
+    .message-content pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        line-height: 1.8;
+        color: #333;
+    }
+
+    /* 卡片样式优化 */
+    .ant-card-small > .ant-card-head {
+        padding: 8px 12px;
+        background: #fafafa;
+        border-bottom: 1px solid #f0f0f0;
+    }
+
+    .ant-card-small > .ant-card-body {
+        padding: 12px;
+    }
+
+    /* 滚动条美化 */
+    .test-configs-list::-webkit-scrollbar,
+    .chat-history-messages::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .test-configs-list::-webkit-scrollbar-track,
+    .chat-history-messages::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 3px;
+    }
+
+    .test-configs-list::-webkit-scrollbar-thumb,
+    .chat-history-messages::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 3px;
+    }
+
+    .test-configs-list::-webkit-scrollbar-thumb:hover,
+    .chat-history-messages::-webkit-scrollbar-thumb:hover {
+        background: #555;
     }
 </style>
 
@@ -382,6 +599,9 @@
     private Dictionary<string, string> _parameterValues = new();
 
     private string _testContent = string.Empty;
+    private bool _showChatHistoryDrawer = false;
+    private PromptTestConfig? _selectedConfigForHistory = null;
+    private bool _keepChatHistory = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -599,13 +819,9 @@
         _testConfigs.Remove(config);
     }
 
-    private void OnPromptContentChanged(ChangeEventArgs e)
+    private void OnPromptContentChanged(string content)
     {
-        if (e.Value is string content)
-        {
-            _editingPrompt.Content = content;
-            UpdatePromptParameters(content);
-        }
+        UpdatePromptParameters(content);
     }
 
     private void UpdatePromptParameters(string content)
@@ -647,11 +863,11 @@
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_testContent))
+        @* if (string.IsNullOrWhiteSpace(_testContent))
         {
             _message.Error("Please enter test content before testing");
             return;
-        }
+        } *@
 
         _testLoading = true;
 
@@ -676,6 +892,27 @@
                     config.TestResult = new PromptTestResult { Success = true, Response = "" };
                     StateHasChanged();
 
+                    // 构建消息列表 - 每个配置独立的聊天历史
+                    var messages = new List<ChatMessage>();
+                    
+                    // 如果全局保留聊天历史并且该配置有历史，添加历史消息
+                    if (_keepChatHistory && config.ChatHistory.Any())
+                    {
+                        messages.AddRange(config.ChatHistory);
+                    }
+                    else
+                    {
+                        // 否则只添加系统消息
+                        messages.Add(new ChatMessage { Role = "system", Content = processedPromptContent });
+                    }
+                    
+                    // 添加用户当前输入
+                    if (!string.IsNullOrWhiteSpace(_testContent))
+                    {
+                        messages.Add(new ChatMessage { Role = "user", Content = _testContent });
+                    }
+
+                    // 流式调用 - 根据配置类型选择不同的调用方式
                     IAsyncEnumerable<string> streamingResponse;
                     if (config.Type == "Model")
                     {
@@ -687,11 +924,7 @@
 
                         streamingResponse = ChatClientService.SendStreamingMessageAsync(
                             llmConfig,
-                            new List<ChatMessage> 
-                            { 
-                                new ChatMessage { Role = "system", Content = processedPromptContent },
-                                new ChatMessage { Role = "user", Content = _testContent }
-                            });
+                            messages);
                     }
                     else
                     {
@@ -703,25 +936,46 @@
 
                         streamingResponse = ChatClientService.SendStreamingMessageAsync(
                             endpoint,
-                            new List<ChatMessage> 
-                            { 
-                                new ChatMessage { Role = "system", Content = processedPromptContent },
-                                new ChatMessage { Role = "user", Content = _testContent }
-                            });
+                            messages);
                     }
 
+                    // 流式接收响应
                     try
                     {
                         await foreach (var chunk in streamingResponse.WithCancellation(cts.Token))
                         {
                             config.TestResult.Response += chunk;
                             StateHasChanged();
-                            await Task.Delay(10, cts.Token); // 保持打字效果的同步性
+                            await Task.Delay(10, cts.Token); // 保持打字效果的流畅性
+                        }
+
+                        // 如果全局启用了保留聊天历史，更新该配置的历史记录
+                        if (_keepChatHistory)
+                        {
+                            // 如果这是第一次测试，添加系统消息
+                            if (!config.ChatHistory.Any())
+                            {
+                                config.ChatHistory.Add(new ChatMessage { Role = "system", Content = processedPromptContent });
+                            }
+                            
+                            // 添加用户消息
+                            if (!string.IsNullOrWhiteSpace(_testContent))
+                            {
+                                config.ChatHistory.Add(new ChatMessage { Role = "user", Content = _testContent });
+                            }
+                            
+                            // 添加助手响应
+                            if (config.TestResult.Success && !string.IsNullOrEmpty(config.TestResult.Response))
+                            {
+                                config.ChatHistory.Add(new ChatMessage { Role = "assistant", Content = config.TestResult.Response });
+                            }
                         }
                     }
-                    catch (OperationCanceledException)
+                    catch (Exception ex)
                     {
-                        throw new Exception("Request timed out after 2 minutes.");
+                        config.TestResult.Success = false;
+                        config.TestResult.Error = ex.Message;
+                        StateHasChanged();
                     }
                 }
                 catch (Exception ex)
@@ -755,6 +1009,12 @@
                 _message.Warning("Some requests were cancelled.");
             }
 
+            // 如果全局启用了保留历史并且有任何成功的测试，清空输入框
+            if (_keepChatHistory && _testConfigs.Any(c => c.TestResult?.Success == true))
+            {
+                _testContent = string.Empty;
+            }
+
             // 保存测试结果到历史记录
             await SaveTestHistory();
             _message.Success("Test configurations saved to history");
@@ -762,6 +1022,47 @@
         finally
         {
             _testLoading = false;
+        }
+    }
+
+    private void ShowChatHistory(PromptTestConfig config)
+    {
+        _selectedConfigForHistory = config;
+        _showChatHistoryDrawer = true;
+    }
+
+    private void CloseChatHistoryDrawer()
+    {
+        _showChatHistoryDrawer = false;
+        _selectedConfigForHistory = null;
+    }
+
+    private void ClearAllChatHistory()
+    {
+        foreach (var config in _testConfigs)
+        {
+            config.ChatHistory.Clear();
+        }
+        _message.Success("所有聊天历史已清空");
+        CloseChatHistoryDrawer();
+        StateHasChanged();
+    }
+
+    private string GetConfigName(PromptTestConfig config)
+    {
+        if (config.Type == "Model")
+        {
+            var model = _availableConfigs.FirstOrDefault(c => c.Id == config.ConfigId);
+            return model != null ? $"{model.Name} ({model.Model})" : config.ConfigId ?? "Unknown";
+        }
+        else if (config.Type == "Endpoint")
+        {
+            var endpoint = _availableEndpoints.FirstOrDefault(e => e.Id == config.ConfigId);
+            return endpoint?.Name ?? config.ConfigId ?? "Unknown";
+        }
+        else
+        {
+            return config.ConfigId ?? "Unknown";
         }
     }
 

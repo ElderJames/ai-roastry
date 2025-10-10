@@ -22,6 +22,74 @@ namespace LY.LlmPool.Web.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentMember", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ConfigJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LlmAppId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("LlmConfigId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LlmPromptId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Order")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LlmAppId");
+
+                    b.HasIndex("LlmConfigId");
+
+                    b.HasIndex("LlmPromptId");
+
+                    b.ToTable("AgentMembers");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentTool", b =>
+                {
+                    b.Property<string>("AgentMemberId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ToolId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ToolType")
+                        .HasColumnType("text");
+
+                    b.HasKey("AgentMemberId", "ToolId", "ToolType");
+
+                    b.ToTable("AgentTools");
+                });
+
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
                 {
                     b.Property<string>("Id")
@@ -96,8 +164,7 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.Property<string>("AppType")
                         .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
+                        .HasColumnType("text")
                         .HasColumnName("app_type");
 
                     b.Property<string>("ConfigJson")
@@ -127,15 +194,19 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("llm_config_id");
 
+                    b.Property<string>("LlmPromptId")
+                        .HasColumnType("text")
+                        .HasColumnName("llm_prompt_id");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
                         .HasColumnName("name");
 
-                    b.Property<string>("PromptId")
+                    b.Property<string>("OrchestrationMode")
                         .HasColumnType("text")
-                        .HasColumnName("prompt_id");
+                        .HasColumnName("orchestration_mode");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -147,10 +218,10 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.HasIndex("LlmConfigId");
 
+                    b.HasIndex("LlmPromptId");
+
                     b.HasIndex("Name")
                         .IsUnique();
-
-                    b.HasIndex("PromptId");
 
                     b.ToTable("llm_apps");
                 });
@@ -405,6 +476,89 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.ToTable("llm_prompt_history");
                 });
 
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.McpServerConfig", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Args")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Command")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ConfigJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Env")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SchemaCacheJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("McpServerConfigs");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentMember", b =>
+                {
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmApp", "LlmApp")
+                        .WithMany("AgentMembers")
+                        .HasForeignKey("LlmAppId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmConfig", "LlmConfig")
+                        .WithMany()
+                        .HasForeignKey("LlmConfigId");
+
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmPrompt", "LlmPrompt")
+                        .WithMany()
+                        .HasForeignKey("LlmPromptId");
+
+                    b.Navigation("LlmApp");
+
+                    b.Navigation("LlmConfig");
+
+                    b.Navigation("LlmPrompt");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentTool", b =>
+                {
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.AgentMember", "AgentMember")
+                        .WithMany("AgentTools")
+                        .HasForeignKey("AgentMemberId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AgentMember");
+                });
+
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
                 {
                     b.HasOne("LY.LlmPool.Web.Data.Entities.LlmEndpoint", "Endpoint")
@@ -434,24 +588,21 @@ namespace LY.LlmPool.Web.Data.Migrations
                 {
                     b.HasOne("LY.LlmPool.Web.Data.Entities.LlmEndpoint", "Endpoint")
                         .WithMany()
-                        .HasForeignKey("EndpointId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("EndpointId");
 
                     b.HasOne("LY.LlmPool.Web.Data.Entities.LlmConfig", "LlmConfig")
                         .WithMany()
-                        .HasForeignKey("LlmConfigId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("LlmConfigId");
 
-                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmPrompt", "Prompt")
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmPrompt", "LlmPrompt")
                         .WithMany()
-                        .HasForeignKey("PromptId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("LlmPromptId");
 
                     b.Navigation("Endpoint");
 
                     b.Navigation("LlmConfig");
 
-                    b.Navigation("Prompt");
+                    b.Navigation("LlmPrompt");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmConfig", b =>
@@ -495,9 +646,19 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Navigation("Prompt");
                 });
 
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentMember", b =>
+                {
+                    b.Navigation("AgentTools");
+                });
+
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
                 {
                     b.Navigation("ChildCalls");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmApp", b =>
+                {
+                    b.Navigation("AgentMembers");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmConfig", b =>

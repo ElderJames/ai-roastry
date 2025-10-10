@@ -3,6 +3,7 @@ using LY.LlmPool.Web.Components.Account;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
+using LY.LlmPool.Web.Services.Agents;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -15,13 +16,25 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var useInMemoryDb = Environment.GetEnvironmentVariable("USE_INMEMORY_DB")?.ToLowerInvariant() == "true";
 
 // Add database contexts
-builder.Services.AddDbContextFactory<LlmDbContext>(options =>
-    options.UseNpgsql(connectionString));
+if (useInMemoryDb)
+{
+    builder.Services.AddDbContextFactory<LlmDbContext>(options =>
+        options.UseInMemoryDatabase("LlmDbTest"));
 
-builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
-    options.UseNpgsql(connectionString));
+    builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+        options.UseInMemoryDatabase("AppDbTest"));
+}
+else
+{
+    builder.Services.AddDbContextFactory<LlmDbContext>(options =>
+        options.UseNpgsql(connectionString));
+
+    builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+        options.UseNpgsql(connectionString));
+}
 
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -45,9 +58,22 @@ builder.Services.AddAuthentication(options =>
 
 // Add LLM Pool services
 builder.Services.AddScoped<LlmPoolService>();
-builder.Services.AddScoped<ChatClientService>();
+builder.Services.AddScoped<IChatClientService, ChatClientService>();
+builder.Services.AddScoped(sp => (ChatClientService)sp.GetRequiredService<IChatClientService>());
 builder.Services.AddScoped<PromptParameterService>();
 builder.Services.AddScoped<CallRecordService>();
+builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
+builder.Services.AddScoped<McpServerConfigService>();
+// Using ModelContextProtocol SDK for MCP discovery (no custom SSE client registered)
+
+// Add new granular services
+builder.Services.AddScoped<ModelTypeService>();
+builder.Services.AddScoped<ConfigService>();
+builder.Services.AddScoped<EndpointService>();
+builder.Services.AddScoped<PromptService>();
+builder.Services.AddScoped<AppService>();
+builder.Services.AddScoped<AgentService>();
+builder.Services.AddScoped<ExampleAppService>();
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();
@@ -106,6 +132,10 @@ builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
 })
 .AddHttpMessageHandler<LoggingHttpHandler>();
 
+// Named HttpClient for upstream LLM calls (tests can override it)
+builder.Services.AddHttpClient("UpstreamLlm")
+    .AddHttpMessageHandler<LoggingHttpHandler>();
+
 // Add Ant Design
 builder.Services.AddAntDesign();
 
@@ -137,7 +167,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-if (Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
+if (!useInMemoryDb && Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
 {
     using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -174,6 +204,140 @@ app.MapAdditionalIdentityEndpoints();
 
 // Map controllers - this needs to be after UseRouting and before UseEndpoints
 app.MapControllers();
+
+// Seed minimal data when using InMemory DB so UI dropdowns have items
+if (useInMemoryDb)
+{
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<LlmDbContext>>();
+        using var db = dbFactory.CreateDbContext();
+
+        if (!db.ModelTypes.Any())
+        {
+            var mtId = Guid.NewGuid().ToString("N");
+            db.ModelTypes.Add(new LlmModelType
+            {
+                Id = mtId,
+                Name = "OpenAI",
+                Description = "OpenAI Compatible Models",
+                Icon = "thunderbolt",
+                DefaultEndpoint = "https://api.openai.com",
+                CreatedAt = DateTime.UtcNow
+            });
+            db.SaveChanges();
+        }
+
+        var modelTypeId = db.ModelTypes.Select(x => x.Id).First();
+
+        if (!db.Configs.Any())
+        {
+            db.Configs.Add(new LlmConfig
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Name = "Local-OpenAI-Compatible",
+                Description = "Sample config for tests",
+                ModelTypeId = modelTypeId,
+                BaseUrl = "https://api.openai.com",
+                ApiKey = "test-key",
+                Model = "gpt-4o-mini",
+                IsEnabled = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
+            });
+            db.SaveChanges();
+        }
+
+        if (!db.Prompts.Any())
+        {
+            db.Prompts.AddRange(
+                new LlmPrompt
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Name = "Planner",
+                    Description = "Plan tasks and break down goals",
+                    Content = "You are a planning agent. Create step-by-step plans.",
+                    CreateTime = DateTime.UtcNow,
+                    UpdateTime = DateTime.UtcNow,
+                    Version = 1
+                },
+                new LlmPrompt
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Name = "Researcher",
+                    Description = "Search and summarize information",
+                    Content = "You are a research agent. Find, cite, and summarize.",
+                    CreateTime = DateTime.UtcNow,
+                    UpdateTime = DateTime.UtcNow,
+                    Version = 1
+                }
+            );
+            db.SaveChanges();
+        }
+
+        // Seed a sample AgentGroup app with two members and one internal tool
+        if (!db.Apps.Any(a => a.AppType == "AgentGroup" && a.Name == "SampleAgentGroup"))
+        {
+            var cfg = db.Configs.AsQueryable().FirstOrDefault();
+            var pPlanner = db.Prompts.AsQueryable().FirstOrDefault(p => p.Name == "Planner");
+            var pResearcher = db.Prompts.AsQueryable().FirstOrDefault(p => p.Name == "Researcher");
+            if (cfg != null && pPlanner != null && pResearcher != null)
+            {
+                var appId = Guid.NewGuid().ToString("N");
+                var agentApp = new LlmApp
+                {
+                    Id = appId,
+                    Name = "SampleAgentGroup",
+                    Description = "InMemory sample agent group for smoke tests",
+                    AppType = "AgentGroup",
+                    OrchestrationMode = OrchestrationMode.Sequential,
+                    IsEnabled = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                db.Apps.Add(agentApp);
+                db.SaveChanges();
+
+                var m1 = new AgentMember
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Name = "Planner",
+                    Role = "planner",
+                    Order = 1,
+                    LlmAppId = agentApp.Id!,
+                    LlmPromptId = pPlanner.Id!,
+                    LlmConfigId = cfg.Id!
+                };
+                var m2 = new AgentMember
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Name = "Researcher",
+                    Role = "researcher",
+                    Order = 2,
+                    LlmAppId = agentApp.Id!,
+                    LlmPromptId = pResearcher.Id!,
+                    LlmConfigId = cfg.Id!
+                };
+                db.AgentMembers.AddRange(m1, m2);
+                db.SaveChanges();
+
+                // Attach one internal tool to member1
+                db.AgentTools.Add(new AgentTool
+                {
+                    AgentMemberId = m1.Id,
+                    ToolId = "Internal.ContextExtractor",
+                    ToolType = ToolType.Internal
+                });
+                db.SaveChanges();
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[InMemory Seed] Failed: {ex}");
+    }
+}
 
 // Apply database migrations and seed initial data if needed
 //using (var scope = app.Services.CreateScope())

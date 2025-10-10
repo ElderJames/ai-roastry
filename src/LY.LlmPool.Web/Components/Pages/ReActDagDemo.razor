@@ -1,0 +1,260 @@
+@page "/react-dag-demo"
+@using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Services.Agents
+@using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Data.Entities
+@inject ExampleAppService ExampleAppService
+@inject LY.LlmPool.Web.Services.Agents.AgentOrchestratorService OrchestratorService
+@inject AppService AppService
+@inject ILogger<ReActDagDemo> Logger
+
+<PageTitle>ReAct DAG 演示</PageTitle>
+
+<Space Direction="@SpaceDirection.Vertical" Size="@("large")" Style="width:100%">
+    <SpaceItem>
+        <Card Title="ReAct DAG 工作流演示" Style="width:100%">
+            <Body>
+                <Space Direction="@SpaceDirection.Vertical" Size="@("middle")" Style="width:100%">
+                    <SpaceItem>
+                        <Alert Type="@AlertType.Info" 
+                               Message="此页面演示多智能体 DAG(有向无环图)协作流程" 
+                               Description="规划器 → 并行研究员(技术/市场) → 聚合器 → 审核员。可通过 API 外部调用。"
+                               ShowIcon="true" />
+                    </SpaceItem>
+
+                    <SpaceItem>
+                        <TextArea Placeholder="请输入您的问题，例如：比较 Claude 和 GPT-4 的技术特点和市场定位"
+                                  @bind-Value="userQuery"
+                                  Rows="3"
+                                  MaxLength="500"
+                                  ShowCount />
+                    </SpaceItem>
+
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" 
+                                Icon="@IconType.Outline.Thunderbolt" 
+                                Size="@ButtonSize.Large"
+                                Loading="isExecuting"
+                                OnClick="ExecuteWorkflow"
+                                Block>
+                            @(isExecuting ? "执行中" : "执行工作流")
+                        </Button>
+                    </SpaceItem>
+
+                    @* API 调用示例折叠面板 *@
+                    <SpaceItem>
+                        <Collapse Accordion>
+                            <Panel Header="📡 如何通过 API 调用此演示应用" Key="1">
+                                <Text>
+                                    <Paragraph>
+                                        <strong>非流式调用示例 (cURL):</strong>
+                                        <pre style="background:#f5f5f5;padding:10px;border-radius:4px;">
+curl -X POST http://localhost:5071/api/openai/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ReAct-DAG-Demo",
+    "messages": [{"role": "user", "content": "比较 Claude 和 GPT-4"}],
+    "stream": false
+  }'</pre>
+                                    </Paragraph>
+                                    <Paragraph>
+                                        <strong>流式调用示例 (Python):</strong>
+                                        <pre style="background:#f5f5f5;padding:10px;border-radius:4px;">
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:5071/api/openai", api_key="not-needed")
+for chunk in client.chat.completions.create(
+    model="ReAct-DAG-Demo",
+    messages=[{"role": "user", "content": "比较 Claude 和 GPT-4"}],
+    stream=True
+):
+    print(chunk.choices[0].delta.content, end="")</pre>
+                                    </Paragraph>
+                                    <Paragraph>
+                                        详细文档请参阅: <a href="/docs/ReAct-Agent-Configuration-Guide.md" target="_blank">ReAct Agent 配置指南</a>
+                                    </Paragraph>
+                                </Text>
+                            </Panel>
+                        </Collapse>
+                    </SpaceItem>
+
+                    @if (isExecuting || executionSteps.Any())
+                    {
+                        <SpaceItem>
+                            <Divider>执行轨迹</Divider>
+                            <Timeline Mode="@TimelineMode.Left">
+                                @foreach (var step in executionSteps)
+                                {
+                                    <TimelineItem Color="@GetStepColor(step.Status)">
+                                        <Badge Status="@GetBadgeStatus(step.Status)" Text="@step.AgentName" />
+                                        <p><strong>@step.Role</strong></p>
+                                        <p>@step.Timestamp.ToString("HH:mm:ss.fff")</p>
+                                        @if (!string.IsNullOrEmpty(step.Result))
+                                        {
+                                            <Card Size="@CardSize.Small" Style="margin-top:8px">
+                                                <Text>@step.Result</Text>
+                                            </Card>
+                                        }
+                                    </TimelineItem>
+                                }
+                                @if (isExecuting)
+                                {
+                                    <TimelineItem Color="@("blue")">
+                                        <Spin Size="@SpinSize.Small" />
+                                        <Text Type="@TextElementType.Secondary"> 工作流运行中</Text>
+                                    </TimelineItem>
+                                }
+                            </Timeline>
+                        </SpaceItem>
+                    }
+
+                    @if (!string.IsNullOrEmpty(finalResult))
+                    {
+                        <SpaceItem>
+                            <Divider>最终结果</Divider>
+                            <Result Status="@ResultStatus.Success"
+                                    Title="工作流执行完成"
+                                    SubTitle="@($"总耗时: {totalDuration.TotalSeconds:F2} 秒")">
+                                <Card Title="综合报告" Style="text-align:left">
+                                    <Text Style="white-space:pre-wrap">@finalResult</Text>
+                                </Card>
+                            </Result>
+                        </SpaceItem>
+                    }
+
+                    @if (!string.IsNullOrEmpty(errorMessage))
+                    {
+                        <SpaceItem>
+                            <Alert Type="@AlertType.Error" 
+                                   Message="执行失败" 
+                                   Description="@errorMessage" 
+                                   ShowIcon="true" 
+                                   Closable />
+                        </SpaceItem>
+                    }
+                </Space>
+            </Body>
+        </Card>
+    </SpaceItem>
+</Space>
+
+@code {
+    private bool isExecuting = false;
+    private string userQuery = string.Empty;
+    private List<ExecutionStep> executionSteps = new();
+    private string finalResult = string.Empty;
+    private string errorMessage = string.Empty;
+    private TimeSpan totalDuration = TimeSpan.Zero;
+    private DateTime executionStartTime;
+
+    private class ExecutionStep
+    {
+        public required string AgentName { get; set; }
+        public required string Role { get; set; }
+        public required string Status { get; set; } // waiting, running, completed, failed
+        public required DateTime Timestamp { get; set; }
+        public string Result { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // 确保演示应用已创建
+        await ExampleAppService.EnsureReActDagDemoAsync();
+    }
+
+    private async Task ExecuteWorkflow()
+    {
+        if (string.IsNullOrWhiteSpace(userQuery))
+        {
+            errorMessage = "请输入问题";
+            return;
+        }
+
+        try
+        {
+            isExecuting = true;
+            executionSteps.Clear();
+            finalResult = string.Empty;
+            errorMessage = string.Empty;
+            executionStartTime = DateTime.Now;
+            StateHasChanged();
+
+            await ExecuteRealWorkflow();
+
+            totalDuration = DateTime.Now - executionStartTime;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "执行工作流时出错");
+            errorMessage = $"执行错误: {ex.Message}";
+        }
+        finally
+        {
+            isExecuting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ExecuteRealWorkflow()
+    {
+        var appName = ExampleAppService.DemoAppName;
+        var app = await AppService.GetAppByNameAsync(appName);
+        
+        if (app == null)
+        {
+            errorMessage = $"未找到应用: {appName}";
+            return;
+        }
+
+        var resultBuilder = new System.Text.StringBuilder();
+        var userMessages = new List<ChatMessage>
+        {
+            new() { Role = "user", Content = userQuery }
+        };
+
+        await OrchestratorService.ExecuteAsync(
+            app: app,
+            userMessages: userMessages,
+            onProgress: async (agentName, role, step, message, isFinal) =>
+            {
+                var status = isFinal ? "completed" : "running";
+                
+                executionSteps.Add(new ExecutionStep
+                {
+                    AgentName = agentName ?? "Unknown",
+                    Role = role ?? "Agent",
+                    Status = status,
+                    Timestamp = DateTime.Now,
+                    Result = message ?? string.Empty
+                });
+
+                if (!string.IsNullOrEmpty(message))
+                {
+                    resultBuilder.AppendLine($"[{agentName}]: {message}");
+                    resultBuilder.AppendLine();
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+        );
+
+        finalResult = resultBuilder.ToString();
+    }
+
+    private string GetStepColor(string status) => status switch
+    {
+        "waiting" => "gray",
+        "running" => "blue",
+        "completed" => "green",
+        "failed" => "red",
+        _ => "gray"
+    };
+
+    private BadgeStatus GetBadgeStatus(string status) => status switch
+    {
+        "waiting" => BadgeStatus.Default,
+        "running" => BadgeStatus.Processing,
+        "completed" => BadgeStatus.Success,
+        "failed" => BadgeStatus.Error,
+        _ => BadgeStatus.Default
+    };
+}

@@ -9,6 +9,7 @@ namespace LY.LlmPool.Web.Models
         public string? Parameters { get; set; }
         public PromptTestResult? TestResult { get; set; }
         public bool IsStreaming { get; set; }
+        public List<ChatMessage> ChatHistory { get; set; } = new();
 
         public static PromptTestConfig FromTestConfigRecord(TestConfigRecord record)
         {
@@ -23,7 +24,8 @@ namespace LY.LlmPool.Web.Models
                     Response = record.Response,
                     Error = record.Error
                 },
-                IsStreaming = false
+                IsStreaming = false,
+                ChatHistory = new List<ChatMessage>()
             };
         }
     }

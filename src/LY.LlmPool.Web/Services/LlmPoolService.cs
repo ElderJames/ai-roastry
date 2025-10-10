@@ -14,13 +14,15 @@ public class LlmPoolService
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
     private readonly ILogger<LlmPoolService> _logger;
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
-    private readonly ChatClientService _chatClientService;
+    private readonly IChatClientService _chatClientService;
+    private readonly McpServerConfigService? _mcpService;
 
-    public LlmPoolService(IDbContextFactory<LlmDbContext> dbContextFactory, ILogger<LlmPoolService> logger, ChatClientService chatClientService)
+    public LlmPoolService(IDbContextFactory<LlmDbContext> dbContextFactory, ILogger<LlmPoolService> logger, IChatClientService chatClientService, McpServerConfigService? mcpService = null)
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
         _chatClientService = chatClientService;
+        _mcpService = mcpService;
     }
 
     #region Model Types
@@ -86,6 +88,44 @@ public class LlmPoolService
 
         dbContext.ModelTypes.Remove(modelType);
         await dbContext.SaveChangesAsync();
+    }
+
+    #endregion
+
+    #region MCP Tools Discovery
+
+    /// <summary>
+    /// Return available MCP tools grouped by server. Each entry contains server id, server name and list of (toolId, name).
+    /// </summary>
+    public async Task<Dictionary<string, List<(string toolId, string name)>>> GetAvailableMcpToolsAsync()
+    {
+        var result = new Dictionary<string, List<(string toolId, string name)>>();
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var servers = await dbContext.McpServerConfigs.Where(s => s.IsEnabled).ToListAsync();
+        if (_mcpService == null)
+        {
+            // Mcp service not available (e.g. in some unit tests) - return empty entries for servers
+            foreach (var srv in servers)
+            {
+                result[srv.Id] = new List<(string, string)>();
+            }
+            return result;
+        }
+
+        foreach (var srv in servers)
+        {
+            try
+            {
+                var tools = await _mcpService.GetToolsAsync(srv.Id);
+                result[srv.Id] = tools.Select(t => (t.id, t.name)).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get tools for MCP server {ServerId}", srv.Id);
+                result[srv.Id] = new List<(string, string)>();
+            }
+        }
+        return result;
     }
 
     #endregion
@@ -815,7 +855,7 @@ public class LlmPoolService
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         return await dbContext.Apps
-            .Include(a => a.Prompt)
+            .Include(a => a.LlmPrompt)
             .Include(a => a.LlmConfig)
             .Include(a => a.Endpoint)
             .AsNoTracking()
@@ -827,19 +867,29 @@ public class LlmPoolService
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         return await dbContext.Apps
-            .Include(a => a.Prompt)
+            .Include(a => a.LlmPrompt)
             .Include(a => a.LlmConfig)
             .Include(a => a.Endpoint)
+            .Include(a => a.AgentMembers)
+                .ThenInclude(m => m.LlmPrompt)
+            .Include(a => a.AgentMembers)
+                .ThenInclude(m => m.LlmConfig)
             .FirstOrDefaultAsync(a => a.Id == id);
     }
+
+    public Task<LlmApp?> GetAppAsync(string id) => GetAppByIdAsync(id);
 
     public async Task<LlmApp?> GetAppByNameAsync(string name)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         return await dbContext.Apps
-            .Include(a => a.Prompt)
+            .Include(a => a.LlmPrompt)
             .Include(a => a.LlmConfig)
             .Include(a => a.Endpoint)
+            .Include(a => a.AgentMembers)
+                .ThenInclude(m => m.LlmPrompt)
+            .Include(a => a.AgentMembers)
+                .ThenInclude(m => m.LlmConfig)
             .FirstOrDefaultAsync(a => a.Name == name && a.IsEnabled);
     }
 
@@ -866,6 +916,7 @@ public class LlmPoolService
         existing.Name = app.Name;
         existing.Description = app.Description;
         existing.AppType = app.AppType;
+        existing.OrchestrationMode = app.OrchestrationMode;
         existing.PromptId = app.PromptId;
         existing.LlmConfigId = app.LlmConfigId;
         existing.EndpointId = app.EndpointId;
@@ -890,5 +941,196 @@ public class LlmPoolService
         await dbContext.SaveChangesAsync();
     }
 
+    // Create an AgentGroup app with members in one shot
+    public async Task<LlmApp> CreateAgentGroupWithMembersAsync(LlmApp app, IEnumerable<AgentMember> members)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+
+        app.Id = Guid.NewGuid().ToString("N");
+        app.AppType = string.IsNullOrWhiteSpace(app.AppType) ? LlmAppTypes.AgentGroup : app.AppType;
+        app.CreatedAt = DateTime.UtcNow;
+        app.UpdatedAt = DateTime.UtcNow;
+        dbContext.Apps.Add(app);
+
+        var order = 1;
+        foreach (var m in members)
+        {
+            if (string.IsNullOrWhiteSpace(m.LlmPromptId) && string.IsNullOrWhiteSpace(m.LlmConfigId))
+            {
+                continue;
+            }
+            m.Id = Guid.NewGuid().ToString("N");
+            m.LlmAppId = app.Id;
+            m.Order = m.Order == 0 ? order : m.Order;
+            if (string.IsNullOrWhiteSpace(m.Name))
+            {
+                m.Name = $"Agent {m.Order}";
+            }
+            dbContext.AgentMembers.Add(m);
+            order = Math.Max(order + 1, m.Order + 1);
+        }
+
+        await dbContext.SaveChangesAsync();
+        return app;
+    }
     #endregion
-} 
+
+    #region Agent Members
+
+    public async Task<List<AgentMember>> GetAgentMembersAsync(string appId)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.AgentMembers
+            .Include(m => m.LlmPrompt)
+            .Include(m => m.LlmConfig)
+            .Where(m => m.LlmAppId == appId)
+            .OrderBy(m => m.Order)
+            .ToListAsync();
+    }
+
+    public async Task<AgentMember> AddAgentMemberAsync(AgentMember member)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        member.Id = Guid.NewGuid().ToString("N");
+        dbContext.AgentMembers.Add(member);
+        await dbContext.SaveChangesAsync();
+        return member;
+    }
+
+    public async Task<AgentMember> UpdateAgentMemberAsync(AgentMember member)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.AgentMembers.FindAsync(member.Id);
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"AgentMember with ID {member.Id} not found.");
+        }
+
+        existing.Name = member.Name;
+        existing.Role = member.Role;
+        existing.Order = member.Order;
+        existing.LlmPromptId = member.LlmPromptId;
+        existing.LlmConfigId = member.LlmConfigId;
+
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task DeleteAgentMemberAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.AgentMembers.FindAsync(id);
+        if (existing == null)
+        {
+            return;
+        }
+        dbContext.AgentMembers.Remove(existing);
+        await dbContext.SaveChangesAsync();
+    }
+
+    public Task RemoveAgentMemberAsync(string id) => DeleteAgentMemberAsync(id);
+
+    #endregion
+
+    #region Agent Tools
+
+    public async Task<List<AgentTool>> GetAgentToolsAsync(string agentMemberId)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.AgentTools
+            .Where(t => t.AgentMemberId == agentMemberId)
+            .ToListAsync();
+    }
+
+    public async Task<AgentTool> AddAgentToolAsync(AgentTool tool)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        dbContext.AgentTools.Add(tool);
+        await dbContext.SaveChangesAsync();
+        return tool;
+    }
+
+    public async Task DeleteAgentToolAsync(string agentMemberId, string toolId, ToolType toolType)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.AgentTools
+            .FirstOrDefaultAsync(t => t.AgentMemberId == agentMemberId && t.ToolId == toolId && t.ToolType == toolType);
+        if (existing != null)
+        {
+            dbContext.AgentTools.Remove(existing);
+            await dbContext.SaveChangesAsync();
+        }
+    }
+
+    public async Task SetAgentToolsAsync(string agentMemberId, List<AgentTool> tools)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        
+        // Remove existing tools
+        var existing = await dbContext.AgentTools
+            .Where(t => t.AgentMemberId == agentMemberId)
+            .ToListAsync();
+        dbContext.AgentTools.RemoveRange(existing);
+        
+        // Add new tools
+        foreach (var tool in tools)
+        {
+            tool.AgentMemberId = agentMemberId;
+            dbContext.AgentTools.Add(tool);
+        }
+        
+        await dbContext.SaveChangesAsync();
+    }
+
+    #endregion
+
+    #region MCP Server Configs
+
+    public async Task<List<McpServerConfig>> GetMcpServerConfigsAsync()
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.McpServerConfigs
+            .OrderBy(c => c.Name)
+            .ToListAsync();
+    }
+
+    public async Task<McpServerConfig> AddMcpServerConfigAsync(McpServerConfig config)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        config.Id = Guid.NewGuid().ToString("N");
+        dbContext.McpServerConfigs.Add(config);
+        await dbContext.SaveChangesAsync();
+        return config;
+    }
+
+    public async Task<McpServerConfig> UpdateMcpServerConfigAsync(McpServerConfig config)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.McpServerConfigs.FindAsync(config.Id);
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"McpServerConfig with ID {config.Id} not found.");
+        }
+
+        existing.Name = config.Name;
+        existing.Url = config.Url;
+        existing.Description = config.Description;
+        existing.SchemaCacheJson = config.SchemaCacheJson;
+
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task RemoveMcpServerConfigAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.McpServerConfigs.FindAsync(id);
+        if (existing != null)
+        {
+            dbContext.McpServerConfigs.Remove(existing);
+            await dbContext.SaveChangesAsync();
+        }
+    }
+
+    #endregion
+}

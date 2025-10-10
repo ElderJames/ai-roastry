@@ -19,6 +19,10 @@ public class LlmDbContext : DbContext
     public DbSet<LlmPromptHistory> PromptHistory { get; set; } = null!;
     public DbSet<LlmApp> Apps { get; set; } = null!;
 
+    public DbSet<AgentMember> AgentMembers { get; set; } = null!;
+    public DbSet<McpServerConfig> McpServerConfigs { get; set; } = null!;
+    public DbSet<AgentTool> AgentTools { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -120,21 +124,42 @@ public class LlmDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.Name).IsUnique();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
-            entity.HasOne(e => e.Prompt)
-                .WithMany()
-                .HasForeignKey(e => e.PromptId)
-                .OnDelete(DeleteBehavior.SetNull);
-                
-            entity.HasOne(e => e.LlmConfig)
-                .WithMany()
-                .HasForeignKey(e => e.LlmConfigId)
-                .OnDelete(DeleteBehavior.SetNull);
-                
-            entity.HasOne(e => e.Endpoint)
-                .WithMany()
-                .HasForeignKey(e => e.EndpointId)
-                .OnDelete(DeleteBehavior.SetNull);
+            // AppType is string now; no conversion needed
+            // OrchestrationMode 存为字符串，但容错：无法解析的旧值映射为 null，避免异常
+            entity.Property(e => e.OrchestrationMode)
+                .HasConversion(
+                    v => v.HasValue ? v.Value.ToString() : null,
+                    v => v == null
+                        ? (OrchestrationMode?)null
+                        : (v == nameof(OrchestrationMode.Sequential)
+                            ? OrchestrationMode.Sequential
+                            : (v == nameof(OrchestrationMode.GroupChat)
+                                ? OrchestrationMode.GroupChat
+                                : (OrchestrationMode?)null))
+                );
+        });
+
+        modelBuilder.Entity<AgentMember>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasOne(e => e.LlmApp)
+                .WithMany(e => e.AgentMembers)
+                .HasForeignKey(e => e.LlmAppId);
+        });
+
+        modelBuilder.Entity<McpServerConfig>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<AgentTool>(entity =>
+        {
+            entity.HasKey(e => new { e.AgentMemberId, e.ToolId, e.ToolType });
+            entity.HasOne(e => e.AgentMember)
+                .WithMany(e => e.AgentTools)
+                .HasForeignKey(e => e.AgentMemberId);
+            entity.Property(e => e.ToolType).HasConversion<string>();
         });
     }
-} 
+}

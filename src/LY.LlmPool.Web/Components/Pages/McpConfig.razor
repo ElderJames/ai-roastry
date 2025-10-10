@@ -1,0 +1,344 @@
+@page "/mcp-config"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services
+@using AntDesign
+@using AntDesign.TableModels
+@inject McpServerConfigService McpService
+@inject MessageService _message
+@inject IJSRuntime JSRuntime
+
+<PageTitle>MCP Server 配置</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>MCP Server 配置</div>
+            <div>
+                <Button Type="@ButtonType.Primary" OnClick="ShowAddDialog">
+                    <Icon Type="plus" /> 新建
+                </Button>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Table TItem="McpServerConfig" DataSource="_items" Size="@TableSize.Middle">
+            <Column TData="string" Title="名称">
+                @context.Name
+            </Column>
+            <Column TData="string" Title="URL" Width="380">
+                <a href="@context.Url" target="_blank">@context.Url</a>
+            </Column>
+            <Column TData="string" Title="描述">
+                @context.Description
+            </Column>
+            <Column TData="string" Title="工具数" Width="80">
+                @GetToolsCount(context)
+            </Column>
+            <Column TData="string" Title="提示词数" Width="90">
+                @GetPromptsCount(context)
+            </Column>
+            <ActionColumn Title="操作" Width="180">
+                <Space>
+                    <SpaceItem>
+                        <Button Size="@ButtonSize.Small" OnClick="() => Edit(context)">
+                            <Icon Type="edit" /> 编辑
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="确认删除该配置？" OkText="删除" CancelText="取消" OnConfirm="() => Delete(context)">
+                            <Button Danger Size="@ButtonSize.Small">
+                                <Icon Type="delete" /> 删除
+                            </Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Loading="@(_fetchingId == context.Id)" Size="@ButtonSize.Small" OnClick="() => FetchProto(context)">
+                            <Icon Type="download" /> 获取 Proto
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Loading="@(_toolsLoadingId == context.Id)" Size="@ButtonSize.Small" OnClick="() => ViewTools(context)">
+                            查看工具
+                        </Button>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </ChildContent>
+</Card>
+
+<Modal Title="@(_editing?.Id is null ? "新建 MCP 配置" : "编辑 MCP 配置")"
+       Visible="@_showDialog"
+       OnOk="Save"
+       OnCancel="CloseDialog">
+    <Form Model="_editing" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 16 }">
+        <FormItem Label="名称" Required>
+            <Input @bind-Value="_editing!.Name" />
+        </FormItem>
+        <FormItem Label="URL" Required>
+            <Input @bind-Value="_editing!.Url" Placeholder="https://your-mcp-server" />
+        </FormItem>
+        <FormItem Label="描述">
+            <TextArea @bind-Value="_editing!.Description" />
+        </FormItem>
+    </Form>
+</Modal>
+
+@code {
+    private List<McpServerConfig> _items = new();
+    private bool _showDialog;
+    private McpServerConfig? _editing;
+    private string? _fetchingId;
+    // tools modal state
+    private bool _showToolsModal;
+    private string? _toolsLoadingId;
+    private List<ToolRow> _tools = new();
+
+    private class ToolRow
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public string? JsonSchema { get; set; }
+        // UI state
+        public bool Expanded { get; set; }
+        public string? FormattedJson { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _items = await McpService.ListAsync();
+        StateHasChanged();
+    }
+
+    private void ShowAddDialog()
+    {
+        _editing = new McpServerConfig();
+        _showDialog = true;
+    }
+
+    private void Edit(McpServerConfig item)
+    {
+        _editing = new McpServerConfig
+        {
+            Id = item.Id,
+            Name = item.Name,
+            Url = item.Url,
+            Description = item.Description,
+            SchemaCacheJson = item.SchemaCacheJson
+        };
+        _showDialog = true;
+    }
+
+    private async Task Save()
+    {
+        if (_editing is null) return;
+        if (string.IsNullOrWhiteSpace(_editing.Name))
+        {
+            _message.Error("名称必填");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_editing.Url))
+        {
+            _message.Error("URL 必填");
+            return;
+        }
+
+        try
+        {
+            if (string.IsNullOrEmpty(_editing.Id))
+            {
+                await McpService.CreateAsync(_editing);
+                _message.Success($"已创建: {_editing.Name}");
+            }
+            else
+            {
+                var ok = await McpService.UpdateAsync(_editing);
+                if (!ok)
+                {
+                    _message.Warning("未找到要更新的记录");
+                }
+                else
+                {
+                    _message.Success("已保存修改");
+                }
+            }
+            await ReloadAsync();
+            CloseDialog();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"保存失败: {ex.Message}");
+        }
+    }
+
+    private async Task Delete(McpServerConfig item)
+    {
+        try
+        {
+            await McpService.DeleteAsync(item.Id);
+            _message.Success($"已删除: {item.Name}");
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"删除失败: {ex.Message}");
+        }
+    }
+
+    private async Task FetchProto(McpServerConfig item)
+    {
+        try
+        {
+            _fetchingId = item.Id;
+            StateHasChanged();
+            var (tools, prompts) = await McpService.FetchAndCacheSchemaAsync(item.Id);
+            _message.Success($"已获取: 工具 {tools} 个，提示词 {prompts} 个");
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"获取失败: {ex.Message}");
+        }
+        finally
+        {
+            _fetchingId = null;
+            StateHasChanged();
+        }
+    }
+
+    private int GetToolsCount(McpServerConfig cfg)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.SchemaCacheJson)) return 0;
+        return McpServerConfigService.ParseCounts(cfg.SchemaCacheJson).tools;
+    }
+
+    private int GetPromptsCount(McpServerConfig cfg)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.SchemaCacheJson)) return 0;
+        return McpServerConfigService.ParseCounts(cfg.SchemaCacheJson).prompts;
+    }
+
+    private void CloseDialog()
+    {
+        _showDialog = false;
+    }
+
+    private async Task ViewTools(McpServerConfig item)
+    {
+        try
+        {
+            _toolsLoadingId = item.Id;
+            _tools.Clear();
+            StateHasChanged();
+            var details = await McpService.GetToolsDetailedAsync(item.Id);
+            // map to local list for UI
+            _tools.AddRange(details.Select(t => new ToolRow {
+                Id = t.Id,
+                Name = t.Name,
+                Description = t.Description,
+                JsonSchema = t.JsonSchema,
+                Expanded = false,
+                FormattedJson = TryFormatJson(t.JsonSchema)
+            }));
+            _showToolsModal = true;
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"获取工具失败: {ex.Message}");
+        }
+        finally
+        {
+            _toolsLoadingId = null;
+            StateHasChanged();
+        }
+    }
+
+    private static string? TryFormatJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return System.Text.Json.JsonSerializer.Serialize(doc.RootElement, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            // not valid json, return original
+            return json;
+        }
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text ?? string.Empty);
+            _message.Success("已复制到剪贴板");
+        }
+        catch
+        {
+            _message.Warning("复制失败：浏览器不允许或不可用");
+        }
+    }
+
+    private void CloseToolsModal()
+    {
+        _showToolsModal = false;
+        _tools.Clear();
+    }
+}
+
+<Modal Title="MCP 工具列表" Visible="@_showToolsModal" OnOk="CloseToolsModal" OnCancel="CloseToolsModal" Width="800">
+    <div style="max-height:60vh; overflow:auto;">
+        @if (_tools == null || _tools.Count == 0)
+        {
+            <div>没有可用工具。</div>
+        }
+        else
+        {
+            <Table TItem="ToolRow" DataSource="_tools">
+                <Column TData="string" Title="ID">@context.Id</Column>
+                <Column TData="string" Title="名称">@context.Name</Column>
+                <Column TData="string" Title="描述">@context.Description</Column>
+                <Column TData="string" Title="JSON Schema" Width="220">
+                    <Space>
+                        <Button Size="@ButtonSize.Small" OnClick="@( (Func<Task>)(async () => {
+                            // toggle expand for this row
+                        }) )">切换</Button>
+                    </Space>
+                </Column>
+            </Table>
+            @foreach (var t in _tools)
+            {
+                if (!string.IsNullOrWhiteSpace(t.JsonSchema))
+                {
+                    <Card Style="margin-top:8px;">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div><strong>@t.Name (@t.Id)</strong></div>
+                            <div>
+                                <Space>
+                                    <Button Size="@ButtonSize.Small" OnClick="() => { t.Expanded = !t.Expanded; StateHasChanged(); }">@((t.Expanded) ? "收起" : "展开")</Button>
+                                    <Button Size="@ButtonSize.Small" OnClick="() => CopyToClipboard(t.FormattedJson ?? t.JsonSchema)">复制</Button>
+                                </Space>
+                            </div>
+                        </div>
+                        @if (t.Expanded)
+                        {
+                            <pre style="white-space:pre-wrap; word-break:break-all; margin-top:8px;">@t.FormattedJson</pre>
+                        }
+                        else
+                        {
+                            <div style="color:var(--ant-gray-6); margin-top:8px;">(已隐藏，点击展开查看)</div>
+                        }
+                    </Card>
+                }
+            }
+        }
+    </div>
+</Modal>

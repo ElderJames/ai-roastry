@@ -3,7 +3,8 @@
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Models
 @using LY.LlmPool.Web.Services
-@inject LlmPoolService LlmPoolService
+@inject ModelTypeService ModelTypeService
+@inject LY.LlmPool.Web.Services.ConfigService ConfigService
 @inject MessageService _message
 
 <PageTitle>Model Configuration</PageTitle>
@@ -197,12 +198,12 @@
 
     private async Task LoadModelTypesAsync()
     {
-        _modelTypes = await LlmPoolService.GetModelTypesAsync();
+        _modelTypes = await ModelTypeService.GetModelTypesAsync();
     }
 
     private async Task LoadConfigsAsync()
     {
-        _llmGroups = await LlmPoolService.GetLlmGroupsAsync();
+        _llmGroups = await ConfigService.GetLlmGroupsAsync();
     }
 
     private void ShowModelTypeModal()
@@ -225,7 +226,7 @@
         {
             if (!string.IsNullOrEmpty(modelType.Id))
             {
-                await LlmPoolService.DeleteModelTypeAsync(modelType.Id);
+                await ModelTypeService.DeleteModelTypeAsync(modelType.Id);
                 _message.Success($"Deleted model type: {modelType.Name}");
             }
             _modelTypes.Remove(modelType);
@@ -264,14 +265,14 @@
                     // 新增模型类型
                     modelType.Id = Guid.NewGuid().ToString("N");
                     modelType.CreatedAt = DateTime.UtcNow;
-                    await LlmPoolService.AddModelTypeAsync(modelType);
+                    await ModelTypeService.AddModelTypeAsync(modelType);
                     _message.Success($"Added model type: {modelType.Name}");
                 }
                 else
                 {
                     // 更新现有模型类型
                     modelType.UpdatedAt = DateTime.UtcNow;
-                    await LlmPoolService.UpdateModelTypeAsync(modelType);
+                    await ModelTypeService.UpdateModelTypeAsync(modelType);
                     _message.Success($"Updated model type: {modelType.Name}");
                 }
             }
@@ -334,7 +335,7 @@
 
     private async Task DeleteConfig(LlmConfig config)
     {
-        await LlmPoolService.DeleteConfigAsync(config.Id);
+        await ConfigService.DeleteConfigAsync(config.Id);
         await LoadConfigsAsync();
     }
 
@@ -368,11 +369,11 @@
 
         if (string.IsNullOrEmpty(_editingConfig.Id))
         {
-            await LlmPoolService.AddConfigAsync(_editingConfig);
+            await ConfigService.AddConfigAsync(_editingConfig);
         }
         else
         {
-            await LlmPoolService.UpdateConfigAsync(_editingConfig);
+            await ConfigService.UpdateConfigAsync(_editingConfig);
         }
          
         _message.Success($"Saved successfully");
@@ -393,4 +394,4 @@
             _editingConfig.BaseUrl = modelType.DefaultEndpoint;
         }
     }
-} 
+}

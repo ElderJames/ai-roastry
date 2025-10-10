@@ -41,7 +41,7 @@ pipeline {
     stage('Test') {
       steps {
         script {
-          sh "dotnet test --no-build llm-pool.sln"
+          sh "USE_INMEMORY_DB=true dotnet test --no-build llm-pool.sln"
         }
       }
     }

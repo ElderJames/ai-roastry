@@ -12,7 +12,7 @@ using System.Text;
 
 namespace LY.LlmPool.Web.Services;
 
-public class ChatClientService
+public class ChatClientService : IChatClientService
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<ChatClientService> _logger;

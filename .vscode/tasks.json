@@ -1,0 +1,35 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "build-web",
+			"type": "shell",
+			"command": "dotnet build src/LY.LlmPool.Web/LY.LlmPool.Web.csproj -v minimal",
+			"group": "build"
+		},
+		{
+			"label": "test-all",
+			"type": "shell",
+			"command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}\\scripts\\run-tests-with-timeout.ps1\" -TimeoutSeconds ${input:timeoutSeconds} -TestEnv \"USE_INMEMORY_DB=true\"",
+			"options": {
+				"env": {
+					"USE_INMEMORY_DB": "true"
+				}
+			},
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		// Removed duplicate test-all entry
+	]
+	,
+	"inputs": [
+		{
+			"id": "timeoutSeconds",
+			"type": "promptString",
+			"description": "Timeout in seconds for running tests (default 300)",
+			"default": "300"
+		}
+	]
+}

@@ -1,0 +1,153 @@
+using LY.LlmPool.Web.Data;
+using LY.LlmPool.Web.Data.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace LY.LlmPool.Web.Services;
+
+public class EndpointService
+{
+    private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
+
+    public EndpointService(IDbContextFactory<LlmDbContext> dbContextFactory)
+    {
+        _dbContextFactory = dbContextFactory;
+    }
+
+    public async Task<List<LlmEndpoint>> GetEndpointsAsync()
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .ThenInclude(x => x.LlmConfig)
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .ToListAsync();
+    }
+
+    public async Task<LlmEndpoint?> GetEndpointByIdAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .ThenInclude(x => x.LlmConfig)
+            .FirstOrDefaultAsync(x => x.Id == id);
+    }
+
+    public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        endpoint.Id = Guid.NewGuid().ToString("N");
+        dbContext.Endpoints.Add(endpoint);
+        await dbContext.SaveChangesAsync();
+        return endpoint;
+    }
+
+    public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.Endpoints
+            .Include(x => x.EndpointConfigs)
+            .FirstOrDefaultAsync(x => x.Id == endpoint.Id);
+
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"Endpoint with ID {endpoint.Id} not found.");
+        }
+
+        existing.Name = endpoint.Name;
+        existing.Description = endpoint.Description;
+        existing.IsEnabled = endpoint.IsEnabled;
+        existing.UpdatedAt = DateTime.UtcNow;
+
+        // 更新 EndpointConfigs
+        // 1. 删除已不存在的配置
+        var configsToRemove = existing.EndpointConfigs
+            .Where(ec => !endpoint.EndpointConfigs.Any(newEc =>
+                newEc.Id == ec.Id ||
+                (newEc.LlmConfigId == ec.LlmConfigId && newEc.Priority == ec.Priority)))
+            .ToList();
+
+        foreach (var config in configsToRemove)
+        {
+            existing.EndpointConfigs.Remove(config);
+            dbContext.EndpointConfigs.Remove(config);
+        }
+
+        // 2. 更新或添加新的配置
+        foreach (var newConfig in endpoint.EndpointConfigs)
+        {
+            var existingConfig = existing.EndpointConfigs
+                .FirstOrDefault(ec => ec.Id == newConfig.Id ||
+                    (ec.LlmConfigId == newConfig.LlmConfigId && ec.Priority == newConfig.Priority));
+
+            if (existingConfig != null)
+            {
+                // 更新现有配置
+                existingConfig.LlmConfigId = newConfig.LlmConfigId;
+                existingConfig.Priority = newConfig.Priority;
+            }
+            else
+            {
+                // 添加新配置
+                var config = new LlmEndpointConfig
+                {
+                    EndpointId = existing.Id,
+                    LlmConfigId = newConfig.LlmConfigId,
+                    Priority = newConfig.Priority,
+                    CreatedAt = DateTime.UtcNow
+                };
+                existing.EndpointConfigs.Add(config);
+            }
+        }
+
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task DeleteEndpointAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var endpoint = await dbContext.Endpoints.FindAsync(id);
+        if (endpoint == null)
+        {
+            throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
+        }
+
+        dbContext.Endpoints.Remove(endpoint);
+        await dbContext.SaveChangesAsync();
+    }
+
+    // Resolve an endpoint by its name (enabled only)
+    public async Task<LlmEndpoint?> GetEndpointByNameAsync(string name)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        return await dbContext.Endpoints
+            .Include(e => e.EndpointConfigs)
+            .ThenInclude(ec => ec.LlmConfig)
+            .FirstOrDefaultAsync(e => e.Name == name && e.IsEnabled);
+    }
+
+    // Find an enabled endpoint that contains the given config, prefer lower priority mapping
+    public async Task<LlmEndpoint?> GetEndpointForConfigAsync(string configId)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var query = dbContext.Endpoints
+            .Include(e => e.EndpointConfigs)
+            .ThenInclude(ec => ec.LlmConfig)
+            .Where(e => e.IsEnabled && e.EndpointConfigs.Any(ec => ec.LlmConfigId == configId));
+
+        var endpoints = await query.ToListAsync();
+        if (!endpoints.Any()) return null;
+
+        // Choose the endpoint where this config has the lowest priority
+        var best = endpoints
+            .Select(e => new
+            {
+                Endpoint = e,
+                Priority = e.EndpointConfigs.First(ec => ec.LlmConfigId == configId).Priority
+            })
+            .OrderBy(x => x.Priority)
+            .First().Endpoint;
+        return best;
+    }
+}

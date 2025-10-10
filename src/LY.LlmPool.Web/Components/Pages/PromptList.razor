@@ -4,7 +4,7 @@
 @using LY.LlmPool.Web.Models
 @using AntDesign
 @using AntDesign.TableModels
-@inject LlmPoolService LlmPoolService
+@inject PromptService PromptService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
 
@@ -138,7 +138,7 @@
         _loading = true;
         try
         {
-            _prompts = await LlmPoolService.GetPromptsAsync();
+            _prompts = await PromptService.GetPromptsAsync();
         }
         finally
         {
@@ -160,7 +160,7 @@
     {
         try
         {
-            await LlmPoolService.DeletePromptAsync(prompt.Id!);
+            await PromptService.DeletePromptAsync(prompt.Id!);
             await LoadDataAsync();
             _message.Success("Prompt deleted successfully");
         }
@@ -183,7 +183,7 @@
 
         try
         {
-            var history = await LlmPoolService.GetPromptHistoryAsync(_selectedPrompt.Id);
+            var history = await PromptService.GetPromptHistoryAsync(_selectedPrompt.Id);
             _promptHistory = history.Select(h => new PromptHistoryEntry
             {
                 Version = h.Version.ToString(),
@@ -228,4 +228,4 @@
         public List<PromptTestConfig> TestConfigs { get; set; } = new();
         public DateTime CreateTime { get; set; }
     }
-} 
+}

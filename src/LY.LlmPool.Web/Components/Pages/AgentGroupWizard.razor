@@ -1,0 +1,457 @@
+@using System.Linq
+@using System.Text.Json
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Services
+@using AntDesign
+@using AntDesign.TableModels
+@inject LlmPoolService LlmPoolService
+@inject MessageService _message
+
+<div class="agent-group-wizard">
+    <Steps Current="_step">
+        <Step Title="成员配置" />
+        <Step Title="确认创建" />
+    </Steps>
+
+    @if (_step == 0)
+    {
+        <div class="mt-3">
+            <Form Model="_formModel" Layout="FormLayout.Vertical">
+                <FormItem Label="编排模式">
+                    <div data-testid="wizard-orch-mode">
+                        <Select TItemValue="string" TItem="string" @bind-Value="_orchestrationMode" DataSource="_orchestrationModes" />
+                    </div>
+                </FormItem>
+                @if (_orchestrationMode == "GroupChat")
+                {
+                    <Row Gutter="16" Class="mt-1">
+                        <AntDesign.Col Span="6">
+                            <FormItem Label="最大轮次">
+                                <div data-testid="wizard-gc-maxrounds">
+                                    <AntDesign.InputNumber @bind-Value="_gcMaxRounds" Min="1" Max="10" />
+                                </div>
+                            </FormItem>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="6">
+                            <FormItem Label="遇 FINAL 提前结束">
+                                <div data-testid="wizard-gc-stoponfinal">
+                                    <Switch @bind-Checked="_gcStopOnFinal" />
+                                </div>
+                            </FormItem>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="12">
+                            <FormItem Label="角色顺序（逗号分隔）">
+                                <div data-testid="wizard-gc-roleorder">
+                                    <Input @bind-Value="_gcRoleOrder" Placeholder="planner,researcher,moderator" />
+                                </div>
+                            </FormItem>
+                        </AntDesign.Col>
+                    </Row>
+                    <Row Gutter="16">
+                        <AntDesign.Col Span="12">
+                            <FormItem Label="上下文消息条数上限">
+                                <div data-testid="wizard-gc-contextlimit">
+                                    <AntDesign.InputNumber @bind-Value="_gcContextLimit" Min="10" Max="200" />
+                                </div>
+                            </FormItem>
+                        </AntDesign.Col>
+                    </Row>
+                }
+                @if (_orchestrationMode == "DAG")
+                {
+                    <Row Gutter="16" Class="mt-1">
+                        <AntDesign.Col Span="8">
+                            <FormItem Label="最大并行度">
+                                <div data-testid="wizard-dag-maxparallel">
+                                    <AntDesign.InputNumber @bind-Value="_dagMaxParallelism" Min="1" Max="10" />
+                                </div>
+                                <span class="ant-form-text text-secondary">同时执行的最大 Agent 数量</span>
+                            </FormItem>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="8">
+                            <FormItem Label="全局超时（秒）">
+                                <div data-testid="wizard-dag-timeout">
+                                    <AntDesign.InputNumber @bind-Value="_dagGlobalTimeout" Min="60" Max="3600" />
+                                </div>
+                                <span class="ant-form-text text-secondary">整个 DAG 执行的最大时长</span>
+                            </FormItem>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="8">
+                            <FormItem Label="失败策略">
+                                <div data-testid="wizard-dag-failure">
+                                    <Select TItemValue="string" TItem="string" @bind-Value="_dagFailureStrategy" DataSource="@(new[] { "stop", "continue", "retry" })" />
+                                </div>
+                                <span class="ant-form-text text-secondary">遇到错误时的处理方式</span>
+                            </FormItem>
+                        </AntDesign.Col>
+                    </Row>
+                    <Alert Type="@AlertType.Info" Message="DAG 配置说明" Class="mt-2">
+                        <MessageTemplate>
+                            <div>
+                                <ul style="margin: 0; padding-left: 20px;">
+                                    <li><b>最大并行度</b>：控制同时运行的 Agent 数量，建议设置为 2-5</li>
+                                    <li><b>全局超时</b>：整个 DAG 工作流的最大执行时间</li>
+                                    <li><b>失败策略</b>：stop=立即停止，continue=跳过失败节点继续，retry=重试失败节点</li>
+                                    <li>在下方表格中，您可以为每个 Agent 配置依赖关系（在确认页面设置）</li>
+                                </ul>
+                            </div>
+                        </MessageTemplate>
+                    </Alert>
+                }
+            </Form>
+
+            <Divider>Agent 成员</Divider>
+            <Space>
+                <SpaceItem>
+                    <div data-testid="wizard-add-row">
+                        <Button Type="@ButtonType.Primary" OnClick="AddRow"><Icon Type="plus" /> 添加一行</Button>
+                    </div>
+                </SpaceItem>
+                <SpaceItem>
+                    <div data-testid="wizard-import-prompts">
+                        <Button OnClick="ImportAllPrompts">从全部 Prompt 生成</Button>
+                    </div>
+                </SpaceItem>
+            </Space>
+
+            <Table TItem="MemberRow" DataSource="_rows" Size="TableSize.Small" Bordered Class="mt-2">
+                <ChildContent Context="row">
+                    <Column Title="#" TData="int">@row.Order</Column>
+                    <Column Title="名称" TData="string">
+                        <Input @bind-Value="row.Name" Placeholder="可空，自动填充" />
+                    </Column>
+                    <Column Title="角色" TData="string">
+                        <Input @bind-Value="row.Role" Placeholder="如：Planner/Researcher" />
+                    </Column>
+                    <Column Title="Prompt" TData="string" Width="100px">
+                        <Select TItem="LlmPrompt" TItemValue="string" ValueName="Id" LabelName="Name" @bind-Value="row.LlmPromptId" DataSource="_prompts" AllowClear />
+                    </Column>
+                    <Column Title="模型配置" TData="string" Width="100px">
+                        <Select TItem="LlmConfig" TItemValue="string" ValueName="Id" LabelName="Name" @bind-Value="row.LlmConfigId" DataSource="_configs" />
+                    </Column>
+                    <ActionColumn Title="操作">
+                        <Space>
+                            <SpaceItem>
+                                <Button OnClick="() => MoveUp(row)"><Icon Type="arrow-up" /></Button>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Button OnClick="() => MoveDown(row)"><Icon Type="arrow-down" /></Button>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Button Danger OnClick="() => RemoveRow(row)"><Icon Type="delete" /></Button>
+                            </SpaceItem>
+                        </Space>
+                    </ActionColumn>
+                </ChildContent>
+            </Table>
+
+            <Space Class="mt-3">
+                <SpaceItem>
+                    <Button OnClick="CancelAsync">取消</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <div data-testid="wizard-next">
+                        <Button Type="@ButtonType.Primary" OnClick="NextStep">下一步</Button>
+                    </div>
+                </SpaceItem>
+            </Space>
+        </div>
+    }
+    else
+    {
+        <div class="mt-3">
+            <Descriptions Title="确认信息" Bordered>
+                <DescriptionsItem Title="编排模式">@_orchestrationMode</DescriptionsItem>
+                <DescriptionsItem Title="成员数">@_rows.Count</DescriptionsItem>
+            </Descriptions>
+
+            @if (_orchestrationMode == "GroupChat")
+            {
+                <Descriptions Bordered Size="DescriptionsSize.Small" Class="mt-2">
+                    <DescriptionsItem Title="最大轮次">@_gcMaxRounds</DescriptionsItem>
+                    <DescriptionsItem Title="遇 FINAL 提前结束">@(_gcStopOnFinal ? "是" : "否")</DescriptionsItem>
+                    <DescriptionsItem Title="角色顺序">@_gcRoleOrder</DescriptionsItem>
+                    <DescriptionsItem Title="上下文消息条数上限">@_gcContextLimit</DescriptionsItem>
+                </Descriptions>
+            }
+            @if (_orchestrationMode == "DAG")
+            {
+                <Descriptions Bordered Size="DescriptionsSize.Small" Class="mt-2">
+                    <DescriptionsItem Title="最大并行度">@_dagMaxParallelism</DescriptionsItem>
+                    <DescriptionsItem Title="全局超时">@_dagGlobalTimeout 秒</DescriptionsItem>
+                    <DescriptionsItem Title="失败策略">@_dagFailureStrategy</DescriptionsItem>
+                </Descriptions>
+            }
+
+            <Table TItem="MemberRow" DataSource="_rows" Size="TableSize.Small" Bordered Class="mt-2">
+                <ChildContent Context="row">
+                    <Column Title="#" TData="int">@row.Order</Column>
+                    <Column Title="名称" TData="string">@DisplayName(row)</Column>
+                    <Column Title="角色" TData="string">@DisplayRole(row)</Column>
+                    <Column Title="Prompt" TData="string">@DisplayPrompt(row)</Column>
+                    <Column Title="模型配置" TData="string">@DisplayConfig(row)</Column>
+                </ChildContent>
+            </Table>
+
+            <Space Class="mt-3">
+                <SpaceItem>
+                    <Button OnClick="PrevStep">上一步</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button OnClick="CancelAsync">取消</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <div data-testid="wizard-confirm">
+                        <Button Type="@ButtonType.Primary" Loading="_saving" OnClick="CreateAll">确认</Button>
+                    </div>
+                </SpaceItem>
+            </Space>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public EventCallback<AgentGroupWizardResult> OnCreated { get; set; }
+
+    [Parameter]
+    public EventCallback OnCancel { get; set; }
+
+    [Parameter]
+    public LlmApp? InitialApp { get; set; }
+
+    [Parameter]
+    public bool IsDialog { get; set; } = true;
+
+    private int _step = 0;
+    private readonly List<string> _orchestrationModes = new() { "Sequential", "GroupChat", "DAG" };
+    private string _orchestrationMode = "Sequential";
+    private int _gcMaxRounds = 1;
+    private bool _gcStopOnFinal = true;
+    private string _gcRoleOrder = "planner,researcher,moderator";
+    private int _gcContextLimit = 50;
+    
+    // DAG 配置
+    private int _dagMaxParallelism = 2;
+    private int _dagGlobalTimeout = 600;
+    private string _dagFailureStrategy = "stop";
+
+    private readonly object _formModel = new();
+    private List<LlmPrompt> _prompts = new();
+    private List<LlmConfig> _configs = new();
+    private List<MemberRow> _rows = new();
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _prompts = await LlmPoolService.GetPromptsAsync();
+        _configs = await LlmPoolService.GetConfigsAsync();
+        if (_rows.Count == 0)
+        {
+            AddRow();
+        }
+
+        if (InitialApp != null)
+        {
+            if (InitialApp.OrchestrationMode == OrchestrationMode.GroupChat)
+            {
+                _orchestrationMode = "GroupChat";
+            }
+
+            var cfg = InitialApp.Config;
+            if (cfg.TryGetValue("GroupChatMaxRounds", out var maxObj) && maxObj is JsonElement je1 && je1.ValueKind == JsonValueKind.Number && je1.TryGetInt32(out var rounds))
+            {
+                _gcMaxRounds = Math.Clamp(rounds, 1, 10);
+            }
+            if (cfg.TryGetValue("GroupChatStopOnFinal", out var stopObj) && stopObj is JsonElement je2 && je2.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                _gcStopOnFinal = je2.ValueKind == JsonValueKind.True;
+            }
+            if (cfg.TryGetValue("GroupChatRoleOrder", out var roleObj) && roleObj is JsonElement je3 && je3.ValueKind == JsonValueKind.String)
+            {
+                _gcRoleOrder = je3.GetString() ?? _gcRoleOrder;
+            }
+            if (cfg.TryGetValue("GroupChatContextLimit", out var limitObj) && limitObj is JsonElement je4 && je4.ValueKind == JsonValueKind.Number && je4.TryGetInt32(out var limit))
+            {
+                _gcContextLimit = Math.Clamp(limit, 10, 200);
+            }
+        }
+    }
+
+    private void NextStep()
+    {
+        if (_rows.Count == 0)
+        {
+            _message.Error("至少添加一个成员");
+            return;
+        }
+
+        _step = Math.Min(_step + 1, 1);
+    }
+
+    private void PrevStep()
+    {
+        if (_step > 0)
+        {
+            _step--;
+        }
+    }
+
+    private void AddRow()
+    {
+        _rows.Add(new MemberRow { Order = _rows.Count + 1 });
+    }
+
+    private void RemoveRow(MemberRow row)
+    {
+        _rows.Remove(row);
+        Renumber();
+    }
+
+    private void MoveUp(MemberRow row)
+    {
+        var index = _rows.IndexOf(row);
+        if (index > 0)
+        {
+            (_rows[index - 1], _rows[index]) = (_rows[index], _rows[index - 1]);
+            Renumber();
+        }
+    }
+
+    private void MoveDown(MemberRow row)
+    {
+        var index = _rows.IndexOf(row);
+        if (index < _rows.Count - 1)
+        {
+            (_rows[index + 1], _rows[index]) = (_rows[index], _rows[index + 1]);
+            Renumber();
+        }
+    }
+
+    private void Renumber()
+    {
+        for (int i = 0; i < _rows.Count; i++)
+        {
+            _rows[i].Order = i + 1;
+        }
+    }
+
+    private void ImportAllPrompts()
+    {
+        _rows.Clear();
+        int order = 1;
+        foreach (var prompt in _prompts)
+        {
+            _rows.Add(new MemberRow { Order = order++, Name = prompt.Name, LlmPromptId = prompt.Id });
+        }
+    }
+
+    private async Task CreateAll()
+    {
+        if (_saving)
+        {
+            return;
+        }
+
+        if (_rows.Count == 0)
+        {
+            _message.Error("至少添加一个成员");
+            return;
+        }
+
+        try
+        {
+            _saving = true;
+            var members = _rows.Select(r => new AgentMember
+            {
+                Name = string.IsNullOrWhiteSpace(r.Name) ? $"Agent {r.Order}" : r.Name!,
+                Role = string.IsNullOrWhiteSpace(r.Role) ? "Agent" : r.Role!,
+                Order = r.Order,
+                LlmPromptId = r.LlmPromptId ?? string.Empty,
+                LlmConfigId = r.LlmConfigId ?? string.Empty
+            }).ToList();
+
+            var result = new AgentGroupWizardResult
+            {
+                Members = members,
+                OrchestrationMode = _orchestrationMode == "GroupChat" ? OrchestrationMode.GroupChat 
+                                  : _orchestrationMode == "DAG" ? OrchestrationMode.DAG 
+                                  : OrchestrationMode.Sequential
+            };
+
+            if (result.OrchestrationMode == OrchestrationMode.GroupChat)
+            {
+                result.GroupChatMaxRounds = _gcMaxRounds;
+                result.GroupChatStopOnFinal = _gcStopOnFinal;
+                result.GroupChatRoleOrder = _gcRoleOrder;
+                result.GroupChatContextLimit = _gcContextLimit;
+            }
+
+            if (result.OrchestrationMode == OrchestrationMode.DAG)
+            {
+                result.DAGMaxParallelism = _dagMaxParallelism;
+                result.DAGGlobalTimeout = _dagGlobalTimeout;
+                result.DAGFailureStrategy = _dagFailureStrategy;
+            }
+
+            if (OnCreated.HasDelegate)
+            {
+                await OnCreated.InvokeAsync(result);
+            }
+            else
+            {
+                _message.Success("向导已完成");
+            }
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"创建失败: {ex.Message}");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task CancelAsync()
+    {
+        if (OnCancel.HasDelegate)
+        {
+            await OnCancel.InvokeAsync();
+        }
+    }
+
+    private string DisplayName(MemberRow row) => string.IsNullOrWhiteSpace(row.Name) ? $"Agent {row.Order}" : row.Name!;
+
+    private string DisplayRole(MemberRow row) => string.IsNullOrWhiteSpace(row.Role) ? "Agent" : row.Role!;
+
+    private string DisplayPrompt(MemberRow row)
+    {
+        if (string.IsNullOrEmpty(row.LlmPromptId))
+        {
+            return "-";
+        }
+
+        return _prompts.FirstOrDefault(p => p.Id == row.LlmPromptId)?.Name ?? row.LlmPromptId;
+    }
+
+    private string DisplayConfig(MemberRow row)
+    {
+        if (string.IsNullOrEmpty(row.LlmConfigId))
+        {
+            return "-";
+        }
+
+        return _configs.FirstOrDefault(c => c.Id == row.LlmConfigId)?.Name ?? row.LlmConfigId;
+    }
+
+    private class MemberRow
+    {
+        public int Order { get; set; }
+        public string? Name { get; set; }
+        public string? Role { get; set; }
+        public string? LlmPromptId { get; set; }
+        public string? LlmConfigId { get; set; }
+    }
+}

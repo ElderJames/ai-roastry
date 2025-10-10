@@ -8,8 +8,12 @@ using System.Text.Unicode;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services;
+using LY.LlmPool.Web.Services.Agents;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+
+// Alias to avoid ambiguity
+using AgentOrchestratorServiceAlias = LY.LlmPool.Web.Services.Agents.AgentOrchestratorService;
 
 namespace LY.LlmPool.Web.Controllers
 {
@@ -22,6 +26,8 @@ namespace LY.LlmPool.Web.Controllers
         private readonly PromptParameterService _promptParameterService;
         private readonly ILogger<OpenAICompatController> _logger;
         private readonly ILogger<LoggingHttpHandler> _httpLogger;
+        private readonly AgentOrchestratorServiceAlias _agentOrchestrator;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         private static readonly JsonSerializerOptions _jsonSerializerOptions = new()
         {
@@ -35,13 +41,17 @@ namespace LY.LlmPool.Web.Controllers
             CallRecordService callRecordService,
             PromptParameterService promptParameterService,
             ILogger<OpenAICompatController> logger,
-            ILogger<LoggingHttpHandler> httpLogger)
+            ILogger<LoggingHttpHandler> httpLogger,
+            AgentOrchestratorServiceAlias agentOrchestrator,
+            IHttpClientFactory httpClientFactory)
         {
             _llmPoolService = llmPoolService;
             _callRecordService = callRecordService;
             _promptParameterService = promptParameterService;
             _logger = logger;
             _httpLogger = httpLogger;
+            _agentOrchestrator = agentOrchestrator;
+            _httpClientFactory = httpClientFactory;
         }
 
         [HttpPost("chat/completions")]
@@ -86,7 +96,9 @@ namespace LY.LlmPool.Web.Controllers
                 string.IsNullOrEmpty(authHeader) ||
                 !authHeader.ToString().StartsWith("Bearer "))
             {
-                await WriteAssistantMessageAsync(null, "缺少或无效的 API Key。");
+                Response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                var err = new { error = new { message = "缺少或无效的 API Key。" } };
+                await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
                 return;
             }
 
@@ -95,10 +107,18 @@ namespace LY.LlmPool.Web.Controllers
             try
             {
                 _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
-                var chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions);
-                if (chatRequest == null)
+                ChatRequest chatRequest;
+                try
                 {
-                    throw new InvalidOperationException("Invalid chat request");
+                    chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions) ?? throw new InvalidOperationException("Invalid chat request");
+                }
+                catch (JsonException jsonEx)
+                {
+                    Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                    var err = new { error = new { message = "Invalid JSON in request." } };
+                    _logger.LogError(jsonEx, "Invalid JSON in chat request");
+                    await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
+                    return;
                 }
 
                 _logger.LogInformation("解析的聊天请求 - 模型: {Model}, 消息数量: {MessageCount}", chatRequest.Model, chatRequest.Messages.Count);
@@ -120,6 +140,14 @@ namespace LY.LlmPool.Web.Controllers
                 if (app != null)
                 {
                     _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
+
+                    // AgentGroup 应用走编排分支
+                    if (string.Equals(app.AppType, "AgentGroup", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation("App {AppName} 为 AgentGroup 类型，进入编排分支。", app.Name);
+                        await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
+                        return;
+                    }
 
                     if (!string.IsNullOrEmpty(app.LlmConfigId))
                     {
@@ -229,9 +257,10 @@ namespace LY.LlmPool.Web.Controllers
                         await _llmPoolService.UpdateCallRecordAsync(callRecord);
                     }
 
-                    Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+                    Response.StatusCode = (int)HttpStatusCode.BadRequest;
                     _logger.LogError("No available model found or invalid API key");
-                    await WriteAssistantMessageAsync(chatRequest.Model, "未找到可用模型或 API Key 无效。");
+                    var err = new { error = new { message = "未找到可用模型或 API Key 无效。" } };
+                    await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
                     return;
                 }
 
@@ -240,6 +269,8 @@ namespace LY.LlmPool.Web.Controllers
                     await _callRecordService.UpdateConfigAsync(callRecord, config.Id);
                     await _callRecordService.MarkStartAsync(callRecord);
                 }
+
+                // Note: tests should override the named HttpClient 'UpstreamLlm' to avoid real upstream requests.
 
                 // 参数替换（仅当存在应用 Prompt）
                 if (!string.IsNullOrEmpty(promptContent) && app != null && chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
@@ -344,9 +375,7 @@ namespace LY.LlmPool.Web.Controllers
 
                 var upstreamBody = Encoding.UTF8.GetString(ms.ToArray());
 
-                var handler = new LoggingHttpHandler(_httpLogger);
-                handler.InnerHandler = new HttpClientHandler();
-                using var httpClient = new HttpClient(handler);
+                using var httpClient = _httpClientFactory.CreateClient("UpstreamLlm");
 
                 var baseUri = new Uri(config.BaseUrl);
                 var path = baseUri.AbsolutePath.TrimEnd('/')  + "/chat/completions"; ;
@@ -474,7 +503,7 @@ namespace LY.LlmPool.Web.Controllers
                         config.Id,
                         config.Name,
                         app?.Name,
-                        actualModelName,
+                        actualModelName ?? chatRequest.Model ?? string.Empty,
                         requestStartTime);
                 }
             }
@@ -511,7 +540,7 @@ namespace LY.LlmPool.Web.Controllers
                 if (Request != null)
                 {
                     // 释放占用的配置
-                    // 注意：只有通过 AcquireConfigIfAvailableAsync 成功占用的才需要释放
+                    // 注意：只有通过 AcquireConfigIfAvailable 成功占用的才需要释放
                     // 这里简化：若解析到了 config.Id 则尝试释放
                 }
             }
@@ -633,40 +662,137 @@ namespace LY.LlmPool.Web.Controllers
             await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
         }
 
-        private static string NormalizeEmptyToolArguments(string body)
+        private async Task HandleAgentGroupAsync(ChatRequest chatRequest, LlmApp app, object? requestData, DateTime requestStartTime)
         {
             try
             {
-                var node = JsonNode.Parse(body) as JsonObject;
-                if (node is null) return body;
-                if (node["messages"] is JsonArray msgs)
+                // 创建调用记录（为AgentGroup使用虚拟endpointId）
+                var callRecord = await _callRecordService.CreateAsync("agent-group", requestData);
+
+                // 转换消息格式
+                var userMessages = chatRequest.Messages.Select(m => new ChatMessage
                 {
-                    foreach (var m in msgs.OfType<JsonObject>())
+                    Role = m.Role,
+                    Content = m.Content
+                }).ToList();
+
+                // 若请求需要流式返回（SSE），通过 onProgress 回调写 SSE 数据
+                if (chatRequest.Stream == true)
+                {
+                    Response.StatusCode = (int)HttpStatusCode.OK;
+                    Response.ContentType = "text/event-stream";
+                    Response.Headers.Add("Cache-Control", "no-cache");
+
+                    // onProgress 写出 data: {json}\n\n 格式
+                    async Task ProgressWriter(string agentName, string? role, int step, string text, bool done)
                     {
-                        if (m["tool_calls"] is JsonArray tcs)
+                        if (!Response.HasStarted) { /* no-op: headers already sent */ }
+                        var chunk = new
                         {
-                            foreach (var tc in tcs.OfType<JsonObject>())
+                            id = $"chatcmpl-{Guid.NewGuid().ToString("N")}",
+                            @object = "chat.completion.chunk",
+                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            choices = new[]
                             {
-                                if (tc["function"] is JsonObject fn)
+                                new
                                 {
-                                    var argsNode = fn["arguments"];
-                                    if (argsNode is JsonValue jv && jv.TryGetValue<string>(out var s))
-                                    {
-                                        if (string.IsNullOrWhiteSpace(s))
-                                        {
-                                            fn["arguments"] = "{}";
-                                        }
-                                    }
+                                    delta = new { role = "assistant", content = text },
+                                    index = 0
                                 }
                             }
+                        };
+                        var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
+                        await Response.WriteAsync($"data: {json}\n\n");
+                        await Response.Body.FlushAsync();
+                        if (done)
+                        {
+                            await Response.WriteAsync("data: [DONE]\n\n");
+                            await Response.Body.FlushAsync();
                         }
                     }
+
+                    // 调用编排服务并传入 progress 回调
+                    var result = await _agentOrchestrator.ExecuteAsync(app, userMessages, async (name, role, step, text, done) =>
+                    {
+                        try { await ProgressWriter(name, role, step, text, done); } catch { }
+                    });
+
+                    // 在将结束标记写回客户端之前，先尝试更新调用记录，避免在写入完成后宿主可能已释放请求作用域导致的 ObjectDisposedException
+                    if (callRecord != null)
+                    {
+                        try
+                        {
+                            callRecord.ModelResponseEndedAt = DateTime.UtcNow;
+                            callRecord.IsSuccessful = true;
+                            await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                        }
+                        catch (ObjectDisposedException odEx)
+                        {
+                            _logger.LogWarning(odEx, "Call record update failed due to disposed service provider during streaming finalization for call {CallId}", callRecord.Id);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Call record update failed during streaming finalization for call {CallId}", callRecord.Id);
+                        }
+                    }
+
+                    // 最后写入结束标记（如果服务没有写完）
+                    try
+                    {
+                        await Response.WriteAsync("data: [DONE]\n\n");
+                        await Response.Body.FlushAsync();
+                    }
+                    catch { }
+
+                    return;
                 }
-                return node.ToJsonString(new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+                // 非流式，直接调用并返回完整结果
+                var nonStreamResult = await _agentOrchestrator.ExecuteAsync(app, userMessages);
+
+                // 记录响应时间（简化处理）
+                if (callRecord != null)
+                {
+                    callRecord.ModelResponseEndedAt = DateTime.UtcNow;
+                    callRecord.IsSuccessful = true;
+                    await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                }
+
+                // 返回OpenAI兼容格式
+                var response = new
+                {
+                    id = $"chatcmpl-{Guid.NewGuid().ToString("N")}",
+                    @object = "chat.completion",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = chatRequest.Model,
+                    choices = new[]
+                    {
+                        new
+                        {
+                            index = 0,
+                            message = new
+                            {
+                                role = "assistant",
+                                content = nonStreamResult
+                            },
+                            finish_reason = "stop"
+                        }
+                    },
+                    usage = new
+                    {
+                        prompt_tokens = 0, // TODO: 计算实际token数
+                        completion_tokens = 0,
+                        total_tokens = 0
+                    }
+                };
+
+                Response.ContentType = "application/json";
+                await Response.WriteAsync(JsonSerializer.Serialize(response, _jsonSerializerOptions));
             }
-            catch
+            catch (Exception ex)
             {
-                return body;
+                _logger.LogError(ex, "Error handling AgentGroup request for app {AppName}", app.Name);
+                await WriteAssistantMessageAsync(chatRequest.Model, $"Agent orchestration failed: {ex.Message}");
             }
         }
 
@@ -712,6 +838,48 @@ namespace LY.LlmPool.Web.Controllers
                     }
                     return string.Empty;
                 }
+            }
+        }
+
+        private static string? NormalizeEmptyToolArguments(string body)
+        {
+            try
+            {
+                var node = JsonNode.Parse(body);
+                if (node is JsonObject root)
+                {
+                    if (root["choices"] is JsonArray choices)
+                    {
+                        foreach (var choice in choices.OfType<JsonObject>())
+                        {
+                            if (choice["message"] is JsonObject message)
+                            {
+                                if (message["tool_calls"] is JsonArray toolCalls)
+                                {
+                                    foreach (var tc in toolCalls.OfType<JsonObject>())
+                                    {
+                                        if (tc["function"] is JsonObject fn)
+                                        {
+                                            var argsNode = fn["arguments"];
+                                            if (argsNode is JsonValue jv && jv.TryGetValue<string>(out var s))
+                                            {
+                                                if (string.IsNullOrWhiteSpace(s))
+                                                {
+                                                    fn["arguments"] = "{}";
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return node?.ToJsonString(new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) ?? body;
+            }
+            catch
+            {
+                return body;
             }
         }
     }

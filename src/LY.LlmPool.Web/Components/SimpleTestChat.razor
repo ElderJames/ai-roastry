@@ -96,12 +96,12 @@
             {
                 _response = await ChatClientService.SendMessageAsync(Config, messages);
             }
-            else if (Endpoint != null)
-            {
-                _response = await ChatClientService.SendMessageAsync(Endpoint, messages);
-            }
+            // else if (Endpoint != null && Endpoint.LlmConfig != null)
+            // {
+            //     _response = await ChatClientService.SendMessageAsync(Endpoint.LlmConfig, messages);
+            // }
 
-            if (_response.Status == "success")
+            if (_response != null && _response.Status == "success")
             {
                 _currentMessage = string.Empty;
             }
