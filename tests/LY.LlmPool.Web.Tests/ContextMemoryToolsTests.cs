@@ -121,7 +121,18 @@ public class ContextMemoryToolsTests
             return _sendFunc(config, messages);
         }
 
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+        {
+            return _sendFunc(config, messages);
+        }
+
         public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+        {
+            var response = await _sendFunc(config, messages);
+            yield return response.Message ?? string.Empty;
+        }
+
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
         {
             var response = await _sendFunc(config, messages);
             yield return response.Message ?? string.Empty;

@@ -211,26 +211,59 @@ for chunk in client.chat.completions.create(
             new() { Role = "user", Content = userQuery }
         };
 
+        var stepBuffers = new Dictionary<string, System.Text.StringBuilder>();
+        var stepStates = new Dictionary<string, ExecutionStep>();
         await OrchestratorService.ExecuteAsync(
             app: app,
             userMessages: userMessages,
             onProgress: async (agentName, role, step, message, isFinal) =>
             {
-                var status = isFinal ? "completed" : "running";
-                
-                executionSteps.Add(new ExecutionStep
-                {
-                    AgentName = agentName ?? "Unknown",
-                    Role = role ?? "Agent",
-                    Status = status,
-                    Timestamp = DateTime.Now,
-                    Result = message ?? string.Empty
-                });
+                var agentKey = agentName ?? "Unknown";
+                var stepKey = $"{agentKey}:{step}";
 
-                if (!string.IsNullOrEmpty(message))
+                if (!stepBuffers.TryGetValue(stepKey, out var buffer))
                 {
-                    resultBuilder.AppendLine($"[{agentName}]: {message}");
-                    resultBuilder.AppendLine();
+                    buffer = new System.Text.StringBuilder();
+                    stepBuffers[stepKey] = buffer;
+                }
+
+                var hasContent = !string.IsNullOrEmpty(message);
+                if (hasContent)
+                {
+                    buffer.Append(message);
+                }
+
+                if (!stepStates.TryGetValue(stepKey, out var stepEntry))
+                {
+                    stepEntry = new ExecutionStep
+                    {
+                        AgentName = agentKey,
+                        Role = role ?? "Agent",
+                        Status = "running",
+                        Timestamp = DateTime.Now
+                    };
+                    stepStates[stepKey] = stepEntry;
+                    executionSteps.Add(stepEntry);
+                }
+
+                if (hasContent)
+                {
+                    stepEntry.Result = buffer.ToString();
+                    stepEntry.Timestamp = DateTime.Now;
+                }
+
+                if (isFinal)
+                {
+                    stepEntry.Status = "completed";
+                    var aggregated = buffer.ToString();
+                    if (!string.IsNullOrWhiteSpace(aggregated))
+                    {
+                        resultBuilder.AppendLine($"[{agentKey}]: {aggregated}");
+                        resultBuilder.AppendLine();
+                        stepEntry.Result = aggregated;
+                    }
+                    stepBuffers.Remove(stepKey);
+                    stepStates.Remove(stepKey);
                 }
 
                 await InvokeAsync(StateHasChanged);

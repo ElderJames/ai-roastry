@@ -397,6 +397,6 @@
 
 <Modal Title="AgentGroup 向导" Visible="_showWizardDialog" OnCancel="CloseWizard" Width="900" Footer="null">
     <ChildContent>
-    <AgentGroupWizard IsDialog="true" InitialApp="@_editingApp" OnCreated="HandleWizardCreated" OnCancel="CloseWizard" />
+    <AgentGroupWizard IsDialog="true" InitialApp="@_editingApp" InitialMembers="@_members" OnCreated="HandleWizardCreated" OnCancel="CloseWizard" />
     </ChildContent>
 </Modal>

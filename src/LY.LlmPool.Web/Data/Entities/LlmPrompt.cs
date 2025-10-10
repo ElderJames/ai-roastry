@@ -29,4 +29,10 @@ public class LlmPrompt
 
     [Column("version")]
     public int Version { get; set; }
+
+    /// <summary>
+    /// 模型参数配置 (如: temp=0.7,tokens=100)
+    /// </summary>
+    [Column("model_parameters")]
+    public string? ModelParameters { get; set; }
 } 

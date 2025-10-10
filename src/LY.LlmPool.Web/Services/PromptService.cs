@@ -156,22 +156,11 @@ public class PromptService
             throw new InvalidOperationException($"Configuration {config.Name} is disabled.");
         }
 
-        // Parse parameters
+        // Parse parameters into dictionary
+        Dictionary<string, object>? modelParams = null;
         if (!string.IsNullOrEmpty(parameters))
         {
-            var paramDict = parameters.Split(',')
-                .Select(p => p.Split('='))
-                .Where(p => p.Length == 2)
-                .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
-
-            if (paramDict.TryGetValue("temperature", out var tempStr) && float.TryParse(tempStr, out var temp))
-            {
-                config.Temperature = temp;
-            }
-            if (paramDict.TryGetValue("max_tokens", out var maxTokensStr) && int.TryParse(maxTokensStr, out var maxTokens))
-            {
-                config.MaxTokens = maxTokens;
-            }
+            modelParams = ModelParameterHelper.ParseFromKeyValueString(parameters);
         }
 
         // Replace prompt parameters if provided
@@ -192,7 +181,7 @@ public class PromptService
             messages.Add(new ChatMessage { Role = "user", Content = userMessage });
         }
 
-        var result = await _chatClientService.SendMessageAsync(config, messages);
+        var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
         if (result.Status != "success")
         {
             throw new Exception(result.Message);
@@ -260,22 +249,11 @@ public class PromptService
             throw new Exception($"No available configuration found for endpoint {endpoint.Name}");
         }
 
-        // Parse parameters
+        // Parse parameters into dictionary
+        Dictionary<string, object>? modelParams = null;
         if (!string.IsNullOrEmpty(parameters))
         {
-            var paramDict = parameters.Split(',')
-                .Select(p => p.Split('='))
-                .Where(p => p.Length == 2)
-                .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
-
-            if (paramDict.TryGetValue("temperature", out var tempStr) && float.TryParse(tempStr, out var temp))
-            {
-                config.Temperature = temp;
-            }
-            if (paramDict.TryGetValue("max_tokens", out var maxTokensStr) && int.TryParse(maxTokensStr, out var maxTokens))
-            {
-                config.MaxTokens = maxTokens;
-            }
+            modelParams = ModelParameterHelper.ParseFromKeyValueString(parameters);
         }
 
         // Replace prompt parameters if provided
@@ -296,7 +274,7 @@ public class PromptService
             messages.Add(new ChatMessage { Role = "user", Content = userMessage });
         }
 
-        var result = await _chatClientService.SendMessageAsync(config, messages);
+        var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
         if (result.Status != "success")
         {
             throw new Exception(result.Message);

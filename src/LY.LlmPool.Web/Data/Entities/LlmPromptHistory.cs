@@ -26,6 +26,9 @@ public class LlmPromptHistory
     [Column("based_on_version")]
     public int? BasedOnVersion { get; set; }
 
+    [Column("model_parameters")]
+    public string? ModelParameters { get; set; }
+
     [Column("test_configs")]
     public string? TestConfigsJson { get; set; }
 

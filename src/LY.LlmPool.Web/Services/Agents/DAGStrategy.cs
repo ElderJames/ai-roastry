@@ -51,7 +51,7 @@ public class DAGStrategy : IOrchestrationStrategy
         };
 
         // 执行工作流
-        await ExecuteWorkflowAsync(sortedNodes, graph, members, dagConfig, context, sendMessage, onProgress, ct);
+        await ExecuteWorkflowAsync(sortedNodes, graph, members, dagConfig, context, sendMessage, sendStreamingMessage, onProgress, ct);
 
         // 汇总最终结果
         return AggregateFinalResult(context);
@@ -167,6 +167,7 @@ public class DAGStrategy : IOrchestrationStrategy
         DAGWorkflowConfig dagConfig,
         WorkflowExecutionContext context,
         Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress,
         CancellationToken ct)
     {
@@ -191,6 +192,7 @@ public class DAGStrategy : IOrchestrationStrategy
                     context,
                     completed,
                     sendMessage,
+                    sendStreamingMessage,
                     onProgress,
                     ++step,
                     ct
@@ -221,6 +223,7 @@ public class DAGStrategy : IOrchestrationStrategy
         WorkflowExecutionContext context,
         HashSet<string> completed,
         Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress,
         int step,
         CancellationToken ct)
@@ -290,31 +293,55 @@ public class DAGStrategy : IOrchestrationStrategy
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
 
-            var response = await sendMessage(member.LlmConfig, messages);
+            // 使用流式输出
+            var outputBuilder = new System.Text.StringBuilder();
+            var success = true;
+            string? errorMessage = null;
 
-            var output = response.Status == "success" ? response.Message ?? "" : $"ERROR: {response.Message}";
+            try
+            {
+                await foreach (var chunk in sendStreamingMessage(member.LlmConfig, messages).WithCancellation(cts.Token))
+                {
+                    if (!string.IsNullOrEmpty(chunk))
+                    {
+                        outputBuilder.Append(chunk);
+
+                        // 通知进度 - 不添加前缀,让 UI 层处理显示
+                        if (onProgress != null)
+                        {
+                            await onProgress(member.Name ?? "", member.Role, step, chunk, false);
+                        }
+                    }
+                }
+            }
+            catch (Exception streamEx)
+            {
+                success = false;
+                errorMessage = streamEx.Message;
+            }
+
+            var output = success ? outputBuilder.ToString() : $"ERROR: {errorMessage}";
 
             context.NodeResults[nodeId] = new NodeExecutionResult
             {
                 NodeId = nodeId,
-                Status = response.Status == "success" ? "success" : "error",
+                Status = success ? "success" : "error",
                 Output = output,
-                Error = response.Status != "success" ? response.Message : null
+                Error = success ? null : errorMessage
             };
 
             // 更新全局上下文
-            if (response.Status == "success")
+            if (success)
             {
                 context.GlobalContext = output;
             }
 
             completed.Add(nodeId);
 
-            // 通知进度
-            if (onProgress != null)
+            // 通知最终完成
+            if (onProgress != null && success)
             {
-                var prefix = $"[{member.Name ?? member.Role}]";
-                await onProgress(member.Name ?? "", member.Role, step, $"{prefix} {output}", false);
+                await onProgress(member.Name ?? "", member.Role, step, string.Empty, true);
             }
         }
         catch (Exception ex)

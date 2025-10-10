@@ -269,9 +269,12 @@ public class ChatClientService : IChatClientService
         return kernel;
     }
 
-    private OpenAIPromptExecutionSettings CreateExecutionSettings(List<OpenAITool>? tools, Dictionary<string, object>? toolChoice)
+    private OpenAIPromptExecutionSettings CreateExecutionSettings(List<OpenAITool>? tools, Dictionary<string, object>? toolChoice, Dictionary<string, object>? customParameters = null)
     {
         var settings = new OpenAIPromptExecutionSettings();
+
+        // 应用自定义参数
+        ApplyCustomParameters(settings, customParameters);
 
         // 如果有工具但底层服务不支持 auto tool choice，我们采用保守策略
         if (tools != null && tools.Count > 0)
@@ -313,16 +316,115 @@ public class ChatClientService : IChatClientService
         return settings;
     }
 
-    private OpenAIPromptExecutionSettings CreateExecutionSettingsForObjects(Dictionary<string, object>? toolChoice)
+    private OpenAIPromptExecutionSettings CreateExecutionSettingsForObjects(Dictionary<string, object>? toolChoice, Dictionary<string, object>? customParameters = null)
     {
         var settings = new OpenAIPromptExecutionSettings();
         settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
+        
+        // 应用自定义参数
+        ApplyCustomParameters(settings, customParameters);
+
         return settings;
     }
 
+    private void ApplyCustomParameters(OpenAIPromptExecutionSettings settings, Dictionary<string, object>? customParameters)
+    {
+        ModelParameterHelper.ApplyToExecutionSettings(settings, customParameters);
+    }
+    
     public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
         _logger.LogInformation("开始发送消息，配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
+            config.Model, config.BaseUrl, messages.Count);
+        
+        // 解析配置中的额外参数
+        var configParameters = ModelParameterHelper.ParseFromJson(config.AdditionalParameters);
+        if (configParameters == null && !string.IsNullOrWhiteSpace(config.AdditionalParameters))
+        {
+            _logger.LogWarning("解析 LlmConfig.AdditionalParameters 失败: {Json}", config.AdditionalParameters);
+        }
+        
+        try
+        {
+            // 获取第一个消息的tools配置（假设所有消息共享相同的tools配置）
+            var firstMessage = messages.FirstOrDefault();
+
+            // 如果有工具，尝试使用带工具的 kernel，否则使用普通 kernel
+            var hasLocalTools = toolObjects != null && toolObjects.Any();
+            Kernel kernel;
+            OpenAIPromptExecutionSettings settings;
+
+            if (hasLocalTools)
+            {
+                _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
+                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects!);
+                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, configParameters);
+            }
+            else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
+            {
+                _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
+                try
+                {
+                    kernel = CreateKernelWithTools(config.ApiKey, config.BaseUrl, config.Model, firstMessage.Tools);
+                    settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, configParameters);
+                    _logger.LogInformation("成功创建带工具的 kernel");
+                }
+                catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
+                {
+                    _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
+                    kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
+                    settings = new OpenAIPromptExecutionSettings();
+                    if (configParameters != null)
+                        ApplyCustomParameters(settings, configParameters);
+                }
+            }
+            else
+            {
+                _logger.LogInformation("无工具配置，使用普通 kernel");
+                kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
+                settings = new OpenAIPromptExecutionSettings();
+                ApplyCustomParameters(settings, configParameters);
+            }
+
+            var chatHistory = BuildChatHistory(messages);
+            var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+
+            _logger.LogInformation("开始调用聊天完成服务");
+            var result = await chatCompletionService.GetChatMessageContentsAsync(chatHistory, settings, kernel);
+            _logger.LogInformation("聊天完成服务调用成功，结果数量: {ResultCount}", result.Count);
+
+            var primary = result.FirstOrDefault();
+            if (primary == null)
+            {
+                _logger.LogWarning("模型返回为空响应");
+                return new ChatResponse { Message = string.Empty, Status = "success" };
+            }
+
+            var response = new ChatResponse
+            {
+                Message = primary.Content ?? string.Empty,
+                Status = "success",
+                ToolCalls = ExtractToolCalls(primary)
+            };
+
+            _logger.LogInformation("响应内容长度: {Length}", response.Message.Length);
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "发送消息时发生异常: {Message}", ex.Message);
+            return new ChatResponse
+            {
+                Message = ex.Message,
+                Status = "error"
+            };
+        }
+    }
+
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<object>? toolObjects = null)
+    {
+        _logger.LogInformation("开始发送消息（带参数），配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
         
         try
@@ -339,7 +441,7 @@ public class ChatClientService : IChatClientService
             {
                 _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
                 kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects!);
-                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, parameters);
             }
             else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
             {
@@ -347,7 +449,7 @@ public class ChatClientService : IChatClientService
                 try
                 {
                     kernel = CreateKernelWithTools(config.ApiKey, config.BaseUrl, config.Model, firstMessage.Tools);
-                    settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
+                    settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, parameters);
                     _logger.LogInformation("成功创建带工具的 kernel");
                 }
                 catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
@@ -355,6 +457,7 @@ public class ChatClientService : IChatClientService
                     _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
                     kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
                     settings = new OpenAIPromptExecutionSettings();
+                    ApplyCustomParameters(settings, parameters);
                 }
             }
             else
@@ -362,6 +465,7 @@ public class ChatClientService : IChatClientService
                 _logger.LogInformation("无工具配置，使用普通 kernel");
                 kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
                 settings = new OpenAIPromptExecutionSettings();
+                ApplyCustomParameters(settings, parameters);
             }
 
             var chatHistory = BuildChatHistory(messages);
@@ -463,6 +567,11 @@ public class ChatClientService : IChatClientService
     public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
     {
         return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, null, toolObjects);
+    }
+
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<object>? toolObjects = null)
+    {
+        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, parameters, toolObjects);
     }
 
     public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
@@ -630,7 +739,7 @@ public class ChatClientService : IChatClientService
         {
             _logger.LogInformation("检测到本地工具对象，启用自动调用");
             kernel = CreateKernelWithObjects(apiKey, baseUrl, model, toolObjects);
-            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
+            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, parameters);
         }
         else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
         {
@@ -638,7 +747,7 @@ public class ChatClientService : IChatClientService
             try
             {
                 kernel = CreateKernelWithTools(apiKey, baseUrl, model, firstMessage.Tools);
-                settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
+                settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, parameters);
                 _logger.LogInformation("成功创建带工具的 kernel");
             }
             catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
@@ -646,6 +755,8 @@ public class ChatClientService : IChatClientService
                 _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
                 kernel = CreateKernel(apiKey, baseUrl, model);
                 settings = new OpenAIPromptExecutionSettings();
+                // 即使在无工具模式下也应用自定义参数
+                ApplyCustomParameters(settings, parameters);
             }
         }
         else
@@ -653,6 +764,8 @@ public class ChatClientService : IChatClientService
             _logger.LogInformation("无工具配置，使用普通 kernel");
             kernel = CreateKernel(apiKey, baseUrl, model);
             settings = new OpenAIPromptExecutionSettings();
+            // 应用自定义参数
+            ApplyCustomParameters(settings, parameters);
         }
 
         var chatHistory = BuildChatHistory(messages);

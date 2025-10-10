@@ -180,6 +180,21 @@
         <FormItem Label="Enabled">
             <Switch @bind-Value="@_editingConfig.IsEnabled" />
         </FormItem>
+        <FormItem Label="Additional Parameters">
+            <Tooltip Title="JSON format parameters, e.g., {&quot;max_tokens&quot;: 2000, &quot;thinking_enabled&quot;: true}">
+                <TextArea @bind-Value="@_additionalParametersInput" 
+                          Rows="4" 
+                          Placeholder='{"max_tokens": 2000, "thinking_enabled": true, "top_p": 0.9}'
+                          OnInput="ValidateAdditionalParameters" />
+            </Tooltip>
+            @if (!string.IsNullOrWhiteSpace(_jsonValidationMessage))
+            {
+                <div class="@(_isJsonValid ? "text-success" : "text-danger")" style="margin-top: 8px;">
+                    <Icon Type="@(_isJsonValid ? "check-circle" : "close-circle")" />
+                    @_jsonValidationMessage
+                </div>
+            }
+        </FormItem>
     </Form>
 </Modal>
 
@@ -189,6 +204,11 @@
     private bool _showConfigDialog;
     private bool _showModelTypeDialog;
     private LlmConfig _editingConfig = new();
+    
+    // 额外参数相关字段
+    private string _additionalParametersInput = string.Empty;
+    private bool _isJsonValid = true;
+    private string _jsonValidationMessage = string.Empty;
 
     protected override async Task OnInitializedAsync()
     {
@@ -328,8 +348,14 @@
                 ApiKey = config.ApiKey,
                 Model = config.Model,
                 IsEnabled = config.IsEnabled,
-                AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders)
+                AdditionalHeaders = new Dictionary<string, string>(config.AdditionalHeaders),
+                AdditionalParameters = config.AdditionalParameters
             };
+        
+        // 加载额外参数到输入框
+        _additionalParametersInput = config.AdditionalParameters ?? string.Empty;
+        ValidateAdditionalParameters();
+        
         _showConfigDialog = true;
     }
 
@@ -366,6 +392,18 @@
             _message.Error("Model is required");
             return;
         }
+        
+        // 验证额外参数 JSON
+        if (!string.IsNullOrWhiteSpace(_additionalParametersInput) && !_isJsonValid)
+        {
+            _message.Error("Additional Parameters must be valid JSON");
+            return;
+        }
+        
+        // 保存额外参数
+        _editingConfig.AdditionalParameters = string.IsNullOrWhiteSpace(_additionalParametersInput) 
+            ? null 
+            : _additionalParametersInput;
 
         if (string.IsNullOrEmpty(_editingConfig.Id))
         {
@@ -385,6 +423,9 @@
     {
         _showConfigDialog = false;
         _editingConfig = new LlmConfig();
+        _additionalParametersInput = string.Empty;
+        _isJsonValid = true;
+        _jsonValidationMessage = string.Empty;
     }
 
     private void OnModelTypeChanged(LlmModelType item)
@@ -392,6 +433,22 @@
         if (item is LlmModelType modelType && !string.IsNullOrEmpty(modelType.DefaultEndpoint))
         {
             _editingConfig.BaseUrl = modelType.DefaultEndpoint;
+        }
+    }
+    
+    private void ValidateAdditionalParameters()
+    {
+        if (string.IsNullOrWhiteSpace(_additionalParametersInput))
+        {
+            _isJsonValid = true;
+            _jsonValidationMessage = string.Empty;
+            return;
+        }
+
+        _isJsonValid = ModelParameterHelper.ValidateJson(_additionalParametersInput, out _jsonValidationMessage);
+        if (_isJsonValid)
+        {
+            _jsonValidationMessage = "Valid JSON format";
         }
     }
 }

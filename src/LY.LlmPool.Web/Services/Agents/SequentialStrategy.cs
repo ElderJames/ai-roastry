@@ -63,15 +63,14 @@ public class SequentialStrategy : IOrchestrationStrategy
             if (onProgress != null)
             {
                 var memberResponse = new StringBuilder();
-                var prefix = !string.IsNullOrWhiteSpace(member.Name) ? member.Name : member.Role ?? "Agent";
                 
                 try
                 {
                     await foreach (var chunk in sendStreamingMessage(member.LlmConfig, messages).WithCancellation(ct))
                     {
                         memberResponse.Append(chunk);
-                        var prefixed = $"[{prefix}] {chunk}";
-                        try { await onProgress(member.Name ?? string.Empty, member.Role, step, prefixed, false); } catch { }
+                        // 直接传递原始 chunk,不添加前缀。前缀由 UI 层处理
+                        try { await onProgress(member.Name ?? string.Empty, member.Role, step, chunk, false); } catch { }
                     }
                 }
                 catch (Exception)

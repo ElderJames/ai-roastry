@@ -64,6 +64,18 @@
                         <FormItem Label="Content" Required>
                             <TextArea @bind-Value="@_editingPrompt.Content" Rows="15" OnChange="OnPromptContentChanged" />
                         </FormItem>
+                        <FormItem Label="Model Parameters">
+                            <Input @bind-Value="@_editingPrompt.ModelParameters" 
+                                   Placeholder="temp=0.7,tokens=100"
+                                   Style="width: 100%;">
+                                <Prefix>⚙️</Prefix>
+                            </Input>
+                            <div style="margin-top: 4px; color: #8c8c8c; font-size: 12px;">
+                                <Icon Type="info-circle" Style="margin-right: 4px;" />
+                                支持参数: <Text Code>temp/temperature</Text>, <Text Code>tokens/max_tokens</Text>. 
+                                示例: <Text Code>temp=0,tokens=500</Text> (确定性输出)
+                            </div>
+                        </FormItem>
                         @if (_promptParameters.Any())
                         {
                             <FormItem Label="Parameters">
@@ -202,13 +214,6 @@
                                                     Size="@InputSize.Small"
                                                     Disabled="@_testLoading" />
                                         }
-                                    </SpaceItem>
-                                    <SpaceItem>
-                                        <Input @bind-Value="@config.Parameters" 
-                                               Placeholder="temp=0.7,tokens=100"
-                                               Style="width: 160px;"
-                                               Size="@InputSize.Small"
-                                               Disabled="@_testLoading" />
                                     </SpaceItem>
                                     <SpaceItem>
                                         @if (config.ChatHistory.Any())
@@ -780,6 +785,7 @@
                 PromptId = _editingPrompt.Id ?? throw new Exception("Prompt ID is null"),
                 Content = _editingPrompt.Content,
                 BasedOnVersion = _editingPrompt.Version,
+                ModelParameters = _editingPrompt.ModelParameters,
                 TestConfigs = _testConfigs.Select(c => new TestConfigRecord
                 {
                     Type = c.Type,
@@ -922,9 +928,17 @@
                             throw new Exception("Selected model configuration not found.");
                         }
 
+                        // 解析 Prompt 的模型参数
+                        Dictionary<string, object>? parameters = null;
+                        if (!string.IsNullOrWhiteSpace(_editingPrompt.ModelParameters))
+                        {
+                            parameters = ParseParametersToDict(_editingPrompt.ModelParameters);
+                        }
+
                         streamingResponse = ChatClientService.SendStreamingMessageAsync(
                             llmConfig,
-                            messages);
+                            messages,
+                            parameters);
                     }
                     else
                     {
@@ -1081,6 +1095,7 @@
                 PromptId = _editingPrompt.Id,
                 Content = _editingPrompt.Content,  // Use current content
                 BasedOnVersion = _editingPrompt.Version,
+                ModelParameters = _editingPrompt.ModelParameters,
                 TestConfigs = _testConfigs.Select(c => new TestConfigRecord
                 {
                     Type = c.Type,
@@ -1141,6 +1156,7 @@
             Description = _editingPrompt.Description, // Keep the current description
             Content = history.Content,
             Version = history.Version,
+            ModelParameters = history.ModelParameters,
             CreateTime = _editingPrompt.CreateTime,
             UpdateTime = DateTime.UtcNow
         };
@@ -1158,6 +1174,7 @@
 
         // Show success message
         _message.Success($"Loaded version {history.Version}");
+        await Task.CompletedTask; // 避免警告
     }
 
     private async Task DeleteHistoryRecord(LlmPromptHistory history)
@@ -1177,5 +1194,54 @@
         {
             _message.Error($"Failed to delete history record: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 解析参数字符串为 Dictionary<string, object>: "temp=0.7,tokens=100" -> {"temp": 0.7, "tokens": 100}
+    /// </summary>
+    private Dictionary<string, object> ParseParametersToDict(string parametersString)
+    {
+        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(parametersString))
+        {
+            return result;
+        }
+
+        // 支持逗号或分号分隔
+        var pairs = parametersString.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var pair in pairs)
+        {
+            var parts = pair.Split(new[] { '=', ':' }, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2)
+            {
+                var key = parts[0].Trim().ToLowerInvariant();
+                var value = parts[1].Trim();
+                
+                // 尝试转换为适当的类型
+                if (key == "temp" || key == "temperature" || key == "top_p" || key == "topp")
+                {
+                    if (double.TryParse(value, out var doubleValue))
+                    {
+                        result[key] = doubleValue;
+                    }
+                }
+                else if (key == "tokens" || key == "max_tokens" || key == "maxtokens")
+                {
+                    if (int.TryParse(value, out var intValue))
+                    {
+                        result[key] = intValue;
+                    }
+                }
+                else
+                {
+                    // 未知参数保持为字符串
+                    result[key] = value;
+                }
+            }
+        }
+
+        return result;
     }
 }

@@ -1,3 +1,4 @@
+@using System.Collections.Generic
 @using System.Linq
 @using System.Text.Json
 @using LY.LlmPool.Web.Data.Entities
@@ -115,7 +116,56 @@
                 </SpaceItem>
             </Space>
 
-            <Table TItem="MemberRow" DataSource="_rows" Size="TableSize.Small" Bordered Class="mt-2">
+            <Table TItem="MemberRow" DataSource="_rows" Size="TableSize.Small" Bordered Class="mt-2" ExpandIconColumnIndex="0">
+                <ExpandTemplate Context="rowData">
+                    @{
+                        var row = rowData.Data;
+                        RenderFragment content = @<div style="padding: 16px; background: #fafafa;">
+                            <h4>DAG 配置 - @DisplayName(row)</h4>
+                            <Row Gutter="16">
+                                <AntDesign.Col Span="12">
+                                    <FormItem Label="依赖节点（可多选）">
+                                        <Select Mode="@SelectMode.Multiple"
+                                                TItemValue="string"
+                                                TItem="string"
+                                                Values="@row.Dependencies"
+                                                ValuesChanged="@((IEnumerable<string> vals) => row.Dependencies = vals?.ToList())"
+                                                DataSource="@GetAvailableDependencies(row)"
+                                                Placeholder="选择前置依赖节点"
+                                                AllowClear />
+                                        <span class="ant-form-text text-secondary">此 Agent 依赖的前置节点，留空表示无依赖</span>
+                                    </FormItem>
+                                </AntDesign.Col>
+                                <AntDesign.Col Span="6">
+                                    <FormItem Label="并行组">
+                                        <Input @bind-Value="row.ParallelGroup" Placeholder="如：research" />
+                                        <span class="ant-form-text text-secondary">同组节点可并行执行</span>
+                                    </FormItem>
+                                </AntDesign.Col>
+                                <AntDesign.Col Span="6">
+                                    <FormItem Label="超时（秒）">
+                                        <AntDesign.InputNumber @bind-Value="row.TimeoutSeconds" Min="10" Max="3600" Placeholder="默认300" />
+                                        <span class="ant-form-text text-secondary">节点执行超时时间</span>
+                                    </FormItem>
+                                </AntDesign.Col>
+                            </Row>
+                            <Row Gutter="16">
+                                <AntDesign.Col Span="12">
+                                    <FormItem Label="失败时继续">
+                                        <Checkbox Checked="@(row.ContinueOnFailure ?? false)" 
+                                                  CheckedChanged="@((bool val) => row.ContinueOnFailure = val)">
+                                            失败时是否继续执行后续节点
+                                        </Checkbox>
+                                    </FormItem>
+                                </AntDesign.Col>
+                            </Row>
+                        </div>;
+                    }
+                    @if (_orchestrationMode == "DAG")
+                    {
+                        @content
+                    }
+                </ExpandTemplate>
                 <ChildContent Context="row">
                     <Column Title="#" TData="int">@row.Order</Column>
                     <Column Title="名称" TData="string">
@@ -130,6 +180,32 @@
                     <Column Title="模型配置" TData="string" Width="100px">
                         <Select TItem="LlmConfig" TItemValue="string" ValueName="Id" LabelName="Name" @bind-Value="row.LlmConfigId" DataSource="_configs" />
                     </Column>
+                    @if (_orchestrationMode == "DAG")
+                    {
+                        <Column Title="DAG 配置" TData="string">
+                            @{
+                                var depCount = row.Dependencies?.Count ?? 0;
+                                var hasTimeout = row.TimeoutSeconds.HasValue;
+                                var hasGroup = !string.IsNullOrWhiteSpace(row.ParallelGroup);
+                                var badges = new List<string>();
+                                if (depCount > 0) badges.Add($"依赖:{depCount}");
+                                if (hasGroup) badges.Add($"组:{row.ParallelGroup}");
+                                if (hasTimeout) badges.Add($"超时:{row.TimeoutSeconds}s");
+                                if (row.ContinueOnFailure == true) badges.Add("继续");
+                            }
+                            @if (badges.Any())
+                            {
+                                foreach (var badge in badges)
+                                {
+                                    <Tag Color="@("blue")" Style="margin: 2px;">@badge</Tag>
+                                }
+                            }
+                            else
+                            {
+                                <span class="text-secondary">未配置</span>
+                            }
+                        </Column>
+                    }
                     <ActionColumn Title="操作">
                         <Space>
                             <SpaceItem>
@@ -222,6 +298,9 @@
     public LlmApp? InitialApp { get; set; }
 
     [Parameter]
+    public IEnumerable<AgentMember>? InitialMembers { get; set; }
+
+    [Parameter]
     public bool IsDialog { get; set; } = true;
 
     private int _step = 0;
@@ -242,41 +321,31 @@
     private List<LlmConfig> _configs = new();
     private List<MemberRow> _rows = new();
     private bool _saving;
+    private bool _lookupsLoaded;
+    private string? _initialAppSignature;
+    private string? _initialMembersSignature;
 
     protected override async Task OnInitializedAsync()
     {
         _prompts = await LlmPoolService.GetPromptsAsync();
         _configs = await LlmPoolService.GetConfigsAsync();
-        if (_rows.Count == 0)
+        _lookupsLoaded = true;
+
+        ApplyInitialAppConfig(force: true);
+        ApplyInitialMembers(force: true);
+        EnsureDefaultRow();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (!_lookupsLoaded)
         {
-            AddRow();
+            return;
         }
 
-        if (InitialApp != null)
-        {
-            if (InitialApp.OrchestrationMode == OrchestrationMode.GroupChat)
-            {
-                _orchestrationMode = "GroupChat";
-            }
-
-            var cfg = InitialApp.Config;
-            if (cfg.TryGetValue("GroupChatMaxRounds", out var maxObj) && maxObj is JsonElement je1 && je1.ValueKind == JsonValueKind.Number && je1.TryGetInt32(out var rounds))
-            {
-                _gcMaxRounds = Math.Clamp(rounds, 1, 10);
-            }
-            if (cfg.TryGetValue("GroupChatStopOnFinal", out var stopObj) && stopObj is JsonElement je2 && je2.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                _gcStopOnFinal = je2.ValueKind == JsonValueKind.True;
-            }
-            if (cfg.TryGetValue("GroupChatRoleOrder", out var roleObj) && roleObj is JsonElement je3 && je3.ValueKind == JsonValueKind.String)
-            {
-                _gcRoleOrder = je3.GetString() ?? _gcRoleOrder;
-            }
-            if (cfg.TryGetValue("GroupChatContextLimit", out var limitObj) && limitObj is JsonElement je4 && je4.ValueKind == JsonValueKind.Number && je4.TryGetInt32(out var limit))
-            {
-                _gcContextLimit = Math.Clamp(limit, 10, 200);
-            }
-        }
+        ApplyInitialAppConfig();
+        ApplyInitialMembers();
+        EnsureDefaultRow();
     }
 
     private void NextStep()
@@ -347,6 +416,14 @@
         }
     }
 
+    private IEnumerable<string> GetAvailableDependencies(MemberRow current)
+    {
+        return _rows
+            .Where(r => r.Order < current.Order)
+            .Select(r => !string.IsNullOrWhiteSpace(r.Name) ? r.Name! : $"Agent {r.Order}")
+            .ToList();
+    }
+
     private async Task CreateAll()
     {
         if (_saving)
@@ -363,13 +440,32 @@
         try
         {
             _saving = true;
-            var members = _rows.Select(r => new AgentMember
+            var members = _rows.Select(r =>
             {
-                Name = string.IsNullOrWhiteSpace(r.Name) ? $"Agent {r.Order}" : r.Name!,
-                Role = string.IsNullOrWhiteSpace(r.Role) ? "Agent" : r.Role!,
-                Order = r.Order,
-                LlmPromptId = r.LlmPromptId ?? string.Empty,
-                LlmConfigId = r.LlmConfigId ?? string.Empty
+                var member = new AgentMember
+                {
+                    Name = string.IsNullOrWhiteSpace(r.Name) ? $"Agent {r.Order}" : r.Name!,
+                    Role = string.IsNullOrWhiteSpace(r.Role) ? "Agent" : r.Role!,
+                    Order = r.Order,
+                    LlmPromptId = r.LlmPromptId ?? string.Empty,
+                    LlmConfigId = r.LlmConfigId ?? string.Empty
+                };
+
+                // 如果是 DAG 模式,序列化 DAG 配置到 ConfigJson
+                if (_orchestrationMode == "DAG" && (r.Dependencies?.Any() == true || !string.IsNullOrWhiteSpace(r.ParallelGroup) 
+                    || r.TimeoutSeconds.HasValue || r.ContinueOnFailure.HasValue))
+                {
+                    var dagConfig = new AgentMemberDAGConfig
+                    {
+                        Dependencies = r.Dependencies,
+                        ParallelGroup = r.ParallelGroup,
+                        TimeoutSeconds = r.TimeoutSeconds,
+                        ContinueOnFailure = r.ContinueOnFailure
+                    };
+                    member.ConfigJson = JsonSerializer.Serialize(dagConfig);
+                }
+
+                return member;
             }).ToList();
 
             var result = new AgentGroupWizardResult
@@ -422,6 +518,331 @@
         }
     }
 
+    private void ApplyInitialAppConfig(bool force = false)
+    {
+        if (InitialApp == null)
+        {
+            return;
+        }
+
+        var signature = ComputeAppSignature(InitialApp);
+        if (!force && signature == _initialAppSignature)
+        {
+            return;
+        }
+
+        _initialAppSignature = signature;
+
+        _orchestrationMode = InitialApp.OrchestrationMode switch
+        {
+            OrchestrationMode.GroupChat => "GroupChat",
+            OrchestrationMode.DAG => "DAG",
+            _ => "Sequential"
+        };
+
+        ResetGroupChatDefaults();
+        ResetDagDefaults();
+
+        var cfg = InitialApp.Config;
+        if (InitialApp.OrchestrationMode == OrchestrationMode.GroupChat)
+        {
+            ApplyGroupChatConfig(cfg);
+        }
+        else if (InitialApp.OrchestrationMode == OrchestrationMode.DAG)
+        {
+            ApplyDagConfig(cfg);
+        }
+    }
+
+    private void ApplyInitialMembers(bool force = false)
+    {
+        var memberList = InitialMembers?.ToList() ?? new List<AgentMember>();
+        var signature = ComputeMembersSignature(memberList);
+        if (!force && signature == _initialMembersSignature)
+        {
+            return;
+        }
+
+        _initialMembersSignature = signature;
+
+        if (memberList.Count == 0)
+        {
+            _rows.Clear();
+            return;
+        }
+
+        LoadRowsFromMembers(memberList);
+    }
+
+    private void ApplyGroupChatConfig(Dictionary<string, object> cfg)
+    {
+        if (cfg.TryGetValue("GroupChatMaxRounds", out var maxObj) && TryConvertToInt(maxObj, out var rounds))
+        {
+            _gcMaxRounds = Math.Clamp(rounds, 1, 10);
+        }
+        if (cfg.TryGetValue("GroupChatStopOnFinal", out var stopObj) && TryConvertToBool(stopObj, out var stop))
+        {
+            _gcStopOnFinal = stop;
+        }
+        if (cfg.TryGetValue("GroupChatRoleOrder", out var roleObj) && TryConvertToString(roleObj, out var roleOrder) && !string.IsNullOrWhiteSpace(roleOrder))
+        {
+            _gcRoleOrder = roleOrder;
+        }
+        if (cfg.TryGetValue("GroupChatContextLimit", out var limitObj) && TryConvertToInt(limitObj, out var limit))
+        {
+            _gcContextLimit = Math.Clamp(limit, 10, 200);
+        }
+    }
+
+    private void ApplyDagConfig(Dictionary<string, object> cfg)
+    {
+        if (!cfg.TryGetValue("DAGWorkflow", out var dagObj))
+        {
+            return;
+        }
+
+        if (dagObj is JsonElement dagElement && dagElement.ValueKind == JsonValueKind.Object)
+        {
+            if (dagElement.TryGetProperty("MaxParallelism", out var maxParallelElem) && maxParallelElem.TryGetInt32(out var maxParallel))
+            {
+                _dagMaxParallelism = Math.Clamp(maxParallel, 1, 10);
+            }
+            if (dagElement.TryGetProperty("GlobalTimeoutSeconds", out var timeoutElem) && timeoutElem.TryGetInt32(out var timeout))
+            {
+                _dagGlobalTimeout = Math.Clamp(timeout, 60, 3600);
+            }
+            if (dagElement.TryGetProperty("FailureStrategy", out var failureElem) && failureElem.ValueKind == JsonValueKind.String)
+            {
+                var strategy = failureElem.GetString();
+                if (!string.IsNullOrWhiteSpace(strategy))
+                {
+                    _dagFailureStrategy = strategy;
+                }
+            }
+            return;
+        }
+
+        if (dagObj is IDictionary<string, object> dagDict)
+        {
+            if (dagDict.TryGetValue("MaxParallelism", out var maxParallelObj) && TryConvertToInt(maxParallelObj, out var maxParallel))
+            {
+                _dagMaxParallelism = Math.Clamp(maxParallel, 1, 10);
+            }
+            if (dagDict.TryGetValue("GlobalTimeoutSeconds", out var timeoutObj) && TryConvertToInt(timeoutObj, out var timeout))
+            {
+                _dagGlobalTimeout = Math.Clamp(timeout, 60, 3600);
+            }
+            if (dagDict.TryGetValue("FailureStrategy", out var strategyObj) && TryConvertToString(strategyObj, out var strategy) && !string.IsNullOrWhiteSpace(strategy))
+            {
+                _dagFailureStrategy = strategy;
+            }
+        }
+    }
+
+    private void LoadRowsFromMembers(IEnumerable<AgentMember> members)
+    {
+        _rows = members
+            .OrderBy(m => m.Order == 0 ? int.MaxValue : m.Order)
+            .ThenBy(m => m.Name)
+            .Select((m, index) =>
+            {
+                var row = new MemberRow
+                {
+                    Order = index + 1,
+                    Name = string.IsNullOrWhiteSpace(m.Name) ? null : m.Name,
+                    Role = string.IsNullOrWhiteSpace(m.Role) ? null : m.Role,
+                    LlmPromptId = ResolvePromptId(m),
+                    LlmConfigId = ResolveConfigId(m)
+                };
+
+                // 如果有 ConfigJson,尝试反序列化 DAG 配置
+                if (!string.IsNullOrWhiteSpace(m.ConfigJson))
+                {
+                    try
+                    {
+                        var dagConfig = JsonSerializer.Deserialize<AgentMemberDAGConfig>(m.ConfigJson);
+                        if (dagConfig != null)
+                        {
+                            row.Dependencies = dagConfig.Dependencies;
+                            row.ParallelGroup = dagConfig.ParallelGroup;
+                            row.TimeoutSeconds = dagConfig.TimeoutSeconds;
+                            row.ContinueOnFailure = dagConfig.ContinueOnFailure;
+                        }
+                    }
+                    catch
+                    {
+                        // 忽略反序列化错误
+                    }
+                }
+
+                return row;
+            })
+            .ToList();
+    }
+
+    private string? ResolvePromptId(AgentMember member)
+    {
+        if (!string.IsNullOrWhiteSpace(member.LlmPromptId) && _prompts.Any(p => p.Id == member.LlmPromptId))
+        {
+            return member.LlmPromptId;
+        }
+
+        if (member.LlmPrompt != null)
+        {
+            if (!string.IsNullOrWhiteSpace(member.LlmPrompt.Id) && _prompts.Any(p => p.Id == member.LlmPrompt.Id))
+            {
+                return member.LlmPrompt.Id;
+            }
+
+            var promptByName = _prompts.FirstOrDefault(p => string.Equals(p.Name, member.LlmPrompt.Name, StringComparison.OrdinalIgnoreCase));
+            if (promptByName != null)
+            {
+                return promptByName.Id;
+            }
+        }
+
+        return member.LlmPromptId;
+    }
+
+    private string? ResolveConfigId(AgentMember member)
+    {
+        if (!string.IsNullOrWhiteSpace(member.LlmConfigId) && _configs.Any(c => c.Id == member.LlmConfigId))
+        {
+            return member.LlmConfigId;
+        }
+
+        if (member.LlmConfig != null)
+        {
+            if (!string.IsNullOrWhiteSpace(member.LlmConfig.Id) && _configs.Any(c => c.Id == member.LlmConfig.Id))
+            {
+                return member.LlmConfig.Id;
+            }
+
+            var configByName = _configs.FirstOrDefault(c => string.Equals(c.Name, member.LlmConfig.Name, StringComparison.OrdinalIgnoreCase));
+            if (configByName != null)
+            {
+                return configByName.Id;
+            }
+        }
+
+        return member.LlmConfigId;
+    }
+
+    private void EnsureDefaultRow()
+    {
+        if (_rows.Count == 0)
+        {
+            _rows.Add(new MemberRow { Order = 1 });
+        }
+        else
+        {
+            Renumber();
+        }
+    }
+
+    private static string ComputeMembersSignature(IReadOnlyCollection<AgentMember> members)
+    {
+        if (members.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join("|", members
+            .OrderBy(m => m.Order == 0 ? int.MaxValue : m.Order)
+            .ThenBy(m => m.Name)
+            .Select(m => string.Join("~", new[]
+            {
+                m.Id ?? string.Empty,
+                m.Name ?? string.Empty,
+                m.Role ?? string.Empty,
+                m.Order.ToString(),
+                m.LlmPromptId ?? string.Empty,
+                m.LlmConfigId ?? string.Empty,
+                m.ConfigJson ?? string.Empty
+            })));
+    }
+
+    private static string ComputeAppSignature(LlmApp app)
+    {
+        var key = !string.IsNullOrWhiteSpace(app.Id) ? app.Id! : app.Name;
+        return $"{key}|{app.OrchestrationMode}|{app.ConfigJson}";
+    }
+
+    private void ResetGroupChatDefaults()
+    {
+        _gcMaxRounds = 1;
+        _gcStopOnFinal = true;
+        _gcRoleOrder = "planner,researcher,moderator";
+        _gcContextLimit = 50;
+    }
+
+    private void ResetDagDefaults()
+    {
+        _dagMaxParallelism = 2;
+        _dagGlobalTimeout = 600;
+        _dagFailureStrategy = "stop";
+    }
+
+    private static bool TryConvertToInt(object? value, out int result)
+    {
+        switch (value)
+        {
+            case int i:
+                result = i;
+                return true;
+            case long l when l <= int.MaxValue && l >= int.MinValue:
+                result = (int)l;
+                return true;
+            case double d:
+                result = (int)d;
+                return true;
+            case JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt32(out var v):
+                result = v;
+                return true;
+            case string s when int.TryParse(s, out var parsed):
+                result = parsed;
+                return true;
+            default:
+                result = default;
+                return false;
+        }
+    }
+
+    private static bool TryConvertToBool(object? value, out bool result)
+    {
+        switch (value)
+        {
+            case bool b:
+                result = b;
+                return true;
+            case JsonElement je when je.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                result = je.ValueKind == JsonValueKind.True;
+                return true;
+            case string s when bool.TryParse(s, out var parsed):
+                result = parsed;
+                return true;
+            default:
+                result = default;
+                return false;
+        }
+    }
+
+    private static bool TryConvertToString(object? value, out string? result)
+    {
+        switch (value)
+        {
+            case string s:
+                result = s;
+                return true;
+            case JsonElement je when je.ValueKind == JsonValueKind.String:
+                result = je.GetString();
+                return true;
+            default:
+                result = null;
+                return false;
+        }
+    }
+
     private string DisplayName(MemberRow row) => string.IsNullOrWhiteSpace(row.Name) ? $"Agent {row.Order}" : row.Name!;
 
     private string DisplayRole(MemberRow row) => string.IsNullOrWhiteSpace(row.Role) ? "Agent" : row.Role!;
@@ -453,5 +874,12 @@
         public string? Role { get; set; }
         public string? LlmPromptId { get; set; }
         public string? LlmConfigId { get; set; }
+        
+        // DAG 配置
+        public List<string>? Dependencies { get; set; }
+        public string? ParallelGroup { get; set; }
+        public int? TimeoutSeconds { get; set; }
+        public bool? ContinueOnFailure { get; set; }
     }
 }
+

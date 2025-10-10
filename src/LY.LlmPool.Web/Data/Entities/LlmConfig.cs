@@ -52,6 +52,10 @@ public class LlmConfig
         set => AdditionalHeadersJson = JsonSerializer.Serialize(value);
     }
 
-    public int MaxTokens { get; set; } = 2000;
-    public float Temperature { get; set; } = 0.7f;
+    /// <summary>
+    /// 额外参数配置(JSON格式),支持配置 max_tokens, thinking_enabled 等参数
+    /// 示例: {"max_tokens": 2000, "thinking_enabled": true, "top_p": 0.9}
+    /// </summary>
+    [Column("additional_parameters", TypeName = "jsonb")]
+    public string? AdditionalParameters { get; set; }
 } 

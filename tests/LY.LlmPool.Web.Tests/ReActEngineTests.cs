@@ -18,7 +18,14 @@ public class ReActEngineTests
     {
         private readonly Queue<ChatResponse> _responses = new();
         public void Enqueue(ChatResponse r) => _responses.Enqueue(r);
+        
         public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+        {
+            if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
+            return Task.FromResult(_responses.Dequeue());
+        }
+
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
         {
             if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
             return Task.FromResult(_responses.Dequeue());
@@ -27,6 +34,12 @@ public class ReActEngineTests
         public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
         {
             var response = await SendMessageAsync(config, messages, toolObjects);
+            yield return response.Message ?? string.Empty;
+        }
+
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+        {
+            var response = await SendMessageAsync(config, messages, parameters, toolObjects);
             yield return response.Message ?? string.Empty;
         }
 

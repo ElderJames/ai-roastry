@@ -715,23 +715,8 @@ public class LlmPoolService
             throw new InvalidOperationException($"Configuration {config.Name} is disabled.");
         }
 
-        // Parse parameters
-        if (!string.IsNullOrEmpty(parameters))
-        {
-            var paramDict = parameters.Split(',')
-                .Select(p => p.Split('='))
-                .Where(p => p.Length == 2)
-                .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
-
-            if (paramDict.TryGetValue("temperature", out var tempStr) && float.TryParse(tempStr, out var temp))
-            {
-                config.Temperature = temp;
-            }
-            if (paramDict.TryGetValue("max_tokens", out var maxTokensStr) && int.TryParse(maxTokensStr, out var maxTokens))
-            {
-                config.MaxTokens = maxTokens;
-            }
-        }
+        // Parse parameters from string
+        var modelParams = ModelParameterHelper.ParseFromKeyValueString(parameters);
 
         // Replace prompt parameters if provided
         var promptContent = prompt.Content;
@@ -751,7 +736,7 @@ public class LlmPoolService
             messages.Add(new ChatMessage { Role = "user", Content = userMessage });
         }
 
-        var result = await _chatClientService.SendMessageAsync(config, messages);
+        var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
         if (result.Status != "success")
         {
             throw new Exception(result.Message);
@@ -791,23 +776,8 @@ public class LlmPoolService
             throw new Exception($"No available configuration found for endpoint {endpoint.Name}");
         }
 
-        // Parse parameters
-        if (!string.IsNullOrEmpty(parameters))
-        {
-            var paramDict = parameters.Split(',')
-                .Select(p => p.Split('='))
-                .Where(p => p.Length == 2)
-                .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
-
-            if (paramDict.TryGetValue("temperature", out var tempStr) && float.TryParse(tempStr, out var temp))
-            {
-                config.Temperature = temp;
-            }
-            if (paramDict.TryGetValue("max_tokens", out var maxTokensStr) && int.TryParse(maxTokensStr, out var maxTokens))
-            {
-                config.MaxTokens = maxTokens;
-            }
-        }
+        // Parse parameters from string
+        var modelParams = ModelParameterHelper.ParseFromKeyValueString(parameters);
 
         // Replace prompt parameters if provided
         var promptContent = prompt.Content;
@@ -827,7 +797,7 @@ public class LlmPoolService
             messages.Add(new ChatMessage { Role = "user", Content = userMessage });
         }
 
-        var result = await _chatClientService.SendMessageAsync(config, messages);
+        var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
         if (result.Status != "success")
         {
             throw new Exception(result.Message);
