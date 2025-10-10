@@ -155,16 +155,17 @@
                 
                 @if (_appParameters.Count > 0)
                 {
-                    <div class="parameters-input" style="margin-bottom: 16px; border: 1px solid #d9d9d9; border-radius: 6px; padding: 12px;">
-                        <div style="margin-bottom: 8px; font-weight: 500;">参数设置</div>
-                        @foreach (var param in _appParameters)
-                        {
-                            <div style="margin-bottom: 8px;">
-                                <Text Strong="true" style="margin-right: 8px;">@param.Key:</Text>
-                                <Input @bind-Value="@param.Value" Placeholder="@($"请输入{param.Key}的值")" Style="width: 200px;" />
-                            </div>
-                        }
-                    </div>
+                    <Collapse DefaultActiveKey="@(new[] { "1" })"  Animation>
+                        <Panel Header="参数设置" Key="1">
+                            @foreach (var param in _appParameters)
+                            {
+                                <div style="margin-bottom: 8px;display: flex; align-items: center;">
+                                    <Text Strong="true" style="margin-right: 8px;">@param.Key:</Text>
+                                    <TextArea Rows=1 AutoSize=true @bind-Value="@param.Value" Placeholder="@($"请输入{param.Key}的值")" style="flex: 1;" />
+                                </div>
+                            }
+                        </Panel>
+                    </Collapse>
                 }
                 
                 <div class="chat-input-row">

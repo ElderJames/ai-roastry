@@ -68,19 +68,19 @@
                         @if (_promptParameters.Any())
                         {
                             <FormItem Label="Parameters">
-                                <div class="parameters-container">
-                                    @foreach (var param in _promptParameters)
-                                    {
-                                        <div class="parameter-item">
-                                            <Text>{{@param}}</Text>
-                                            <Input @bind-Value="@_parameterValues[param]"
-                                                   Placeholder=@($"Enter value for {param}")
-                                                   Style="width: 300px;" />
-                                        </div>
-                                    }
-                                </div>
+                                 <Collapse DefaultActiveKey="@(new[] { "1" })"  Animation>
+                                    <Panel Header="参数设置" Key="1">
+                                        @foreach (var param in _promptParameters)
+                                        {
+                                            <div style="margin-bottom: 8px;display: flex; align-items: center;">
+                                                <Text Strong="true" style="margin-right: 8px;">@($"{"{{" + param + "}}"}"):</Text>
+                                                <TextArea Rows=1 AutoSize=true @bind-Value="@_parameterValues[param]" Placeholder="@($"请输入{param}的值")" style="flex: 1;" />
+                                            </div>
+                                        }
+                                    </Panel>
+                                 </Collapse>
                             </FormItem>
-                        }
+                        }                 
                         @if (_editingPrompt.Version > 0)
                         {
                             <FormItem Label="Version">
@@ -877,5 +877,4 @@
             _message.Error($"Failed to delete history record: {ex.Message}");
         }
     }
-}
 }
