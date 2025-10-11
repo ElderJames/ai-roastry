@@ -1,16 +1,18 @@
+using LY.LlmPool.Web;
 using LY.LlmPool.Web.Components;
 using LY.LlmPool.Web.Components.Account;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
+using LY.LlmPool.Web.Services.Aggregation;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
-using Microsoft.AspNetCore.HttpLogging;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -74,6 +76,10 @@ builder.Services.AddScoped<PromptService>();
 builder.Services.AddScoped<AppService>();
 builder.Services.AddScoped<AgentService>();
 builder.Services.AddScoped<ExampleAppService>();
+// Register MCP server service
+builder.Services.AddScoped<IMcpServerService, McpServerService>(); 
+// Register MCP inspector service
+builder.Services.AddScoped<IMcpInspectorService, McpInspectorService>();
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();
@@ -156,6 +162,13 @@ builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSe
 
 // ���ӽ���������
 builder.Services.AddHealthChecks();
+
+//builder.Services.AddSingleton<DataServiceMcp>();
+
+builder.Services.AddSingleton<McpClientsFactory>();
+builder.Services.AddHostedService<McpClientStartupService>();
+
+
 
 var app = builder.Build();
 

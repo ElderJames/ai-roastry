@@ -1,0 +1,51 @@
+﻿using System.Collections.Concurrent;
+
+namespace LY.LlmPool.Web.Services.Aggregation;
+
+internal static class McpClientInitializer
+{
+
+    public static async Task<List<McpClientWrapper>> InitializeClientsAsync(
+        Dictionary<string, McpServerConfigDto> mcpServers,
+        ILoggerFactory? loggerFactory = null,
+        CancellationToken cancellationToken = default)
+    {
+        var clientWrappers = new ConcurrentBag<McpClientWrapper>();
+
+        // 优化：预先过滤启用的服务器，减少不必要的并发任务
+        var enabledServers = mcpServers
+            .Where(kv => kv.Value.Enabled.GetValueOrDefault(true))
+            .ToList();
+
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Environment.ProcessorCount,
+            CancellationToken = cancellationToken
+        };
+
+        await Parallel.ForEachAsync(
+            enabledServers,
+            parallelOptions,
+            async (serverConfig, ct) =>
+            {
+                var serverId = serverConfig.Key;
+                var config = serverConfig.Value;
+
+                try
+                {
+                    var clientWrapper = new McpClientWrapper(serverId, config, loggerFactory);
+                    await clientWrapper.InitializeAsync().ConfigureAwait(false);
+                    clientWrappers.Add(clientWrapper);
+                }
+                catch (Exception ex)
+                {
+                    var logger = loggerFactory?.CreateLogger(typeof(McpClientInitializer));
+                    logger?.LogError(ex, "Failed to initialize MCP client '{ServerId}': {ErrorMessage}",
+                        serverId, ex.Message);
+                }
+            }
+        ).ConfigureAwait(false);
+
+        return clientWrappers.ToList();
+    }
+}
