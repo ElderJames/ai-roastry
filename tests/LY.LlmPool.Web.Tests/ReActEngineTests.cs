@@ -9,6 +9,7 @@ using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using Xunit;
+using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace LY.LlmPool.Web.Tests;
 
@@ -19,41 +20,59 @@ public class ReActEngineTests
         private readonly Queue<ChatResponse> _responses = new();
         public void Enqueue(ChatResponse r) => _responses.Enqueue(r);
         
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
             return Task.FromResult(_responses.Dequeue());
         }
 
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
             return Task.FromResult(_responses.Dequeue());
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
-            var response = await SendMessageAsync(config, messages, toolObjects);
+            var response = await SendMessageAsync(config, messages, tools);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
-            var response = await SendMessageAsync(config, messages, parameters, toolObjects);
+            var response = await SendMessageAsync(config, messages, parameters, tools);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;
             yield return string.Empty;
+        }
+
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        {
+            var response = await SendMessageAsync(config, messages, parameters, tools);
+            yield return new ChatStreamingUpdate 
+            { 
+                Text = response.Message ?? string.Empty
+            };
+        }
+
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        {
+            await Task.CompletedTask;
+            yield return new ChatStreamingUpdate 
+            { 
+                Text = string.Empty
+            };
         }
     }
 
     private sealed class PassThroughExecutor : IToolExecutor
     {
         public List<(string tool, string? args)> Calls { get; } = new();
-        public Task<(bool ok, string output, string? error)> ExecuteAsync(IAgentTool tool, JsonElement? args, CancellationToken ct = default)
+        public Task<(bool ok, string output, string? error)> ExecuteAsync(ITool tool, JsonElement? args, CancellationToken ct = default)
         {
             Calls.Add((tool.Name, args?.ToString()));
             return Task.FromResult<(bool, string, string?)>((true, $"{tool.Name}-result", null));
@@ -67,7 +86,7 @@ public class ReActEngineTests
         chat.Enqueue(new ChatResponse { Message = "hello", Status = "success", ToolCalls = null });
         var engine = new ReActEngine(chat, new PassThroughExecutor());
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<ChatMessage> { new ChatMessage { Role = "user", Content = "hi" } };
+        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var result = await engine.RunAsync(config, messages);
         Assert.Equal("hello", result);
     }
@@ -95,12 +114,12 @@ public class ReActEngineTests
         chat.Enqueue(new ChatResponse { Message = "final answer", Status = "success", ToolCalls = null });
 
         using var schemaDoc = JsonDocument.Parse("{\"type\":\"object\"}");
-        var tools = new List<IAgentTool> { new InternalPluginTool("t1", "Echo", schema: schemaDoc.RootElement) };
+        var tools = new List<ITool> { new InternalPluginTool("t1", "Echo", schema: schemaDoc.RootElement) };
         var exec = new PassThroughExecutor();
         var engine = new ReActEngine(chat, exec);
 
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<ChatMessage> { new ChatMessage { Role = "user", Content = "hi" } };
+        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var result = await engine.RunAsync(config, messages, tools);
 
         Assert.Equal("final answer", result);
@@ -121,8 +140,8 @@ public class ReActEngineTests
 
         var engine = new ReActEngine(chat, new PassThroughExecutor());
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<ChatMessage> { new ChatMessage { Role = "user", Content = "hi" } };
-        var result = await engine.RunAsync(config, messages, tools: new List<IAgentTool>());
+        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var result = await engine.RunAsync(config, messages, tools: new List<ITool>());
         Assert.Equal("model text", result);
     }
 }

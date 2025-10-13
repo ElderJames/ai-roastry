@@ -10,7 +10,7 @@ namespace LY.LlmPool.Web.Tests;
 
 public class ToolExecutorTests
 {
-    private sealed class TestInternalTool : IAgentTool
+    private sealed class TestInternalTool : ITool
     {
         public string Id => "test-internal";
         public string Name => "TestTool";
@@ -25,7 +25,7 @@ public class ToolExecutorTests
         }
     }
 
-    private sealed class TestMcpTool : IAgentTool
+    private sealed class TestMcpTool : ITool
     {
         public string Id => "test-mcp";
         public string Name => "TestMcpTool";
@@ -40,7 +40,7 @@ public class ToolExecutorTests
         }
     }
 
-    private sealed class TestUnknownTool : IAgentTool
+    private sealed class TestUnknownTool : ITool
     {
         public string Id => "test-unknown";
         public string Name => "UnknownTool";

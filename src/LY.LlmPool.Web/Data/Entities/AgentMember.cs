@@ -24,7 +24,5 @@ namespace LY.LlmPool.Web.Data.Entities
 
         public string? LlmConfigId { get; set; }
         public virtual LlmConfig? LlmConfig { get; set; }
-
-        public virtual ICollection<AgentTool> AgentTools { get; set; } = new List<AgentTool>();
     }
 }

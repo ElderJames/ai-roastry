@@ -1,5 +1,8 @@
-﻿using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Tools;
+using Microsoft.SemanticKernel;
+using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace LY.LlmPool.Web.Services.Agents;
 
@@ -10,9 +13,10 @@ public interface IOrchestrationStrategy
 {
     Task<string> ExecuteAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
-        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
+        IEnumerable<AIChatMessage> userMessages,
+        ToolProviderService toolProviderService,
+        Func<LlmConfig, List<AIChatMessage>, IEnumerable<KernelFunction>?, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<AIChatMessage>, IEnumerable<KernelFunction>?, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress = null,
         CancellationToken ct = default);
 }

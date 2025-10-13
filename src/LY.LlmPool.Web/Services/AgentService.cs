@@ -82,34 +82,8 @@ public class AgentService
         await dbContext.SaveChangesAsync();
     }
 
-    // Agent Tools (as junction table)
-    public async Task<List<AgentTool>> GetAgentToolsAsync(string agentMemberId)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        return await dbContext.AgentTools
-            .Where(t => t.AgentMemberId == agentMemberId)
-            .ToListAsync();
-    }
-
-    public async Task<AgentTool> AddAgentToolAsync(AgentTool tool)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        dbContext.AgentTools.Add(tool);
-        await dbContext.SaveChangesAsync();
-        return tool;
-    }
-
-    public async Task DeleteAgentToolAsync(string agentMemberId, string toolId, ToolType toolType)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        var existing = await dbContext.AgentTools
-            .FirstOrDefaultAsync(t => t.AgentMemberId == agentMemberId && t.ToolId == toolId && t.ToolType == toolType);
-        if (existing != null)
-        {
-            dbContext.AgentTools.Remove(existing);
-            await dbContext.SaveChangesAsync();
-        }
-    }
+    // Tools are now bound to Prompts via PromptTool entity, not to AgentMembers
+    // See ToolProviderService for creating tool objects from PromptTools
 
     // MCP Server Configs
     public async Task<List<McpServerConfig>> GetMcpServerConfigsAsync()

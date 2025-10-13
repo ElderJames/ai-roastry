@@ -5,6 +5,7 @@ using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
+using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.Aggregation;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -68,6 +69,33 @@ builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorServi
 builder.Services.AddScoped<McpServerConfigService>();
 // Using ModelContextProtocol SDK for MCP discovery (no custom SSE client registered)
 
+// Add Tool Metadata Services
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.Tools.PromptParameterExtractor>();
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.Tools.ToolMetadataService>();
+
+// Configure HybridCache for tool metadata caching
+builder.Services.AddHybridCache(options =>
+{
+    // L1 cache (in-memory) settings
+    options.MaximumPayloadBytes = 10 * 1024 * 1024; // 10MB per cache entry
+    options.MaximumKeyLength = 1024; // Max key length
+
+    // Default expiration (can be overridden per entry)
+    options.DefaultEntryOptions = new Microsoft.Extensions.Caching.Hybrid.HybridCacheEntryOptions
+    {
+        Expiration = TimeSpan.FromHours(1), // Tool metadata expires after 1 hour
+        LocalCacheExpiration = TimeSpan.FromMinutes(30) // L1 cache expires faster
+    };
+});
+
+// Add distributed cache (Redis) for L2 cache (optional, for production)
+// Uncomment and configure when Redis is available:
+// builder.Services.AddStackExchangeRedisCache(options =>
+// {
+//     options.Configuration = builder.Configuration.GetConnectionString("Redis");
+//     options.InstanceName = "LlmPool:";
+// });
+
 // Add new granular services
 builder.Services.AddScoped<ModelTypeService>();
 builder.Services.AddScoped<ConfigService>();
@@ -76,6 +104,8 @@ builder.Services.AddScoped<PromptService>();
 builder.Services.AddScoped<AppService>();
 builder.Services.AddScoped<AgentService>();
 builder.Services.AddScoped<ExampleAppService>();
+builder.Services.AddScoped<ToolProviderService>();
+builder.Services.AddScoped<ChatClientFactory>();
 // Register MCP server service
 builder.Services.AddScoped<IMcpServerService, McpServerService>(); 
 // Register MCP inspector service
@@ -218,6 +248,49 @@ app.MapAdditionalIdentityEndpoints();
 // Map controllers - this needs to be after UseRouting and before UseEndpoints
 app.MapControllers();
 
+// Debug endpoint - only in development
+if (app.Environment.IsDevelopment())
+{
+    app.MapGet("/debug/check-tool-data", async (
+        IDbContextFactory<LlmDbContext> dbFactory,
+        ToolMetadataService toolMetadataService) =>
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        
+        var result = new
+        {
+            ToolApps = await db.Apps
+                .Where(a => a.AppType == "Tool")
+                .Select(a => new { a.Id, a.Name, a.IsEnabled })
+                .ToListAsync(),
+                
+            CachedTools = (await toolMetadataService.GetAllToolsAsync())
+                .Select(t => new { t.Name, Source = t.Source.ToString(), t.SourceId })
+                .ToList(),
+                
+            PromptTools = await db.PromptTools
+                .Include(pt => pt.Prompt)
+                .Select(pt => new 
+                { 
+                    pt.PromptId, 
+                    PromptName = pt.Prompt != null ? pt.Prompt.Name : null,
+                    pt.ToolId, 
+                    ToolType = pt.ToolType.ToString(),
+                    FormattedValue = (pt.ToolType == ToolType.Internal ? "App" : "MCP") + ":" + pt.ToolId
+                })
+                .ToListAsync(),
+                
+            MissingApps = await db.PromptTools
+                .Where(pt => pt.ToolType == ToolType.Internal)
+                .Where(pt => !db.Apps.Any(a => a.Id == pt.ToolId))
+                .Select(pt => new { pt.PromptId, pt.ToolId })
+                .ToListAsync()
+        };
+        
+        return Results.Json(result);
+    });
+}
+
 // Seed minimal data when using InMemory DB so UI dropdowns have items
 if (useInMemoryDb)
 {
@@ -335,14 +408,8 @@ if (useInMemoryDb)
                 db.AgentMembers.AddRange(m1, m2);
                 db.SaveChanges();
 
-                // Attach one internal tool to member1
-                db.AgentTools.Add(new AgentTool
-                {
-                    AgentMemberId = m1.Id,
-                    ToolId = "Internal.ContextExtractor",
-                    ToolType = ToolType.Internal
-                });
-                db.SaveChanges();
+                // Note: Tools are now bound to Prompts, not AgentMembers
+                // See PromptTool entity for tool bindings
             }
         }
     }
@@ -394,6 +461,25 @@ if (useInMemoryDb)
 //        await dbContext.SaveChangesAsync();
 //    }
 //}
+
+// Initialize Tool Metadata Cache on startup
+using (var scope = app.Services.CreateScope())
+{
+    var toolMetadataService = scope.ServiceProvider.GetRequiredService<LY.LlmPool.Web.Services.Tools.ToolMetadataService>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    
+    try
+    {
+        logger.LogInformation("Initializing Tool Metadata Cache...");
+        await toolMetadataService.InitializeAsync();
+        logger.LogInformation("Tool Metadata Cache initialized successfully");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Failed to initialize Tool Metadata Cache");
+        // Non-critical, continue startup
+    }
+}
 
 app.MapHealthChecks("/health");
 

@@ -74,22 +74,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.ToTable("AgentMembers");
                 });
 
-            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentTool", b =>
-                {
-                    b.Property<string>("AgentMemberId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ToolId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ToolType")
-                        .HasColumnType("text");
-
-                    b.HasKey("AgentMemberId", "ToolId", "ToolType");
-
-                    b.ToTable("AgentTools");
-                });
-
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
                 {
                     b.Property<string>("Id")
@@ -531,6 +515,25 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.ToTable("McpServerConfigs");
                 });
 
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.PromptTool", b =>
+                {
+                    b.Property<string>("PromptId")
+                        .HasColumnType("text")
+                        .HasColumnName("prompt_id");
+
+                    b.Property<string>("ToolId")
+                        .HasColumnType("text")
+                        .HasColumnName("tool_id");
+
+                    b.Property<string>("ToolType")
+                        .HasColumnType("text")
+                        .HasColumnName("tool_type");
+
+                    b.HasKey("PromptId", "ToolId", "ToolType");
+
+                    b.ToTable("prompt_tools");
+                });
+
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentMember", b =>
                 {
                     b.HasOne("LY.LlmPool.Web.Data.Entities.LlmApp", "LlmApp")
@@ -552,17 +555,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Navigation("LlmConfig");
 
                     b.Navigation("LlmPrompt");
-                });
-
-            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentTool", b =>
-                {
-                    b.HasOne("LY.LlmPool.Web.Data.Entities.AgentMember", "AgentMember")
-                        .WithMany("AgentTools")
-                        .HasForeignKey("AgentMemberId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("AgentMember");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
@@ -652,9 +644,15 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Navigation("Prompt");
                 });
 
-            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.AgentMember", b =>
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.PromptTool", b =>
                 {
-                    b.Navigation("AgentTools");
+                    b.HasOne("LY.LlmPool.Web.Data.Entities.LlmPrompt", "Prompt")
+                        .WithMany("PromptTools")
+                        .HasForeignKey("PromptId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Prompt");
                 });
 
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.EndpointCallRecord", b =>
@@ -680,6 +678,11 @@ namespace LY.LlmPool.Web.Data.Migrations
             modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmModelType", b =>
                 {
                     b.Navigation("Configs");
+                });
+
+            modelBuilder.Entity("LY.LlmPool.Web.Data.Entities.LlmPrompt", b =>
+                {
+                    b.Navigation("PromptTools");
                 });
 #pragma warning restore 612, 618
         }

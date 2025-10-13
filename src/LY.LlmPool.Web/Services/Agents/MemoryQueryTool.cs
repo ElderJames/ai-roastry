@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 /// <summary>
 /// 记忆查询工具：从存储的记忆中查询相关上下文。
 /// </summary>
-public class MemoryQueryTool : IAgentTool
+public class MemoryQueryTool : ITool
 {
     private readonly ContextMemoryStore _memoryStore;
 

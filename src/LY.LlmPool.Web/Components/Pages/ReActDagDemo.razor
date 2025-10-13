@@ -206,9 +206,9 @@ for chunk in client.chat.completions.create(
         }
 
         var resultBuilder = new System.Text.StringBuilder();
-        var userMessages = new List<ChatMessage>
+        var userMessages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
-            new() { Role = "user", Content = userQuery }
+            new(Microsoft.Extensions.AI.ChatRole.User, userQuery)
         };
 
         var stepBuffers = new Dictionary<string, System.Text.StringBuilder>();

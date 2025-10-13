@@ -21,36 +21,34 @@ public class AnthropicTransformService
     /// <summary>
     /// 将 Anthropic 消息请求转换为内部 ChatMessage 格式
     /// </summary>
-    public List<ChatMessage> ConvertToInternalMessages(MessagesRequest request)
+    public List<Microsoft.Extensions.AI.ChatMessage> ConvertToInternalMessages(MessagesRequest request)
     {
-        var messages = new List<ChatMessage>();
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>();
 
         // 添加系统消息
         var systemContent = ExtractSystemContent(request.System);
         if (!string.IsNullOrEmpty(systemContent))
         {
-            messages.Add(new ChatMessage
-            {
-                Role = "system",
-                Content = systemContent,
-                Timestamp = DateTime.UtcNow,
-                Tools = ConvertTools(request.Tools),
-                ToolChoice = request.ToolChoice
-            });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(
+                Microsoft.Extensions.AI.ChatRole.System,
+                systemContent
+            ));
         }
 
         // 转换对话消息
         foreach (var msg in request.Messages)
         {
-            var chatMessage = new ChatMessage
+            var role = msg.Role.ToLowerInvariant() switch
             {
-                Role = msg.Role,
-                Content = ConvertContentToString(msg.Content),
-                ContentItems = ConvertContentToItems(msg.Content),
-                Timestamp = DateTime.UtcNow,
-                Tools = ConvertTools(request.Tools),
-                ToolChoice = request.ToolChoice
+                "user" => Microsoft.Extensions.AI.ChatRole.User,
+                "assistant" => Microsoft.Extensions.AI.ChatRole.Assistant,
+                _ => Microsoft.Extensions.AI.ChatRole.User
             };
+            
+            var chatMessage = new Microsoft.Extensions.AI.ChatMessage(
+                role,
+                ConvertContentToString(msg.Content)
+            );
             messages.Add(chatMessage);
         }
 
@@ -462,3 +460,4 @@ public class AnthropicTransformService
         return (int)(wordCount * 1.3);
     }
 }
+

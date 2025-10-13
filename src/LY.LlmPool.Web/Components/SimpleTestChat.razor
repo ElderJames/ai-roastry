@@ -73,24 +73,14 @@
         _isLoading = true;
         try
         {
-            var messages = new List<ChatMessage>();
-            
+            var messages = new List<Microsoft.Extensions.AI.ChatMessage>();
+
             if (!string.IsNullOrEmpty(SystemPrompt))
             {
-                messages.Add(new ChatMessage
-                {
-                    Role = "system",
-                    Content = SystemPrompt,
-                    Timestamp = DateTime.Now
-                });
+                messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, SystemPrompt));
             }
 
-            messages.Add(new ChatMessage
-            {
-                Role = "user",
-                Content = _currentMessage.Trim(),
-                Timestamp = DateTime.Now
-            });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, _currentMessage.Trim()));
 
             if (Config != null)
             {

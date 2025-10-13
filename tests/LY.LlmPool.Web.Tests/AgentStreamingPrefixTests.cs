@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,7 +9,12 @@ using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
+using LY.LlmPool.Web.Services.Tools;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.SemanticKernel;
+using Moq;
 using Xunit;
+using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace LY.LlmPool.Web.Tests;
 
@@ -24,16 +30,16 @@ public class AgentStreamingPrefixTests
         // Arrange
         var app = CreateTestApp(OrchestrationMode.Sequential);
         var strategy = new SequentialStrategy();
-        var userMessages = new List<ChatMessage>
+        var userMessages = new List<AIChatMessage>
         {
-            new() { Role = "user", Content = "测试问题" }
+            new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "测试问题")
         };
 
         var capturedChunks = new List<string>();
         var capturedAgentNames = new List<string>();
 
         // Mock streaming message function - 模拟 LLM 返回多个 token
-        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             var tokens = new[] { "这", "是", "一", "个", "测", "试", "回", "答" };
             foreach (var token in tokens)
@@ -44,7 +50,7 @@ public class AgentStreamingPrefixTests
         }
 
         // Mock regular message function
-        Task<ChatResponse> MockMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        Task<ChatResponse> MockMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             return Task.FromResult(new ChatResponse
             {
@@ -61,10 +67,13 @@ public class AgentStreamingPrefixTests
             capturedChunks.Add(text);
         }
 
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+
         // Act
         await strategy.ExecuteAsync(
             app,
             userMessages,
+            mockToolProvider,
             MockMessage,
             MockStreamingMessage,
             ProgressCallback,
@@ -95,16 +104,16 @@ public class AgentStreamingPrefixTests
         // Arrange
         var app = CreateTestDagApp();
         var strategy = new DAGStrategy();
-        var userMessages = new List<ChatMessage>
+        var userMessages = new List<AIChatMessage>
         {
-            new() { Role = "user", Content = "测试 DAG 问题" }
+            new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "测试 DAG 问题")
         };
 
         var capturedChunks = new List<string>();
         var capturedAgentNames = new List<string>();
 
         // Mock streaming message function
-        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             var tokens = new[] { "Planner", "输", "出", "内", "容" };
             foreach (var token in tokens)
@@ -115,7 +124,7 @@ public class AgentStreamingPrefixTests
         }
 
         // Mock regular message function
-        Task<ChatResponse> MockMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        Task<ChatResponse> MockMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             return Task.FromResult(new ChatResponse
             {
@@ -132,10 +141,13 @@ public class AgentStreamingPrefixTests
             capturedChunks.Add(text);
         }
 
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+
         // Act
         await strategy.ExecuteAsync(
             app,
             userMessages,
+            mockToolProvider,
             MockMessage,
             MockStreamingMessage,
             ProgressCallback,
@@ -177,16 +189,16 @@ public class AgentStreamingPrefixTests
         app.AgentMembers.Add(agent2);
 
         var strategy = new SequentialStrategy();
-        var userMessages = new List<ChatMessage>
+        var userMessages = new List<AIChatMessage>
         {
-            new() { Role = "user", Content = "测试多 Agent" }
+            new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "测试多 Agent")
         };
 
         var capturedByAgent = new Dictionary<string, List<string>>();
 
         // Mock streaming - 不同 agent 返回不同内容
         int callCount = 0;
-        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             var tokens = callCount == 0 
                 ? new[] { "计", "划", "完", "成" } 
@@ -200,7 +212,7 @@ public class AgentStreamingPrefixTests
             }
         }
 
-        Task<ChatResponse> MockMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        Task<ChatResponse> MockMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             return Task.FromResult(new ChatResponse { Status = "success", Message = "ok" });
         }
@@ -216,10 +228,13 @@ public class AgentStreamingPrefixTests
             capturedByAgent[agentName].Add(text);
         }
 
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+
         // Act
         await strategy.ExecuteAsync(
             app,
             userMessages,
+            mockToolProvider,
             MockMessage,
             MockStreamingMessage,
             ProgressCallback,
@@ -247,16 +262,16 @@ public class AgentStreamingPrefixTests
         // 这个测试模拟真实场景：验证输出不会是 "[Planner] 任务[Planner] 目标[Planner]" 这种形式
         var app = CreateTestApp(OrchestrationMode.Sequential);
         var strategy = new SequentialStrategy();
-        var userMessages = new List<ChatMessage>
+        var userMessages = new List<AIChatMessage>
         {
-            new() { Role = "user", Content = "解释手冲咖啡与拿铁咖啡之间的主要区别" }
+            new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "解释手冲咖啡与拿铁咖啡之间的主要区别")
         };
 
         var allChunks = new List<string>();
         var fullOutput = new StringBuilder();
 
         // 模拟 LLM 逐 token 返回
-        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        async IAsyncEnumerable<string> MockStreamingMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             var tokens = new[] { "任务", "目标", "：", "解释", "手", "冲", "咖啡", "与", "拿", "铁", "咖啡", "之间的", "主要", "区别", "。" };
             foreach (var token in tokens)
@@ -266,7 +281,7 @@ public class AgentStreamingPrefixTests
             }
         }
 
-        Task<ChatResponse> MockMessage(LlmConfig cfg, List<ChatMessage> msgs)
+        Task<ChatResponse> MockMessage(LlmConfig cfg, List<AIChatMessage> msgs, IEnumerable<KernelFunction>? tools)
         {
             return Task.FromResult(new ChatResponse { Status = "success", Message = "完整内容" });
         }
@@ -278,8 +293,10 @@ public class AgentStreamingPrefixTests
             fullOutput.Append(text);
         }
 
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+
         // Act
-        await strategy.ExecuteAsync(app, userMessages, MockMessage, MockStreamingMessage, ProgressCallback);
+        await strategy.ExecuteAsync(app, userMessages, mockToolProvider, MockMessage, MockStreamingMessage, ProgressCallback);
 
         // Assert
         var output = fullOutput.ToString();
@@ -374,3 +391,6 @@ public class AgentStreamingPrefixTests
         return app;
     }
 }
+
+
+

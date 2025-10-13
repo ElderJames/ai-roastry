@@ -7,6 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Tools;
+using Microsoft.SemanticKernel;
 
 namespace LY.LlmPool.Web.Services.Agents;
 
@@ -17,9 +19,10 @@ public class DAGStrategy : IOrchestrationStrategy
 {
     public async Task<string> ExecuteAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
-        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
+        IEnumerable<Microsoft.Extensions.AI.ChatMessage> userMessages,
+        ToolProviderService toolProviderService,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress = null,
         CancellationToken ct = default)
     {
@@ -51,7 +54,7 @@ public class DAGStrategy : IOrchestrationStrategy
         };
 
         // 执行工作流
-        await ExecuteWorkflowAsync(sortedNodes, graph, members, dagConfig, context, sendMessage, sendStreamingMessage, onProgress, ct);
+        await ExecuteWorkflowAsync(sortedNodes, graph, members, dagConfig, context, toolProviderService, sendMessage, sendStreamingMessage, onProgress, ct);
 
         // 汇总最终结果
         return AggregateFinalResult(context);
@@ -166,8 +169,9 @@ public class DAGStrategy : IOrchestrationStrategy
         Dictionary<string, AgentMember> members,
         DAGWorkflowConfig dagConfig,
         WorkflowExecutionContext context,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
-        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
+        ToolProviderService toolProviderService,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress,
         CancellationToken ct)
     {
@@ -191,6 +195,7 @@ public class DAGStrategy : IOrchestrationStrategy
                     nodeConfigs[nodeId],
                     context,
                     completed,
+                    toolProviderService,
                     sendMessage,
                     sendStreamingMessage,
                     onProgress,
@@ -222,8 +227,9 @@ public class DAGStrategy : IOrchestrationStrategy
         AgentMemberDAGConfig config,
         WorkflowExecutionContext context,
         HashSet<string> completed,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
-        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
+        ToolProviderService toolProviderService,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress,
         int step,
         CancellationToken ct)
@@ -261,15 +267,15 @@ public class DAGStrategy : IOrchestrationStrategy
         try
         {
             // 构建消息
-            var messages = new List<ChatMessage>();
+            var messages = new List<Microsoft.Extensions.AI.ChatMessage>();
 
             if (member.LlmPrompt != null && !string.IsNullOrWhiteSpace(member.LlmPrompt.Content))
             {
-                messages.Add(new ChatMessage { Role = "system", Content = member.LlmPrompt.Content });
+                messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, member.LlmPrompt.Content));
             }
 
             // 用户消息 + 依赖节点的输出
-            var userContent = string.Join("\n", context.UserMessages.Select(m => m.Content ?? ""));
+            var userContent = string.Join("\n", context.UserMessages.Select(m => m.Text ?? string.Empty));
             if (config.Dependencies != null && config.Dependencies.Any())
             {
                 var depOutputs = config.Dependencies
@@ -283,7 +289,12 @@ public class DAGStrategy : IOrchestrationStrategy
                 userContent += "\n\n[Global Context]\n" + context.GlobalContext;
             }
 
-            messages.Add(new ChatMessage { Role = "user", Content = userContent });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userContent));
+
+            // 获取该成员关联的工具（通过 Prompt）
+            var aiTools = await toolProviderService.GetToolsForPromptAsync(member.LlmPrompt);
+            // TODO: Agent系统仍使用SemanticKernel的IChatClientService，暂时不支持AITool
+            IEnumerable<KernelFunction>? tools = null;
 
             // 执行带超时
             var timeout = config.TimeoutSeconds.HasValue
@@ -300,7 +311,7 @@ public class DAGStrategy : IOrchestrationStrategy
 
             try
             {
-                await foreach (var chunk in sendStreamingMessage(member.LlmConfig, messages).WithCancellation(cts.Token))
+                await foreach (var chunk in sendStreamingMessage(member.LlmConfig, messages, tools).WithCancellation(cts.Token))
                 {
                     if (!string.IsNullOrEmpty(chunk))
                     {
@@ -465,7 +476,7 @@ public class DAGStrategy : IOrchestrationStrategy
 
     private class WorkflowExecutionContext
     {
-        public List<ChatMessage> UserMessages { get; set; } = new();
+        public List<Microsoft.Extensions.AI.ChatMessage> UserMessages { get; set; } = new();
         public ConcurrentDictionary<string, NodeExecutionResult> NodeResults { get; set; } = new();
         public string GlobalContext { get; set; } = string.Empty;
     }
@@ -478,3 +489,4 @@ public class DAGStrategy : IOrchestrationStrategy
         public string? Error { get; set; }
     }
 }
+

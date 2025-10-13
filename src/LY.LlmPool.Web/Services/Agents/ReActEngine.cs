@@ -6,7 +6,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 
 public interface IToolExecutor
 {
-    Task<(bool ok, string output, string? error)> ExecuteAsync(IAgentTool tool, JsonElement? args, CancellationToken ct = default);
+    Task<(bool ok, string output, string? error)> ExecuteAsync(ITool tool, JsonElement? args, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -25,10 +25,10 @@ public class ReActEngine
         _executor = executor;
     }
 
-    public async Task<string> RunAsync(LlmConfig config, IEnumerable<ChatMessage> messages, IEnumerable<IAgentTool>? tools = null, CancellationToken ct = default)
+    public async Task<string> RunAsync(LlmConfig config, IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<ITool>? tools = null, CancellationToken ct = default)
     {
         var history = messages.ToList();
-        var toolMap = (tools ?? Array.Empty<IAgentTool>()).ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+        var toolMap = (tools ?? Array.Empty<ITool>()).ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
 
         // 首次调用
         var response = await _chat.SendMessageAsync(config, history);
@@ -61,7 +61,7 @@ public class ReActEngine
                 var toolResult = ok ? output : ($"ERROR: {error}");
 
                 // 将工具结果追加到对话，作为下一轮用户消息（函数结果注入）
-                history.Add(new ChatMessage { Role = "system", Content = $"[Tool:{tool.Name}] {toolResult}" });
+                history.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, $"[Tool:{tool.Name}] {toolResult}"));
             }
 
             response = await _chat.SendMessageAsync(config, history);
@@ -71,3 +71,4 @@ public class ReActEngine
         return lastModelText;
     }
 }
+

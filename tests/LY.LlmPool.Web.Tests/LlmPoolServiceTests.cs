@@ -39,7 +39,7 @@ public class LlmPoolServiceTests
 
     private class MockChatClientService : ChatClientService
     {
-        public MockChatClientService() : base(null!, null!, null!, null!) { }
+        public MockChatClientService() : base(null!, null!, null!, null!, null!) { }
     }
 
     [Fact]
@@ -144,74 +144,12 @@ public class LlmPoolServiceTests
         Assert.Contains(fetchedMembers, m => m.Role == "writer");
     }
 
-    [Fact]
+    [Fact(Skip = "AgentTool entity and related methods have been removed")]
     public async Task Can_CRUD_AgentTools()
     {
-        var options = new DbContextOptionsBuilder<LlmDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        var svc = CreateService(options);
-
-        // Setup dependencies
-        using var db = new LlmDbContext(options);
-        var mt = new LlmModelType { Id = Guid.NewGuid().ToString("N"), Name = "openai" };
-        var cfg = new LlmConfig { Id = Guid.NewGuid().ToString("N"), Name = "gpt-4o-mini", Model = "gpt-4o-mini", BaseUrl = "https://api.openai.com/v1", ApiKey = "x", ModelTypeId = mt.Id };
-        var prompt = new LlmPrompt { Id = Guid.NewGuid().ToString("N"), Name = "agent", Content = "you are agent" };
-        var mcpServer = new McpServerConfig { Id = Guid.NewGuid().ToString("N"), Name = "fileserver", Url = "http://localhost:8000", Description = "local mcp server" };
-        db.ModelTypes.Add(mt);
-        db.Configs.Add(cfg);
-        db.Prompts.Add(prompt);
-        db.McpServerConfigs.Add(mcpServer);
-        await db.SaveChangesAsync();
-
-        // Create agent member
-        var app = new LlmApp { Id = Guid.NewGuid().ToString("N"), Name = "agent-app", AppType = "AgentGroup" };
-        var member = new AgentMember { Id = Guid.NewGuid().ToString("N"), Name = "Agent", Role = "agent", Order = 1, LlmAppId = app.Id, LlmPromptId = prompt.Id, LlmConfigId = cfg.Id };
-        db.Apps.Add(app);
-        db.AgentMembers.Add(member);
-        await db.SaveChangesAsync();
-
-        // Add Internal Tool
-        var internalTool = new AgentTool
-        {
-            AgentMemberId = member.Id,
-            ToolId = "context_extractor",
-            ToolType = ToolType.Internal
-        };
-        var addedInternal = await svc.AddAgentToolAsync(internalTool);
-        Assert.Equal("context_extractor", addedInternal.ToolId);
-
-        // Add MCP Tool
-        var mcpTool = new AgentTool
-        {
-            AgentMemberId = member.Id,
-            ToolId = "read_file",
-            ToolType = ToolType.Mcp
-        };
-        var addedMcp = await svc.AddAgentToolAsync(mcpTool);
-        Assert.Equal("read_file", addedMcp.ToolId);
-
-        // Get tools
-        var tools = await svc.GetAgentToolsAsync(member.Id);
-        Assert.Equal(2, tools.Count);
-        Assert.Contains(tools, t => t.ToolType == ToolType.Internal);
-        Assert.Contains(tools, t => t.ToolType == ToolType.Mcp);
-
-        // Set tools (replace all)
-        var newTools = new List<AgentTool>
-        {
-            new AgentTool { AgentMemberId = member.Id, ToolId = "memory_query", ToolType = ToolType.Internal }
-        };
-        await svc.SetAgentToolsAsync(member.Id, newTools);
-
-        var updatedTools = await svc.GetAgentToolsAsync(member.Id);
-        Assert.Single(updatedTools);
-        Assert.Equal("memory_query", updatedTools[0].ToolId);
-
-        // Delete tool
-        await svc.DeleteAgentToolAsync(member.Id, "memory_query", ToolType.Internal);
-        var finalTools = await svc.GetAgentToolsAsync(member.Id);
-        Assert.Empty(finalTools);
+        // AgentTool entity has been removed from the data model
+        // This test is skipped until the test is updated or removed
+        await Task.CompletedTask;
     }
 
     [Fact]

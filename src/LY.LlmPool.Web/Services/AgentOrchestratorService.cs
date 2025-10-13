@@ -18,8 +18,8 @@ public class AgentOrchestratorService
 
     public async Task<string> RunSequentialAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>>? sendOverride = null,
+        IEnumerable<Microsoft.Extensions.AI.ChatMessage> userMessages,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, Task<ChatResponse>>? sendOverride = null,
         Func<string, string?, int, string, bool, Task>? onProgress = null)
     {
         if (app.AgentMembers == null || app.AgentMembers.Count == 0)
@@ -41,18 +41,18 @@ public class AgentOrchestratorService
                 continue;
             }
 
-            var messages = new List<ChatMessage>();
+            var messages = new List<Microsoft.Extensions.AI.ChatMessage>();
 
             if (member.LlmPrompt != null && !string.IsNullOrWhiteSpace(member.LlmPrompt.Content))
             {
-                messages.Add(new ChatMessage { Role = "system", Content = member.LlmPrompt.Content });
+                messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, member.LlmPrompt.Content));
             }
 
             // 将用户请求与上一轮的共享上下文拼接给该 Agent
             var userText = new StringBuilder();
             foreach (var um in userMessages)
             {
-                var content = um.Content;
+                var content = um.Text;
                 if (!string.IsNullOrEmpty(content))
                 {
                     userText.AppendLine(content);
@@ -63,7 +63,7 @@ public class AgentOrchestratorService
                 userText.AppendLine("\n[Context]");
                 userText.AppendLine(sharedContext);
             }
-            messages.Add(new ChatMessage { Role = "user", Content = userText.ToString() });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userText.ToString()));
 
             var resp = await sender(member.LlmConfig, messages);
             if (!string.Equals(resp.Status, "success", StringComparison.OrdinalIgnoreCase))
@@ -84,8 +84,8 @@ public class AgentOrchestratorService
 
     public async Task<string> RunGroupChatAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>>? sendOverride = null,
+        IEnumerable<Microsoft.Extensions.AI.ChatMessage> userMessages,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, Task<ChatResponse>>? sendOverride = null,
         Func<string, string?, int, string, bool, Task>? onProgress = null)
     {
         if (app.AgentMembers == null || app.AgentMembers.Count == 0)
@@ -149,10 +149,10 @@ public class AgentOrchestratorService
         }
         catch { }
 
-        var sharedTranscript = new List<ChatMessage>();
+        var sharedTranscript = new List<Microsoft.Extensions.AI.ChatMessage>();
         foreach (var m in userMessages)
         {
-            sharedTranscript.Add(new ChatMessage { Role = m.Role, Content = m.Content });
+            sharedTranscript.Add(new Microsoft.Extensions.AI.ChatMessage(m.Role, m.Text ?? string.Empty));
         }
 
         var allRoundOutputs = new List<List<(string name, string text)>>();
@@ -181,7 +181,7 @@ public class AgentOrchestratorService
                     continue;
                 }
 
-                var msgs = new List<ChatMessage>();
+                var msgs = new List<Microsoft.Extensions.AI.ChatMessage>();
                 var systemText = new StringBuilder();
                 systemText.Append($"[Round {round}] [Agent:{member.Name}; Role:{member.Role}] ");
                 if (member.LlmPrompt != null && !string.IsNullOrWhiteSpace(member.LlmPrompt.Content))
@@ -193,10 +193,10 @@ public class AgentOrchestratorService
                 {
                     systemText.Append("\nYou are the moderator. Summarize prior messages and provide a concise decision. If the discussion is sufficient, output a final answer prefixed with 'FINAL:'.");
                 }
-                msgs.Add(new ChatMessage { Role = "system", Content = systemText.ToString() });
+                msgs.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, systemText.ToString()));
 
                 // 提供当前共享的讨论历史
-                msgs.AddRange(sharedTranscript.Select(x => new ChatMessage { Role = x.Role, Content = x.Content }));
+                msgs.AddRange(sharedTranscript.Select(x => new Microsoft.Extensions.AI.ChatMessage(x.Role, x.Text ?? string.Empty)));
 
                 var resp = await sender(member.LlmConfig, msgs);
                 if (!string.Equals(resp.Status, "success", StringComparison.OrdinalIgnoreCase))
@@ -207,7 +207,7 @@ public class AgentOrchestratorService
 
                 var text = resp.Message ?? string.Empty;
                 roundOutputs.Add((member.Name, text));
-                sharedTranscript.Add(new ChatMessage { Role = "assistant", Content = $"[{member.Name}] {text}" });
+                sharedTranscript.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, $"[{member.Name}] {text}"));
 
                 if (onProgress != null)
                 {
@@ -258,7 +258,7 @@ public class AgentOrchestratorService
             catch { }
 
             var take = Math.Min(limit, sharedTranscript.Count);
-            var summaryMessages = new List<ChatMessage>();
+            var summaryMessages = new List<Microsoft.Extensions.AI.ChatMessage>();
             var sys = new StringBuilder();
             sys.Append("You are the moderator. Read the following transcript and produce a concise final answer. Use bullet points only if necessary. Respond in the user's language. Start with 'FINAL:' prefix.");
             if (moderator.LlmPrompt != null && !string.IsNullOrWhiteSpace(moderator.LlmPrompt.Content))
@@ -266,8 +266,8 @@ public class AgentOrchestratorService
                 sys.Append("\n");
                 sys.Append(moderator.LlmPrompt.Content);
             }
-            summaryMessages.Add(new ChatMessage { Role = "system", Content = sys.ToString() });
-            summaryMessages.AddRange(sharedTranscript.TakeLast(take).Select(x => new ChatMessage { Role = x.Role, Content = x.Content }));
+            summaryMessages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, sys.ToString()));
+            summaryMessages.AddRange(sharedTranscript.TakeLast(take).Select(x => new Microsoft.Extensions.AI.ChatMessage(x.Role, x.Text ?? string.Empty)));
 
             var resp = await sender(moderator.LlmConfig, summaryMessages);
             if (string.Equals(resp.Status, "success", StringComparison.OrdinalIgnoreCase))
@@ -325,3 +325,4 @@ public class AgentOrchestratorService
         return false;
     }
 }
+

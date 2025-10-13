@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 /// <summary>
 /// 内部插件型工具的占位实现：校验参数并回显结果。
 /// </summary>
-public class InternalPluginTool : IAgentTool
+public class InternalPluginTool : ITool
 {
     public string Id { get; }
     public string Name { get; }

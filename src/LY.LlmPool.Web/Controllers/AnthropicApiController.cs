@@ -276,13 +276,13 @@ public class AnthropicApiController : ControllerBase
     /// <summary>
     /// 处理流式请求
     /// </summary>
-    private async Task<IActionResult> HandleStreamingRequest(MessagesRequest request, Data.Entities.LlmConfig endpoint, List<Models.ChatMessage> messages)
+    private async Task<IActionResult> HandleStreamingRequest(MessagesRequest request, Data.Entities.LlmConfig endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         // 已重构为 HandleStreamingCore 并在 CreateMessage 中设置时间点与选择信息
         return await Task.FromResult(new EmptyResult());
     }
 
-    private async Task<IActionResult> HandleStreamingCore(MessagesRequest request, Data.Entities.LlmConfig config, List<Models.ChatMessage> messages,
+    private async Task<IActionResult> HandleStreamingCore(MessagesRequest request, Data.Entities.LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages,
         Data.Entities.EndpointCallRecord callRecord, string endpointId, DateTime requestStartTime)
     {
         try
@@ -438,3 +438,4 @@ public class AnthropicApiController : ControllerBase
         });
     }
 }
+

@@ -4,11 +4,14 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Agents;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.ClientModel;
 using System.Reflection;
 using System.Text;
+using System.Text.Encodings.Web;
+using AIResponse = Microsoft.Extensions.AI.ChatResponse;
 
 namespace LY.LlmPool.Web.Services;
 
@@ -18,17 +21,20 @@ public class ChatClientService : IChatClientService
     private readonly ILogger<ChatClientService> _logger;
     private readonly ILogger<LoggingHttpHandler> _httpLogger;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ChatClientFactory _chatClientFactory;
 
     public ChatClientService(
         IHttpContextAccessor httpContextAccessor,
         ILogger<ChatClientService> logger,
         IHttpClientFactory httpClientFactory,
-        ILogger<LoggingHttpHandler> httpLogger)
+        ILogger<LoggingHttpHandler> httpLogger,
+        ChatClientFactory chatClientFactory)
     {
         _httpContextAccessor = httpContextAccessor;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
         _httpLogger = httpLogger;
+        _chatClientFactory = chatClientFactory;
     }
 
     // HttpClient BaseAddress 来自命名客户端 LlmPoolApi；无需再从 HttpContext 手动拼接
@@ -47,56 +53,6 @@ public class ChatClientService : IChatClientService
         return builder.Build();
     }
 
-    private ChatHistory BuildChatHistory(List<ChatMessage> messages)
-    {
-        var chatHistory = new ChatHistory();
-
-        _logger.LogInformation("开始构建聊天历史，消息数量: {MessageCount}", messages.Count);
-
-        foreach (var message in messages)
-        {
-            var authorRole = message.Role.ToLower() switch
-            {
-                "system" => AuthorRole.System,
-                "assistant" => AuthorRole.Assistant,
-                "user" => AuthorRole.User,
-                _ => AuthorRole.User
-            };
-
-            _logger.LogInformation("处理消息 - 角色: {Role}, 有ContentItems: {HasContentItems}, Content长度: {ContentLength}", 
-                message.Role, message.ContentItems != null && message.ContentItems.Count > 0, message.Content?.Length ?? 0);
-
-            if (message.ContentItems != null && message.ContentItems.Count > 0)
-            {
-                _logger.LogInformation("添加多模态消息，ContentItems数量: {Count}", message.ContentItems.Count);
-                foreach (var item in message.ContentItems)
-                {
-                    if (item is TextContent textContent)
-                    {
-                        _logger.LogInformation("- 文本内容: {Length} 字符", textContent.Text?.Length ?? 0);
-                    }
-                    else if (item is ImageContent imageContent)
-                    {
-                        _logger.LogInformation("- 图片内容: {MimeType}, {Size} bytes", 
-                            imageContent.MimeType, imageContent.Data?.Length ?? 0);
-                    }
-                    else
-                    {
-                        _logger.LogInformation("- 未知内容类型: {Type}", item.GetType().Name);
-                    }
-                }
-                chatHistory.AddMessage(authorRole, message.ContentItems);
-            }
-            else
-            {
-                _logger.LogInformation("添加文本消息: {Content}", message.Content);
-                chatHistory.AddMessage(authorRole, message.Content ?? string.Empty);
-            }
-        }
-
-        _logger.LogInformation("聊天历史构建完成，总消息数: {Count}", chatHistory.Count);
-        return chatHistory;
-    }
 
     private Kernel CreateKernelWithTools(string apiKey, string baseUrl, string model, List<OpenAITool>? tools)
     {
@@ -225,6 +181,20 @@ public class ChatClientService : IChatClientService
         return kernel;
     }
 
+    private static ChatHistory BuildChatHistory(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages)
+    {
+        var chatHistory = new ChatHistory();
+
+        foreach (var message in messages)
+        {
+            var role = new AuthorRole(message.Role.Value);
+            var text = message.Text ?? string.Empty;
+            chatHistory.Add(new ChatMessageContent(role, text));
+        }
+
+        return chatHistory;
+    }
+
     private static string SanitizeFunctionName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return "func";
@@ -245,7 +215,12 @@ public class ChatClientService : IChatClientService
         return s;
     }
 
-    private Kernel CreateKernelWithObjects(string apiKey, string baseUrl, string model, IEnumerable<object> toolObjects)
+
+
+    /// <summary>
+    /// 创建带有 KernelFunction 工具的 Kernel
+    /// </summary>
+    private Kernel CreateKernelWithFunctions(string apiKey, string baseUrl, string model, IEnumerable<KernelFunction> functions)
     {
         var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
         if (!string.IsNullOrWhiteSpace(baseUrl))
@@ -258,16 +233,29 @@ public class ChatClientService : IChatClientService
 
         var kernel = builder.Build();
 
-        foreach (var obj in toolObjects)
+        // 将所有 KernelFunction 添加到一个插件中
+        if (functions != null && functions.Any())
         {
-            if (obj != null)
-            {
-                kernel.Plugins.AddFromObject(obj, obj.GetType().Name);
-            }
+            kernel.Plugins.AddFromFunctions("PromptTools", functions);
+            _logger.LogInformation("Added {Count} KernelFunctions to kernel", functions.Count());
         }
 
         return kernel;
     }
+
+    private OpenAIPromptExecutionSettings CreateExecutionSettingsForTools(Dictionary<string, object>? toolChoice, Dictionary<string, object>? customParameters = null)
+    {
+        var settings = new OpenAIPromptExecutionSettings
+        {
+            ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
+        };
+
+        // 应用自定义参数
+        ApplyCustomParameters(settings, customParameters);
+
+        return settings;
+    }
+
 
     private OpenAIPromptExecutionSettings CreateExecutionSettings(List<OpenAITool>? tools, Dictionary<string, object>? toolChoice, Dictionary<string, object>? customParameters = null)
     {
@@ -316,23 +304,13 @@ public class ChatClientService : IChatClientService
         return settings;
     }
 
-    private OpenAIPromptExecutionSettings CreateExecutionSettingsForObjects(Dictionary<string, object>? toolChoice, Dictionary<string, object>? customParameters = null)
-    {
-        var settings = new OpenAIPromptExecutionSettings();
-        settings.ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions;
-        
-        // 应用自定义参数
-        ApplyCustomParameters(settings, customParameters);
-
-        return settings;
-    }
 
     private void ApplyCustomParameters(OpenAIPromptExecutionSettings settings, Dictionary<string, object>? customParameters)
     {
         ModelParameterHelper.ApplyToExecutionSettings(settings, customParameters);
     }
     
-    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
         _logger.LogInformation("开始发送消息，配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
@@ -346,65 +324,30 @@ public class ChatClientService : IChatClientService
         
         try
         {
-            // 获取第一个消息的tools配置（假设所有消息共享相同的tools配置）
-            var firstMessage = messages.FirstOrDefault();
+            // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
+            var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
 
-            // 如果有工具，尝试使用带工具的 kernel，否则使用普通 kernel
-            var hasLocalTools = toolObjects != null && toolObjects.Any();
-            Kernel kernel;
-            OpenAIPromptExecutionSettings settings;
-
-            if (hasLocalTools)
+            var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+            
+            // 添加工具
+            if (tools != null && tools.Any())
             {
-                _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
-                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects!);
-                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, configParameters);
-            }
-            else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
-            {
-                _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
-                try
-                {
-                    kernel = CreateKernelWithTools(config.ApiKey, config.BaseUrl, config.Model, firstMessage.Tools);
-                    settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, configParameters);
-                    _logger.LogInformation("成功创建带工具的 kernel");
-                }
-                catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
-                {
-                    _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
-                    kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
-                    settings = new OpenAIPromptExecutionSettings();
-                    if (configParameters != null)
-                        ApplyCustomParameters(settings, configParameters);
-                }
+                _logger.LogInformation("检测到 {ToolCount} 个工具", tools.Count());
+                chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
             }
             else
             {
-                _logger.LogInformation("无工具配置，使用普通 kernel");
-                kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
-                settings = new OpenAIPromptExecutionSettings();
-                ApplyCustomParameters(settings, configParameters);
+                _logger.LogInformation("无工具配置");
             }
-
-            var chatHistory = BuildChatHistory(messages);
-            var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
             _logger.LogInformation("开始调用聊天完成服务");
-            var result = await chatCompletionService.GetChatMessageContentsAsync(chatHistory, settings, kernel);
-            _logger.LogInformation("聊天完成服务调用成功，结果数量: {ResultCount}", result.Count);
-
-            var primary = result.FirstOrDefault();
-            if (primary == null)
-            {
-                _logger.LogWarning("模型返回为空响应");
-                return new ChatResponse { Message = string.Empty, Status = "success" };
-            }
+            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions);
+            _logger.LogInformation("聊天完成服务调用成功");
 
             var response = new ChatResponse
             {
-                Message = primary.Content ?? string.Empty,
-                Status = "success",
-                ToolCalls = ExtractToolCalls(primary)
+                Message = aiResponse.Text ?? string.Empty,
+                Status = "success"
             };
 
             _logger.LogInformation("响应内容长度: {Length}", response.Message.Length);
@@ -422,71 +365,59 @@ public class ChatClientService : IChatClientService
         }
     }
 
-    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<object>? toolObjects = null)
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        _logger.LogInformation("开始发送消息（带参数），配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
+        _logger.LogInformation("开始发送消息(带参数),配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
         
         try
         {
-            // 获取第一个消息的tools配置（假设所有消息共享相同的tools配置）
-            var firstMessage = messages.FirstOrDefault();
+            // 使用 ChatClientFactory 创建 IChatClient,启用自动工具调用
+            var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
 
-            // 如果有工具，尝试使用带工具的 kernel，否则使用普通 kernel
-            var hasLocalTools = toolObjects != null && toolObjects.Any();
-            Kernel kernel;
-            OpenAIPromptExecutionSettings settings;
-
-            if (hasLocalTools)
+            var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+            
+            // 添加工具
+            if (tools != null && tools.Any())
             {
-                _logger.LogInformation("使用本地 KernelFunction 对象注册工具");
-                kernel = CreateKernelWithObjects(config.ApiKey, config.BaseUrl, config.Model, toolObjects!);
-                settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, parameters);
-            }
-            else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
-            {
-                _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
-                try
-                {
-                    kernel = CreateKernelWithTools(config.ApiKey, config.BaseUrl, config.Model, firstMessage.Tools);
-                    settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, parameters);
-                    _logger.LogInformation("成功创建带工具的 kernel");
-                }
-                catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
-                {
-                    _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
-                    kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
-                    settings = new OpenAIPromptExecutionSettings();
-                    ApplyCustomParameters(settings, parameters);
-                }
+                _logger.LogInformation("检测到 {ToolCount} 个工具", tools.Count());
+                chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
             }
             else
             {
-                _logger.LogInformation("无工具配置，使用普通 kernel");
-                kernel = CreateKernel(config.ApiKey, config.BaseUrl, config.Model);
-                settings = new OpenAIPromptExecutionSettings();
-                ApplyCustomParameters(settings, parameters);
+                _logger.LogInformation("无工具配置");
             }
 
-            var chatHistory = BuildChatHistory(messages);
-            var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
-
-            _logger.LogInformation("开始调用聊天完成服务");
-            var result = await chatCompletionService.GetChatMessageContentsAsync(chatHistory, settings, kernel);
-            _logger.LogInformation("聊天完成服务调用成功，结果数量: {ResultCount}", result.Count);
-
-            var primary = result.FirstOrDefault();
-            if (primary == null)
+            // 应用参数到 ChatOptions (temperature, max_tokens 等)
+            if (parameters != null && parameters.Count > 0)
             {
-                _logger.LogWarning("模型返回为空响应");
-                return new ChatResponse { Message = string.Empty, Status = "success" };
+                if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
+                {
+                    chatOptions.Temperature = Convert.ToSingle(temp);
+                    _logger.LogInformation("设置 Temperature: {Temperature}", chatOptions.Temperature);
+                }
+                
+                if (parameters.TryGetValue("max_tokens", out var tokens) || parameters.TryGetValue("tokens", out tokens))
+                {
+                    chatOptions.MaxOutputTokens = Convert.ToInt32(tokens);
+                    _logger.LogInformation("设置 MaxOutputTokens: {MaxTokens}", chatOptions.MaxOutputTokens);
+                }
+                
+                if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
+                {
+                    chatOptions.TopP = Convert.ToSingle(topP);
+                    _logger.LogInformation("设置 TopP: {TopP}", chatOptions.TopP);
+                }
             }
+            
+            _logger.LogInformation("开始调用聊天完成服务");
+            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions);
+            _logger.LogInformation("聊天完成服务调用成功");
 
             var response = new ChatResponse
             {
-                Message = primary.Content ?? string.Empty,
-                Status = "success",
-                ToolCalls = ExtractToolCalls(primary)
+                Message = aiResponse.Text ?? string.Empty,
+                Status = "success"
             };
 
             _logger.LogInformation("响应内容长度: {Length}", response.Message.Length);
@@ -504,58 +435,55 @@ public class ChatClientService : IChatClientService
         }
     }
 
-    public async Task<ChatResponse> SendMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    public async Task<ChatResponse> SendMessageAsync(LlmEndpoint config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
         return await SendMessageAsync(new LlmConfig
         {
             ApiKey = config.Id,
             BaseUrl = string.Empty,
             Model = config.Name
-        }, messages, toolObjects);
+        }, messages, tools);
     }
 
-    public async Task<ChatResponse> SendMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+    public async Task<ChatResponse> SendMessageAsyncByAppName(string appName, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        var apiKey = "app-temp-key";
+        var config = new LlmConfig 
+        { 
+            ApiKey = "app-temp-key", 
+            BaseUrl = string.Empty, 
+            Model = appName 
+        };
 
-        // 选择合适的 Kernel 与设置（支持本地 KernelFunction 对象或 OpenAI 风格 tools）
-        var firstMessage = messages.FirstOrDefault();
-        Kernel kernel;
-        OpenAIPromptExecutionSettings settings;
-        if (toolObjects != null && toolObjects.Any())
+        // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
+        var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+
+        var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+        
+        // 添加工具
+        if (tools != null && tools.Any())
         {
-            kernel = CreateKernelWithObjects(apiKey, string.Empty, appName, toolObjects);
-            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
-        }
-        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
-        {
-            kernel = CreateKernelWithTools(apiKey, string.Empty, appName, firstMessage.Tools);
-            settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
-        }
-        else
-        {
-            kernel = CreateKernel(apiKey, string.Empty, appName);
-            settings = new OpenAIPromptExecutionSettings();
+            chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
         }
 
-        var chatHistory = BuildChatHistory(messages);
+        // 添加参数到消息
         if (parameters != null && parameters.Count > 0)
         {
-            // 将 app 参数作为系统消息注入，便于模型/插件感知
             var json = JsonSerializer.Serialize(parameters);
-            chatHistory.AddSystemMessage($"[app_parameters]{json}");
+            var messagesWithParams = new List<Microsoft.Extensions.AI.ChatMessage>(messages)
+            {
+                new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, $"[app_parameters]{json}")
+            };
+            messages = messagesWithParams;
         }
 
-        var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
         try
         {
-            var result = await chatCompletionService.GetChatMessageContentAsync(chatHistory, settings, kernel);
+            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions);
 
             return new ChatResponse
             {
-                Message = result.Content ?? string.Empty,
-                Status = "success",
-                ToolCalls = ExtractToolCalls(result)
+                Message = aiResponse.Text ?? string.Empty,
+                Status = "success"
             };
         }
         catch (Exception ex)
@@ -564,244 +492,157 @@ public class ChatClientService : IChatClientService
         }
     }
 
-    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, null, toolObjects);
+        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, null, tools);
     }
 
-    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<object>? toolObjects = null)
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, parameters, toolObjects);
+        return SendStreamingMessageInternalAsync(config.ApiKey, config.BaseUrl, config.Model, messages, parameters, tools);
     }
 
-    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages, IEnumerable<object>? toolObjects = null)
+    public IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        return SendStreamingMessageInternalAsync(config.Id, string.Empty, config.Name, messages, null, toolObjects);
+        return SendStreamingMessageInternalAsync(config.Id, string.Empty, config.Name, messages, null, tools);
     }
 
-    public IAsyncEnumerable<string> SendStreamingMessageAsyncByAppName(string appName, List<ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<object>? toolObjects = null)
+    public IAsyncEnumerable<string> SendStreamingMessageAsyncByAppName(string appName, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
-        return SendStreamingMessageInternalAsync("app-temp-key", string.Empty, appName, messages, parameters, toolObjects);
+        return SendStreamingMessageInternalAsync("app-temp-key", string.Empty, appName, messages, parameters, tools);
     }
 
     private async IAsyncEnumerable<string> SendStreamingMessageViaHttpAsync(
         string baseUrl, 
         string model, 
-        List<ChatMessage> messages, 
+        List<Microsoft.Extensions.AI.ChatMessage> messages, 
         Dictionary<string, object>? parameters,
-        IEnumerable<object>? toolObjects)
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools)
     {
-        // 尽管方法名保留为 ViaHttp，这里切换为使用 Semantic Kernel 的流式能力
         var apiKey = "app-temp-key";
 
-        var firstMessage = messages.FirstOrDefault();
-        Kernel kernel;
-        OpenAIPromptExecutionSettings settings;
-        if (toolObjects != null && toolObjects.Any())
-        {
-            kernel = CreateKernelWithObjects(apiKey, string.Empty, model, toolObjects);
-            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice);
-        }
-        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
-        {
-            kernel = CreateKernelWithTools(apiKey, string.Empty, model, firstMessage.Tools);
-            settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice);
-        }
-        else
-        {
-            kernel = CreateKernel(apiKey, string.Empty, model);
-            settings = new OpenAIPromptExecutionSettings();
-        }
+        // 创建临时配置
+        var config = new LlmConfig 
+        { 
+            ApiKey = apiKey, 
+            BaseUrl = string.IsNullOrEmpty(baseUrl) ? "http://localhost" : baseUrl, 
+            Model = model 
+        };
 
-        var chatHistory = BuildChatHistory(messages);
+        // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
+        var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+
+        var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+        
+        // 添加工具
+        if (tools != null && tools.Any())
+        {
+            chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
+        }
+        
+        // 添加参数到消息
         if (parameters != null && parameters.Count > 0)
         {
             var json = JsonSerializer.Serialize(parameters);
-            chatHistory.AddSystemMessage($"[app_parameters]{json}");
-        }
-
-        var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
-        IAsyncEnumerable<StreamingChatMessageContent>? streamingResults = null;
-        string? error = null;
-        try
-        {
-            streamingResults = chatCompletionService.GetStreamingChatMessageContentsAsync(chatHistory, settings, kernel);
-        }
-        catch (Exception ex)
-        {
-            error = $"Error: {ex.Message}";
-        }
-        if (error != null)
-        {
-            yield return error;
-            yield break;
-        }
-
-        if (streamingResults != null)
-        {
-            await foreach (var update in streamingResults)
+            var messagesWithParams = new List<Microsoft.Extensions.AI.ChatMessage>(messages)
             {
-                if (!string.IsNullOrEmpty(update.Content))
-                {
-                    yield return update.Content;
-                }
+                new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, $"[app_parameters]{json}")
+            };
+            messages = messagesWithParams;
+        }
+
+        // 直接使用流式 API，FunctionInvokingChatClient 会自动处理工具调用
+        await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return update.Text;
             }
         }
     }
 
   
 
-    private static object BuildOpenAiToolsFromObjects(IEnumerable<object> toolObjects)
-    {
-        var list = new List<object>();
-        foreach (var obj in toolObjects)
-        {
-            if (obj == null) continue;
-            var type = obj.GetType();
-            var methods = type.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            foreach (var m in methods)
-            {
-                var kf = m.GetCustomAttributes(typeof(KernelFunctionAttribute), inherit: true).FirstOrDefault() as KernelFunctionAttribute;
-                if (kf == null) continue;
-                var descAttr = m.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true).FirstOrDefault() as System.ComponentModel.DescriptionAttribute;
-                var fnName = string.IsNullOrWhiteSpace(kf.Name) ? m.Name : kf.Name;
-
-                var properties = new Dictionary<string, object>();
-                var required = new List<string>();
-                foreach (var p in m.GetParameters())
-                {
-                    var pDesc = p.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true).FirstOrDefault() as System.ComponentModel.DescriptionAttribute;
-                    var pName = p.Name ?? string.Empty;
-                    if (string.IsNullOrEmpty(pName)) continue;
-                    var typeStr = p.ParameterType == typeof(int) || p.ParameterType == typeof(int?) ? "integer"
-                               : p.ParameterType == typeof(double) || p.ParameterType == typeof(double?) || p.ParameterType == typeof(float) || p.ParameterType == typeof(float?) ? "number"
-                               : p.ParameterType == typeof(bool) || p.ParameterType == typeof(bool?) ? "boolean"
-                               : "string";
-                    properties[pName] = new Dictionary<string, object>
-                    {
-                        ["type"] = typeStr,
-                        ["description"] = pDesc?.Description ?? $"Parameter {pName}"
-                    };
-                    if (!p.HasDefaultValue) required.Add(pName);
-                }
-
-                var inputSchema = new Dictionary<string, object>
-                {
-                    ["type"] = "object",
-                    ["properties"] = properties
-                };
-                if (required.Count > 0) inputSchema["required"] = required.ToArray();
-
-                list.Add(new
-                {
-                    type = "function",
-                    function = new
-                    {
-                        name = fnName,
-                        description = descAttr?.Description ?? string.Empty,
-                        parameters = inputSchema
-                    }
-                });
-            }
-        }
-        return list.ToArray();
-    }
-
     private async IAsyncEnumerable<string> SendStreamingMessageInternalAsync(
         string apiKey,
         string baseUrl,
         string model,
-        List<ChatMessage> messages,
+        List<Microsoft.Extensions.AI.ChatMessage> messages,
         Dictionary<string, object>? parameters,
-        IEnumerable<object>? toolObjects)
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools)
     {
         _logger.LogInformation("开始发送流式消息，模型: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             model, baseUrl, messages.Count);
 
-        // 如果是App调用（带参数），通过HTTP请求传递参数
+        // 如果是App调用（带参数），通过专用方法处理
         if (parameters != null && apiKey == "app-temp-key")
         {
-            await foreach (var chunk in SendStreamingMessageViaHttpAsync(baseUrl, model, messages, parameters, toolObjects))
+            await foreach (var chunk in SendStreamingMessageViaHttpAsync(baseUrl, model, messages, parameters, tools))
             {
                 yield return chunk;
             }
             yield break;
         }
 
-        // 原有的kernel逻辑用于非App调用
-        Kernel kernel;
-        OpenAIPromptExecutionSettings settings;
-        
-        // 获取第一个消息的tools配置
-        var firstMessage = messages.FirstOrDefault();
+        // 创建配置
+        var config = new LlmConfig 
+        { 
+            ApiKey = apiKey, 
+            BaseUrl = string.IsNullOrEmpty(baseUrl) ? "http://localhost" : baseUrl, 
+            Model = model 
+        };
 
-        if (toolObjects != null && toolObjects.Any())
+        // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
+        var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+
+        var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+        
+        // 添加工具
+        if (tools != null && tools.Any())
         {
-            _logger.LogInformation("检测到本地工具对象，启用自动调用");
-            kernel = CreateKernelWithObjects(apiKey, baseUrl, model, toolObjects);
-            settings = CreateExecutionSettingsForObjects(firstMessage?.ToolChoice, parameters);
-        }
-        else if (firstMessage?.Tools != null && firstMessage.Tools.Count > 0)
-        {
-            _logger.LogInformation("检测到工具配置，工具数量: {ToolCount}", firstMessage.Tools.Count);
-            try
-            {
-                kernel = CreateKernelWithTools(apiKey, baseUrl, model, firstMessage.Tools);
-                settings = CreateExecutionSettings(firstMessage.Tools, firstMessage.ToolChoice, parameters);
-                _logger.LogInformation("成功创建带工具的 kernel");
-            }
-            catch (Exception ex) when (ex.Message.Contains("tool choice") || ex.Message.Contains("auto"))
-            {
-                _logger.LogWarning("工具调用失败，回退到无工具模式: {Error}", ex.Message);
-                kernel = CreateKernel(apiKey, baseUrl, model);
-                settings = new OpenAIPromptExecutionSettings();
-                // 即使在无工具模式下也应用自定义参数
-                ApplyCustomParameters(settings, parameters);
-            }
+            _logger.LogInformation("检测到 {ToolCount} 个工具，启用自动调用", tools.Count());
+            chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
         }
         else
         {
-            _logger.LogInformation("无工具配置，使用普通 kernel");
-            kernel = CreateKernel(apiKey, baseUrl, model);
-            settings = new OpenAIPromptExecutionSettings();
-            // 应用自定义参数
-            ApplyCustomParameters(settings, parameters);
+            _logger.LogInformation("无工具配置");
         }
 
-        var chatHistory = BuildChatHistory(messages);
-        var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
+        // 应用参数到 ChatOptions (temperature, max_tokens 等)
+        if (parameters != null && parameters.Count > 0)
+        {
+            if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
+            {
+                chatOptions.Temperature = Convert.ToSingle(temp);
+                _logger.LogInformation("设置 Temperature: {Temperature}", chatOptions.Temperature);
+            }
+            
+            if (parameters.TryGetValue("max_tokens", out var tokens) || parameters.TryGetValue("tokens", out tokens))
+            {
+                chatOptions.MaxOutputTokens = Convert.ToInt32(tokens);
+                _logger.LogInformation("设置 MaxOutputTokens: {MaxTokens}", chatOptions.MaxOutputTokens);
+            }
+            
+            if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
+            {
+                chatOptions.TopP = Convert.ToSingle(topP);
+                _logger.LogInformation("设置 TopP: {TopP}", chatOptions.TopP);
+            }
+        }
 
         _logger.LogInformation("开始调用流式聊天完成服务");
         
         var totalChunks = 0;
         var totalLength = 0;
-        
-        IAsyncEnumerable<StreamingChatMessageContent> streamingResults;
-        
-        try
-        {
-            streamingResults = chatCompletionService.GetStreamingChatMessageContentsAsync(chatHistory, settings, kernel);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "创建流式请求时发生异常: {Message}", ex.Message);
-            
-            // 如果是 ClientResultException，记录更多详细信息
-            if (ex is ClientResultException clientEx)
-            {
-                _logger.LogError("ClientResultException - 状态码: {Status}", clientEx.Status);
-            }
-            
-            yield break;
-        }
 
-        await foreach (var update in streamingResults)
+        // 直接使用流式 API，FunctionInvokingChatClient 会自动处理工具调用
+        await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
         {
-            if (!string.IsNullOrEmpty(update.Content))
+            if (!string.IsNullOrEmpty(update.Text))
             {
                 totalChunks++;
-                totalLength += update.Content.Length;
-                yield return update.Content;
+                totalLength += update.Text.Length;
+                yield return update.Text;
             }
         }
         
@@ -848,55 +689,27 @@ public class ChatClientService : IChatClientService
     }
 
     // Anthropic API 相关方法
-    private List<object> ConvertToAnthropicMessages(List<ChatMessage> messages)
+    private List<object> ConvertToAnthropicMessages(List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         var anthropicMessages = new List<object>();
         
         foreach (var message in messages)
         {
             // 跳过 system 消息，Anthropic API 对 system 消息有特殊处理
-            if (message.Role == "system") continue;
+            if (message.Role.Value == "system") continue;
             
-            if (message.ContentItems != null && message.ContentItems.Count > 0)
+            // 使用 Text 属性获取消息内容
+            var text = message.Text ?? string.Empty;
+            if (!string.IsNullOrEmpty(text))
             {
-                var contentArray = new List<object>();
-                
-                foreach (var item in message.ContentItems)
-                {
-                    if (item is TextContent textContent)
-                    {
-                        contentArray.Add(new { type = "text", text = textContent.Text });
-                    }
-                    else if (item is ImageContent imageContent)
-                    {
-                        var base64Data = Convert.ToBase64String(imageContent.Data?.ToArray() ?? Array.Empty<byte>());
-                        contentArray.Add(new
-                        {
-                            type = "image",
-                            source = new
-                            {
-                                type = "base64",
-                                media_type = imageContent.MimeType ?? "image/jpeg",
-                                data = base64Data
-                            }
-                        });
-                    }
-                }
-                
-                // Anthropic API 要求多模态内容始终使用数组格式
-                anthropicMessages.Add(new { role = message.Role, content = contentArray });
-            }
-            else if (!string.IsNullOrEmpty(message.Content))
-            {
-                // 纯文本消息使用字符串格式
-                anthropicMessages.Add(new { role = message.Role, content = message.Content });
+                anthropicMessages.Add(new { role = message.Role.Value, content = text });
             }
         }
 
         return anthropicMessages;
     }
 
-    public async Task<ChatResponse> SendAnthropicMessageAsync(LlmConfig config, List<ChatMessage> messages)
+    public async Task<ChatResponse> SendAnthropicMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         try
         {
@@ -969,7 +782,7 @@ public class ChatClientService : IChatClientService
         }
     }
 
-    public async Task<ChatResponse> SendAnthropicMessageAsync(LlmEndpoint config, List<ChatMessage> messages)
+    public async Task<ChatResponse> SendAnthropicMessageAsync(LlmEndpoint config, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         return await SendAnthropicMessageAsync(new LlmConfig
         {
@@ -978,12 +791,12 @@ public class ChatClientService : IChatClientService
         }, messages);
     }
 
-    public IAsyncEnumerable<string> SendAnthropicStreamingMessageAsync(LlmConfig config, List<ChatMessage> messages)
+    public IAsyncEnumerable<string> SendAnthropicStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         return SendAnthropicStreamingMessageInternalAsync(config, messages);
     }
 
-    public IAsyncEnumerable<string> SendAnthropicStreamingMessageAsync(LlmEndpoint config, List<ChatMessage> messages)
+    public IAsyncEnumerable<string> SendAnthropicStreamingMessageAsync(LlmEndpoint config, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         var llmConfig = new LlmConfig
         {
@@ -993,7 +806,7 @@ public class ChatClientService : IChatClientService
         return SendAnthropicStreamingMessageInternalAsync(llmConfig, messages);
     }
 
-    private async IAsyncEnumerable<string> SendAnthropicStreamingMessageInternalAsync(LlmConfig config, List<ChatMessage> messages)
+    private async IAsyncEnumerable<string> SendAnthropicStreamingMessageInternalAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages)
     {
         var httpClient = _httpClientFactory.CreateClient("LlmPoolApi");
         
@@ -1079,6 +892,380 @@ public class ChatClientService : IChatClientService
             element = default;
             return false;
         }
+    }
+
+    /// <summary>
+    /// 发送流式消息并返回详细更新信息(包含文本和工具调用)
+    /// </summary>
+    public IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(
+        LlmConfig config, 
+        List<Microsoft.Extensions.AI.ChatMessage> messages, 
+        Dictionary<string, object>? parameters = null, 
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+    {
+        return SendStreamingMessageWithDetailsInternalAsync(
+            config.ApiKey, 
+            config.BaseUrl, 
+            config.Model, 
+            messages, 
+            parameters, 
+            tools);
+    }
+
+    /// <summary>
+    /// 发送流式消息并返回详细更新信息(Endpoint 版本)
+    /// </summary>
+    public IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(
+        LlmEndpoint config, 
+        List<Microsoft.Extensions.AI.ChatMessage> messages, 
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+    {
+        return SendStreamingMessageWithDetailsInternalAsync(
+            config.Id, 
+            string.Empty, 
+            config.Name, 
+            messages, 
+            null, 
+            tools);
+    }
+
+    /// <summary>
+    /// 内部实现:发送流式消息并返回详细更新信息
+    /// </summary>
+    private async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsInternalAsync(
+        string apiKey,
+        string baseUrl,
+        string model,
+        List<Microsoft.Extensions.AI.ChatMessage> messages,
+        Dictionary<string, object>? parameters,
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools)
+    {
+        _logger.LogInformation("开始发送流式消息(详细模式)，模型: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
+            model, baseUrl, messages.Count);
+
+        // 记录调用前的消息数量
+        var initialMessageCount = messages.Count;
+
+        // 创建配置
+        var config = new LlmConfig 
+        { 
+            ApiKey = apiKey, 
+            BaseUrl = string.IsNullOrEmpty(baseUrl) ? "http://localhost" : baseUrl, 
+            Model = model 
+        };
+
+        // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
+        var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+
+        var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+        
+        // 添加工具
+        if (tools != null && tools.Any())
+        {
+            _logger.LogInformation("检测到 {ToolCount} 个工具，启用自动调用", tools.Count());
+            chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
+        }
+
+        // 应用参数到 ChatOptions
+        if (parameters != null && parameters.Count > 0)
+        {
+            if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
+            {
+                chatOptions.Temperature = Convert.ToSingle(temp);
+                _logger.LogInformation("设置 Temperature: {Temperature}", chatOptions.Temperature);
+            }
+            
+            if (parameters.TryGetValue("max_tokens", out var tokens) || parameters.TryGetValue("tokens", out tokens))
+            {
+                chatOptions.MaxOutputTokens = Convert.ToInt32(tokens);
+                _logger.LogInformation("设置 MaxOutputTokens: {MaxTokens}", chatOptions.MaxOutputTokens);
+            }
+            
+            if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
+            {
+                chatOptions.TopP = Convert.ToSingle(topP);
+                _logger.LogInformation("设置 TopP: {TopP}", chatOptions.TopP);
+            }
+        }
+
+        _logger.LogInformation("开始调用流式聊天完成服务(详细模式)");
+
+        // 用于临时收集当前批次的工具调用信息
+        var currentToolCallBatch = new Dictionary<string, ToolCallInfo>();
+        var yieldedCallIds = new HashSet<string>(); // 🔑 跟踪已经yield过的工具调用
+
+        // 流式接收响应
+        await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
+        {
+            // 返回文本更新
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return new ChatStreamingUpdate
+                {
+                    Text = update.Text
+                };
+            }
+
+            // 检查流式更新中的工具调用内容
+            if (update.Contents != null)
+            {
+                foreach (var content in update.Contents)
+                {
+                    // 提取工具调用
+                    if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
+                    {
+                        var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
+                        
+                        // 正确处理 Arguments：直接使用 IDictionary 或序列化为格式化的 JSON
+                        string argumentsJson;
+                        if (functionCall.Arguments != null)
+                        {
+                            // 使用格式化选项让 JSON 更易读
+                            argumentsJson = JsonSerializer.Serialize(
+                                functionCall.Arguments,
+                                new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+                        }
+                        else
+                        {
+                            argumentsJson = "{}";
+                        }
+                        
+                        var toolCallInfo = new ToolCallInfo
+                        {
+                            CallId = callId,
+                            ToolName = functionCall.Name,
+                            ToolType = "function",
+                            Arguments = argumentsJson,
+                            StartTime = DateTime.UtcNow,
+                            IsSuccess = true
+                        };
+                        
+                        currentToolCallBatch[callId] = toolCallInfo;
+                        _logger.LogInformation("流式响应中发现工具调用: {ToolName}, CallId: {CallId}, Args: {Args}", 
+                            functionCall.Name, callId, argumentsJson);
+                    }
+                    // 提取工具结果
+                    else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
+                    {
+                        var callId = functionResult.CallId ?? string.Empty;
+                        if (currentToolCallBatch.TryGetValue(callId, out var toolCallInfo))
+                        {
+                            // 记录原始结果对象
+                            var resultObj = functionResult.Result;
+                            _logger.LogInformation("工具结果对象类型: {Type}, 值: {Value}", 
+                                resultObj?.GetType().Name ?? "null", 
+                                resultObj?.ToString() ?? "null");
+                            
+                            toolCallInfo.Result = resultObj?.ToString() ?? string.Empty;
+                            toolCallInfo.EndTime = DateTime.UtcNow;
+                            toolCallInfo.IsSuccess = functionResult.Exception == null;
+                            
+                            if (functionResult.Exception != null)
+                            {
+                                toolCallInfo.ErrorMessage = functionResult.Exception.Message;
+                            }
+                            
+                            _logger.LogInformation("流式响应中发现工具结果: CallId: {CallId}, Success: {Success}, Result: {Result}", 
+                                callId, toolCallInfo.IsSuccess, toolCallInfo.Result);
+                            
+                            // 🔑 立即yield结果更新，让前端能实时看到Result
+                            _logger.LogInformation("立即返回工具结果更新: CallId: {CallId}", callId);
+                            yield return new ChatStreamingUpdate
+                            {
+                                ToolCalls = new List<ToolCallInfo> { toolCallInfo },
+                                FinishReason = "tool_result" // 新的FinishReason，表示单个工具的结果更新
+                            };
+                        }
+                        else
+                        {
+                            _logger.LogWarning("收到工具结果但未找到对应的工具调用: CallId: {CallId}", callId);
+                        }
+                    }
+                }
+            }
+
+            // 🔑 关键：检查 FinishReason，如果是 tool_calls，检查是否有新的工具调用需要返回
+            // 这样可以在文本流中插入工具调用，保持时间顺序
+            if (update.FinishReason?.ToString() == "tool_calls" && currentToolCallBatch.Count > 0)
+            {
+                // 🔑 找出尚未yield的新工具调用
+                var newToolCalls = currentToolCallBatch
+                    .Where(kv => !yieldedCallIds.Contains(kv.Key))
+                    .Select(kv => kv.Value)
+                    .ToList();
+                
+                if (newToolCalls.Any())
+                {
+                    _logger.LogInformation("检测到 FinishReason=tool_calls，立即返回 {Count} 个新工具调用", 
+                        newToolCalls.Count);
+                    
+                    // ⏱️ 延迟一小段时间，等待可能的 FunctionResultContent
+                    await Task.Delay(100);
+                    
+                    yield return new ChatStreamingUpdate
+                    {
+                        ToolCalls = newToolCalls,
+                        FinishReason = "tool_calls"
+                    };
+                    
+                    // 标记这些工具调用已返回
+                    foreach (var toolCall in newToolCalls)
+                    {
+                        if (!string.IsNullOrEmpty(toolCall.CallId))
+                        {
+                            yieldedCallIds.Add(toolCall.CallId);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 流式调用完成后，如果有工具调用，再次返回（包含可能延迟到达的结果）
+        _logger.LogInformation("流式响应完成，消息数量从 {Initial} 增加到 {Final}", 
+            initialMessageCount, messages.Count);
+
+        if (currentToolCallBatch.Count > 0)
+        {
+            _logger.LogInformation("流式结束时返回 {Count} 个工具调用记录（包含所有结果）", 
+                currentToolCallBatch.Count);
+            
+            yield return new ChatStreamingUpdate
+            {
+                ToolCalls = currentToolCallBatch.Values.ToList(),
+                FinishReason = "tool_calls_updated"
+            };
+        }
+
+        _logger.LogInformation("流式响应(详细模式)完成");
+    }
+    
+    /// <summary>
+    /// 将流式更新转换为响应片段流（用于统一处理文本和工具调用的时序）
+    /// 每次有更新时 yield 当前的完整片段列表
+    /// </summary>
+    /// <param name="streamingUpdates">流式更新枚举</param>
+    /// <returns>响应片段列表的流式更新</returns>
+    public static async IAsyncEnumerable<List<ResponseSegment>> ConvertToSegmentsStreamAsync(
+        IAsyncEnumerable<ChatStreamingUpdate> streamingUpdates)
+    {
+        var segments = new List<ResponseSegment>();
+        ResponseSegment? currentTextSegment = null;
+        ResponseSegment? currentToolCallSegment = null;
+        var toolCallsById = new Dictionary<string, ToolCallRecord>();
+        
+        await foreach (var update in streamingUpdates)
+        {
+            var hasUpdate = false;
+            
+            // 处理文本内容
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                // 如果有活跃的工具调用片段，先封闭它
+                if (currentToolCallSegment != null)
+                {
+                    currentToolCallSegment = null;
+                }
+                
+                // 实时更新或创建文本片段
+                if (currentTextSegment == null)
+                {
+                    currentTextSegment = new ResponseSegment
+                    {
+                        Type = ResponseSegmentType.Text,
+                        Text = update.Text
+                    };
+                    segments.Add(currentTextSegment);
+                }
+                else
+                {
+                    currentTextSegment.Text += update.Text;
+                }
+                
+                hasUpdate = true;
+            }
+            
+            // 处理工具调用记录
+            if (update.IsToolCall && update.ToolCalls != null)
+            {
+                var incomingToolCalls = update.ToolCalls.Select(ToolCallRecord.FromToolCallInfo).ToList();
+                
+                foreach (var toolCall in incomingToolCalls)
+                {
+                    if (!string.IsNullOrEmpty(toolCall.CallId))
+                    {
+                        // 检查是否已经存在这个CallId的工具调用
+                        if (toolCallsById.TryGetValue(toolCall.CallId, out var existing))
+                        {
+                            // 更新现有工具调用
+                            existing.Result = toolCall.Result;
+                            existing.Success = toolCall.Success;
+                            existing.Error = toolCall.Error;
+                            existing.EndTime = toolCall.EndTime;
+                            
+                            // 立即更新片段（tool_result 或 tool_calls_updated）
+                            if (update.FinishReason == "tool_result" || update.FinishReason == "tool_calls_updated")
+                            {
+                                var segment = segments
+                                    .FirstOrDefault(s => s.Type == ResponseSegmentType.ToolCalls && 
+                                                        s.ToolCalls?.Any(t => t.CallId == toolCall.CallId) == true);
+                                if (segment != null)
+                                {
+                                    var toolInSegment = segment.ToolCalls?.FirstOrDefault(t => t.CallId == toolCall.CallId);
+                                    if (toolInSegment != null)
+                                    {
+                                        toolInSegment.Result = toolCall.Result;
+                                        toolInSegment.Success = toolCall.Success;
+                                        toolInSegment.Error = toolCall.Error;
+                                        toolInSegment.EndTime = toolCall.EndTime;
+                                    }
+                                }
+                                
+                                hasUpdate = true;
+                            }
+                        }
+                        else
+                        {
+                            // 新的工具调用
+                            toolCallsById[toolCall.CallId] = toolCall;
+                            
+                            // 只在首次出现时创建片段 (FinishReason 是 tool_calls)
+                            if (update.FinishReason == "tool_calls")
+                            {
+                                // 封闭文本片段
+                                if (currentTextSegment != null)
+                                {
+                                    currentTextSegment = null;
+                                }
+                                
+                                // 封闭上一个工具片段
+                                if (currentToolCallSegment != null)
+                                {
+                                    currentToolCallSegment = null;
+                                }
+                                
+                                currentToolCallSegment = new ResponseSegment
+                                {
+                                    Type = ResponseSegmentType.ToolCalls,
+                                    ToolCalls = new List<ToolCallRecord> { toolCall }
+                                };
+                                segments.Add(currentToolCallSegment);
+                                
+                                hasUpdate = true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 🔑 只在有更新时 yield
+            if (hasUpdate)
+            {
+                yield return segments;
+            }
+        }
+        
+        // 🔑 流结束时最后 yield 一次（确保最终状态被返回）
+        yield return segments;
     }
 }
 

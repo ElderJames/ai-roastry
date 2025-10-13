@@ -4,7 +4,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 
 public class ToolExecutor : IToolExecutor
 {
-    public async Task<(bool ok, string output, string? error)> ExecuteAsync(IAgentTool tool, JsonElement? args, CancellationToken ct = default)
+    public async Task<(bool ok, string output, string? error)> ExecuteAsync(ITool tool, JsonElement? args, CancellationToken ct = default)
     {
         // Validate arguments first
         var (ok, err) = tool.Validate(args);

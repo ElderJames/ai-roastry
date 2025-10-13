@@ -57,7 +57,7 @@ public class MigrationTests : IAsyncLifetime
 
         Assert.Contains("llm_apps", tableNames);
         Assert.Contains("AgentMembers", tableNames);
-        Assert.Contains("AgentTools", tableNames);
+        // AgentTools table has been removed - tools now configured via PromptTools
         Assert.Contains("McpServerConfigs", tableNames);
     }
 
@@ -104,40 +104,12 @@ public class MigrationTests : IAsyncLifetime
         Assert.Equal(1, savedMember.Order);
     }
 
-    [Fact]
+    [Fact(Skip = "AgentTool entity has been removed")]
     public async Task AgentTool_Can_Be_Created_And_Queried()
     {
-        // Create an app and member first
-        var app = new LlmApp { Id = Guid.NewGuid().ToString("N"), Name = "Test AgentGroup", AppType = "AgentGroup" };
-        _dbContext!.Apps.Add(app);
-        await _dbContext.SaveChangesAsync();
-
-        var member = new AgentMember
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            LlmAppId = app.Id!,
-            Name = "Test Agent",
-            Order = 1
-        };
-        _dbContext.AgentMembers.Add(member);
-        await _dbContext.SaveChangesAsync();
-
-        // Create agent tool
-        var tool = new AgentTool
-        {
-            AgentMemberId = member.Id,
-            ToolId = "test-tool",
-            ToolType = ToolType.Internal
-        };
-        _dbContext.AgentTools.Add(tool);
-        await _dbContext.SaveChangesAsync();
-
-        // Query it back
-        var savedTool = await _dbContext.AgentTools
-            .FirstOrDefaultAsync(t => t.AgentMemberId == member.Id && t.ToolId == "test-tool");
-
-        Assert.NotNull(savedTool);
-        Assert.Equal(ToolType.Internal, savedTool.ToolType);
+        // AgentTool entity has been removed from the data model
+        // This test is skipped until the test is updated or removed
+        await Task.CompletedTask;
     }
 
     [Fact]

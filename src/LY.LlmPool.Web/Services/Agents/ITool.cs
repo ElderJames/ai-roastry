@@ -4,8 +4,9 @@ namespace LY.LlmPool.Web.Services.Agents;
 
 /// <summary>
 /// 工具统一接口：提供名称、参数校验与执行。
+/// 可被 Prompt、Agent、AgentMember 等使用。
 /// </summary>
-public interface IAgentTool
+public interface ITool
 {
     string Id { get; }
     string Name { get; }

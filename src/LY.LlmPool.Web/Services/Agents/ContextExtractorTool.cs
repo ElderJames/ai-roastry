@@ -7,7 +7,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 /// <summary>
 /// 上下文提取工具：后台生成对话摘要并存储到记忆中。
 /// </summary>
-public class ContextExtractorTool : IAgentTool
+public class ContextExtractorTool : ITool
 {
     private readonly ContextMemoryStore _memoryStore;
     private readonly IChatClientService _chatClient;
@@ -85,18 +85,16 @@ public class ContextExtractorTool : IAgentTool
     private async Task<string> GenerateSummaryAsync(string content, CancellationToken ct)
     {
         // 使用LLM生成摘要
-        var messages = new List<ChatMessage>
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
-            new ChatMessage
-            {
-                Role = "system",
-                Content = "You are a helpful assistant that summarizes conversations. Provide a concise summary of the key points and context."
-            },
-            new ChatMessage
-            {
-                Role = "user",
-                Content = $"Please summarize the following conversation:\n\n{content}"
-            }
+            new Microsoft.Extensions.AI.ChatMessage(
+                Microsoft.Extensions.AI.ChatRole.System,
+                "You are a helpful assistant that summarizes conversations. Provide a concise summary of the key points and context."
+            ),
+            new Microsoft.Extensions.AI.ChatMessage(
+                Microsoft.Extensions.AI.ChatRole.User,
+                $"Please summarize the following conversation:\n\n{content}"
+            )
         };
 
         // 使用默认配置（简化实现）

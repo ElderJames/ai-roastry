@@ -56,6 +56,21 @@ public class TestConfigRecord
     public string? Parameters { get; set; }
     public Dictionary<string, string> ParameterValues { get; set; } = new();
     public bool Success { get; set; }
+    
+    /// <summary>
+    /// 测试输入内容（用户输入的文本）
+    /// </summary>
+    public string? TestInput { get; set; }
+    
+    /// <summary>
+    /// 响应文本（保留向后兼容）
+    /// </summary>
     public string? Response { get; set; }
+    
+    /// <summary>
+    /// 完整的响应片段（包含文本和工具调用）
+    /// </summary>
+    public List<Models.ResponseSegment>? ResponseSegments { get; set; }
+    
     public string? Error { get; set; }
 } 

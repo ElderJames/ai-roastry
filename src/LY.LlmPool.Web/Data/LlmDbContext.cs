@@ -21,7 +21,7 @@ public class LlmDbContext : DbContext
 
     public DbSet<AgentMember> AgentMembers { get; set; } = null!;
     public DbSet<McpServerConfig> McpServerConfigs { get; set; } = null!;
-    public DbSet<AgentTool> AgentTools { get; set; } = null!;
+    public DbSet<PromptTool> PromptTools { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -153,12 +153,13 @@ public class LlmDbContext : DbContext
             entity.HasIndex(e => e.Name).IsUnique();
         });
 
-        modelBuilder.Entity<AgentTool>(entity =>
+        modelBuilder.Entity<PromptTool>(entity =>
         {
-            entity.HasKey(e => new { e.AgentMemberId, e.ToolId, e.ToolType });
-            entity.HasOne(e => e.AgentMember)
-                .WithMany(e => e.AgentTools)
-                .HasForeignKey(e => e.AgentMemberId);
+            entity.HasKey(e => new { e.PromptId, e.ToolId, e.ToolType });
+            entity.HasOne(e => e.Prompt)
+                .WithMany(e => e.PromptTools)
+                .HasForeignKey(e => e.PromptId)
+                .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.ToolType).HasConversion<string>();
         });
     }

@@ -485,7 +485,7 @@ public class LlmPoolService
 
         foreach (var config in configs)
         {
-            if (await TryAcquireConfigAsync(config!.Id))
+            if (config?.Id != null && await TryAcquireConfigAsync(config.Id))
             {
                 return config;
             }
@@ -582,7 +582,9 @@ public class LlmPoolService
     public async Task<LlmPrompt?> GetPromptByIdAsync(string id)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        return await dbContext.Prompts.FindAsync(id);
+        return await dbContext.Prompts
+            .Include(p => p.PromptTools)  // 包含工具关联
+            .FirstOrDefaultAsync(p => p.Id == id);
     }
 
     public async Task<LlmPrompt> CreatePromptAsync(LlmPrompt prompt)
@@ -726,14 +728,14 @@ public class LlmPoolService
             promptContent = template(promptParameters);
         }
 
-        var messages = new List<ChatMessage>
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
-            new ChatMessage { Role = "system", Content = promptContent }
+            new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, promptContent)
         };
 
         if (!string.IsNullOrEmpty(userMessage))
         {
-            messages.Add(new ChatMessage { Role = "user", Content = userMessage });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userMessage));
         }
 
         var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
@@ -787,14 +789,14 @@ public class LlmPoolService
             promptContent = template(promptParameters);
         }
 
-        var messages = new List<ChatMessage>
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage>
         {
-            new ChatMessage { Role = "system", Content = promptContent }
+            new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, promptContent)
         };
 
         if (!string.IsNullOrEmpty(userMessage))
         {
-            messages.Add(new ChatMessage { Role = "user", Content = userMessage });
+            messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, userMessage));
         }
 
         var result = await _chatClientService.SendMessageAsync(config, messages, modelParams);
@@ -865,6 +867,24 @@ public class LlmPoolService
 
     public async Task<LlmApp> AddAppAsync(LlmApp app)
     {
+        // 如果是 Tool 类型，验证名称只包含 ASCII 字母、数字和下划线
+        if (app.AppType == "Tool")
+        {
+            if (string.IsNullOrWhiteSpace(app.Name))
+            {
+                throw new ArgumentException("Tool App name cannot be empty.", nameof(app.Name));
+            }
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(app.Name, @"^[a-zA-Z0-9_]+$"))
+            {
+                throw new ArgumentException(
+                    "Tool App name can only contain ASCII letters (a-z, A-Z), digits (0-9), and underscores (_). " +
+                    "Chinese characters and special symbols are not allowed. " +
+                    $"Invalid name: '{app.Name}'",
+                    nameof(app.Name));
+            }
+        }
+
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         app.Id = Guid.NewGuid().ToString("N");
         app.CreatedAt = DateTime.UtcNow;
@@ -876,6 +896,24 @@ public class LlmPoolService
 
     public async Task<LlmApp> UpdateAppAsync(LlmApp app)
     {
+        // 如果是 Tool 类型，验证名称只包含 ASCII 字母、数字和下划线
+        if (app.AppType == "Tool")
+        {
+            if (string.IsNullOrWhiteSpace(app.Name))
+            {
+                throw new ArgumentException("Tool App name cannot be empty.", nameof(app.Name));
+            }
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(app.Name, @"^[a-zA-Z0-9_]+$"))
+            {
+                throw new ArgumentException(
+                    "Tool App name can only contain ASCII letters (a-z, A-Z), digits (0-9), and underscores (_). " +
+                    "Chinese characters and special symbols are not allowed. " +
+                    $"Invalid name: '{app.Name}'",
+                    nameof(app.Name));
+            }
+        }
+
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         var existing = await dbContext.Apps.FindAsync(app.Id);
         if (existing == null)
@@ -1002,55 +1040,10 @@ public class LlmPoolService
 
     #endregion
 
-    #region Agent Tools
+    #region Tools (now bound to Prompts via PromptTool)
 
-    public async Task<List<AgentTool>> GetAgentToolsAsync(string agentMemberId)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        return await dbContext.AgentTools
-            .Where(t => t.AgentMemberId == agentMemberId)
-            .ToListAsync();
-    }
-
-    public async Task<AgentTool> AddAgentToolAsync(AgentTool tool)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        dbContext.AgentTools.Add(tool);
-        await dbContext.SaveChangesAsync();
-        return tool;
-    }
-
-    public async Task DeleteAgentToolAsync(string agentMemberId, string toolId, ToolType toolType)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        var existing = await dbContext.AgentTools
-            .FirstOrDefaultAsync(t => t.AgentMemberId == agentMemberId && t.ToolId == toolId && t.ToolType == toolType);
-        if (existing != null)
-        {
-            dbContext.AgentTools.Remove(existing);
-            await dbContext.SaveChangesAsync();
-        }
-    }
-
-    public async Task SetAgentToolsAsync(string agentMemberId, List<AgentTool> tools)
-    {
-        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        
-        // Remove existing tools
-        var existing = await dbContext.AgentTools
-            .Where(t => t.AgentMemberId == agentMemberId)
-            .ToListAsync();
-        dbContext.AgentTools.RemoveRange(existing);
-        
-        // Add new tools
-        foreach (var tool in tools)
-        {
-            tool.AgentMemberId = agentMemberId;
-            dbContext.AgentTools.Add(tool);
-        }
-        
-        await dbContext.SaveChangesAsync();
-    }
+    // Tools are now bound to Prompts, not AgentMembers
+    // See ToolProviderService for creating tool objects from PromptTools
 
     #endregion
 
@@ -1104,3 +1097,4 @@ public class LlmPoolService
 
     #endregion
 }
+

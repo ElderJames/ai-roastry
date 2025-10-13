@@ -14,7 +14,7 @@ public class Agent
     public LlmPrompt? Prompt { get; init; }
     public LlmConfig? Config { get; init; }
 
-    public List<IAgentTool> Tools { get; } = new();
+    public List<ITool> Tools { get; } = new();
 
     public static Agent FromMember(AgentMember member)
     {

@@ -36,14 +36,14 @@
                 {
                     var messageIndex = index;
                     var message = _messages[messageIndex];
-                    var isAssistant = string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase);
+                    var isAssistant = message.Role == Microsoft.Extensions.AI.ChatRole.Assistant;
                     var isStreaming = isAssistant && message.IsStreaming;
-                    var segments = ParseMessageSegments(message.Content);
+                    var segments = ParseMessageSegments(message.Text ?? string.Empty);
                     var toolItems = GetMessageToolEvents(messageIndex);
 
                     <div class="message @(isAssistant ? "message-assistant" : "message-user")">
                         <div class="message-content">
-                            @if (isStreaming && string.IsNullOrEmpty(message.Content))
+                            @if (isStreaming && string.IsNullOrEmpty(message.Text))
                             {
                                 <div class="loading-dots">
                                     <span class="dot"></span>
@@ -57,7 +57,7 @@
                                 {
                                     if (item is TextContent textContent)
                                     {
-                                        var itemSegments = ParseMessageSegments(textContent.Text);
+                                        var itemSegments = ParseMessageSegments(textContent.Text ?? string.Empty);
                                         if (itemSegments.HasThinking)
                                         {
                                             var expanded = IsThinkingExpanded(messageIndex);
@@ -312,7 +312,16 @@
     [Parameter]
     public string[]? Parameters { get; set; }
 
-    private List<ChatMessage> _messages = new();
+    private class UiMessage
+    {
+        public Microsoft.Extensions.AI.ChatRole Role { get; set; } = Microsoft.Extensions.AI.ChatRole.User;
+        public string Text { get; set; } = string.Empty;
+        public ChatMessageContentItemCollection? ContentItems { get; set; }
+        public DateTime Timestamp { get; set; } = DateTime.Now;
+        public bool IsStreaming { get; set; }
+    }
+
+    private readonly List<UiMessage> _messages = new();
     private string _currentMessage = string.Empty;
     private bool _isLoading;
     private bool _useStreaming = true;
@@ -399,10 +408,20 @@
         ToolCallUtils.FailToolEvent(ev, error);
     }
 
+    private List<LY.LlmPool.Client.ClientMessage> BuildClientMessages()
+    {
+        return _messages.Select(m => new LY.LlmPool.Client.ClientMessage
+        {
+            Role = m.Role.Value,
+            Content = string.IsNullOrEmpty(m.Text) ? null : m.Text,
+            ContentItems = m.ContentItems
+        }).ToList();
+    }
+
 
     // 使用 ImageUtils.SelectedImage 与 ParameterUtils.AppParameter
 
-    protected override async Task OnParametersSetAsync()
+    protected override Task OnParametersSetAsync()
     {
         if (Parameters?.Any() == true)
         {
@@ -412,16 +431,18 @@
         {
             _appParameters.Clear();
         }
+
+        return Task.CompletedTask;
     }
 
     protected override void OnInitialized()
     {
         if (!string.IsNullOrEmpty(SystemPrompt))
         {
-            _messages.Add(new ChatMessage
+            _messages.Add(new UiMessage
             {
-                Role = "system",
-                Content = SystemPrompt,
+                Role = Microsoft.Extensions.AI.ChatRole.System,
+                Text = SystemPrompt ?? string.Empty,
                 Timestamp = DateTime.Now
             });
         }
@@ -450,36 +471,32 @@
         if ((string.IsNullOrWhiteSpace(_currentMessage) && _selectedImages.Count == 0) || _isLoading)
             return;
 
-        var userMessage = new ChatMessage
+        var userMessage = new UiMessage
         {
-            Role = "user",
+            Role = Microsoft.Extensions.AI.ChatRole.User,
             Timestamp = DateTime.Now
         };
 
-        // 如果有图片，创建多媒体内容
         if (_selectedImages.Count > 0)
         {
             var contentItems = new ChatMessageContentItemCollection();
 
-            // 添加文本内容（如果有）
             if (!string.IsNullOrWhiteSpace(_currentMessage))
             {
                 contentItems.Add(new TextContent(_currentMessage.Trim()));
             }
 
-            // 添加图片内容
             foreach (var image in _selectedImages)
             {
                 contentItems.Add(new ImageContent(image.Data, image.MimeType));
             }
 
             userMessage.ContentItems = contentItems;
-            // 不设置 Content 属性，避免冲突
+            userMessage.Text = (_currentMessage ?? string.Empty).Trim();
         }
         else
         {
-            // 只有文本时，使用传统的 Content 属性
-            userMessage.Content = _currentMessage.Trim();
+            userMessage.Text = (_currentMessage ?? string.Empty).Trim();
         }
 
         _messages.Add(userMessage);
@@ -520,7 +537,6 @@
 
     private async Task SendNormalMessage()
     {
-        ChatResponse response;
         var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
 
         var model = ModelName;
@@ -528,12 +544,7 @@
 
         var http = HttpClientFactory.CreateClient("LlmPoolApi");
         var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk");
-        var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-            {
-                Role = m.Role,
-                Content = m.Content,
-                ContentItems = m.ContentItems
-            }).ToList();
+        var msgs = BuildClientMessages();
         var parms = ParameterUtils.GetValidParameters(_appParameters);
         var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
@@ -548,32 +559,29 @@
 
     private async Task SendStreamingMessage()
     {
-        var assistantMessage = new ChatMessage
+        var initialMessages = BuildClientMessages();
+
+        var assistantMessage = new UiMessage
         {
-            Role = "assistant",
-            Content = "",
+            Role = Microsoft.Extensions.AI.ChatRole.Assistant,
+            Text = string.Empty,
             IsStreaming = true,
             Timestamp = DateTime.Now
         };
-        
+
+        _messages.Add(assistantMessage);
+
         StateHasChanged();
         await ScrollToBottom();
 
         try
         {
-            IAsyncEnumerable<string> streamingResult;
             var toolObjects = _simulateTools ? new object[] { this } : Array.Empty<object>();
             var model = ModelName;
             if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
 
             var http = HttpClientFactory.CreateClient("LlmPoolApi");
             var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx");
-            var msgs = _messages.Select(m => new LY.LlmPool.Client.ClientMessage
-            {
-                Role = m.Role,
-                Content = m.Content,
-                ContentItems = m.ContentItems
-            }).ToList();
 
             var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
@@ -581,11 +589,14 @@
                 MaxTokens = 10000,
                 TopP = null
             };
+
             var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))
-                  ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
-                  : null;
-            var stream = client.ChatStreamAsync(model!, msgs, parms, toolObjects, chatOptions);
-            _messages.Add(assistantMessage);
+                ? _appParameters.Where(p => !string.IsNullOrEmpty(p.Value)).ToDictionary(p => p.Key, p => (object)p.Value)
+                : null;
+
+            var stream = client.ChatStreamAsync(model!, initialMessages, parms, toolObjects, chatOptions);
+            var assistantIndex = _messages.IndexOf(assistantMessage);
+
             await foreach (var chunk in stream)
             {
                 var content = chunk.Content;
@@ -609,7 +620,7 @@
                                     foreach (var tc in parseResult.ToolCalls)
                                     {
                                         // 触发工具开始事件
-                                        var toolEv = StartToolEventForMessage(_messages.IndexOf(assistantMessage), tc.Name, tc.Arguments);
+                                        var toolEv = StartToolEventForMessage(assistantIndex, tc.Name, tc.Arguments);
                                         _toolCallIdToEvent[tc.Id] = toolEv;
                                     }
                                 }
@@ -626,27 +637,27 @@
                             case StreamingMessageType.AssistantContent:
                                 if (!string.IsNullOrEmpty(parseResult.Content))
                                 {
-                                    assistantMessage.Content += parseResult.Content;
+                                    assistantMessage.Text += parseResult.Content;
                                 }
                                 break;
 
                             case StreamingMessageType.PlainText:
                             default:
                                 // 普通文本
-                                assistantMessage.Content += content;
+                                assistantMessage.Text += content;
                                 break;
                         }
                     }
                     catch
                     {
                         // 不是有效 JSON，当普通文本处理
-                        assistantMessage.Content += content;
+                        assistantMessage.Text += content;
                     }
                 }
                 else
                 {
                     // 普通文本
-                    assistantMessage.Content += content;
+                    assistantMessage.Text += content;
                 }
 
                 StateHasChanged();
@@ -664,20 +675,20 @@
 
     private void AddAssistantMessage(string content)
     {
-        _messages.Add(new ChatMessage
+        _messages.Add(new UiMessage
         {
-            Role = "assistant",
-            Content = content,
+            Role = Microsoft.Extensions.AI.ChatRole.Assistant,
+            Text = content,
             Timestamp = DateTime.Now
         });
     }
 
     private void AddErrorMessage(string error)
     {
-        _messages.Add(new ChatMessage
+        _messages.Add(new UiMessage
         {
-            Role = "assistant",
-            Content = $"错误: {error}",
+            Role = Microsoft.Extensions.AI.ChatRole.Assistant,
+            Text = $"错误: {error}",
             Timestamp = DateTime.Now
         });
     }
@@ -756,4 +767,5 @@
         return a + b;
     }
 }
+
 

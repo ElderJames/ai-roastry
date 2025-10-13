@@ -1,19 +1,28 @@
 @page "/prompt-edit"
 @page "/prompt-edit/{Id}"
 @using LY.LlmPool.Web.Services
+@using LY.LlmPool.Web.Services.Tools
+@using LY.LlmPool.Web.Services.Agents
 @using LY.LlmPool.Web.Data.Entities
 @using LY.LlmPool.Web.Models
+@using LY.LlmPool.Web.Models.Tools
 @using LY.LlmPool.Web.Components
 @using AntDesign
 @using AntDesign.TableModels
 @using Microsoft.AspNetCore.Components
+@using Microsoft.Extensions.AI
 @using Microsoft.JSInterop
 @using System.Text.RegularExpressions
+@using AIChatMessage = Microsoft.Extensions.AI.ChatMessage
 @inject LlmPoolService LlmPoolService
 @inject IChatClientService ChatClientService
+@inject PromptService PromptService
+@inject ToolMetadataService ToolMetadataService
+@inject ToolProviderService ToolProviderService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
+@inject ILogger<PromptEdit> Logger
 
 <PageTitle>@(_editingPrompt.Id == null ? "New Prompt" : "Edit Prompt")</PageTitle>
 
@@ -74,6 +83,36 @@
                                 <Icon Type="info-circle" Style="margin-right: 4px;" />
                                 支持参数: <Text Code>temp/temperature</Text>, <Text Code>tokens/max_tokens</Text>. 
                                 示例: <Text Code>temp=0,tokens=500</Text> (确定性输出)
+                            </div>
+                        </FormItem>
+                        <FormItem Label="Tools">
+                            <Select Mode="@SelectMode.Multiple"
+                                    TItem="ToolSelectionItem"
+                                    TItemValue="string"
+                                    DataSource="@_availableTools"
+                                    @bind-Values="@_selectedToolIds"
+                                    LabelName="@nameof(ToolSelectionItem.Label)"
+                                    ValueName="@nameof(ToolSelectionItem.Value)"
+                                    Placeholder="选择要绑定的工具"
+                                    AllowClear
+                                    EnableSearch
+                                    Style="width: 100%;">
+                                <ItemTemplate Context="tool">
+                                    <Space Size="@SpaceSize.Small">
+                                        <SpaceItem>
+                                            <Tag Color="@(tool.ToolType == "Internal" ? "blue" : "green")">
+                                                @tool.ToolType
+                                            </Tag>
+                                        </SpaceItem>
+                                        <SpaceItem>
+                                            @tool.Label
+                                        </SpaceItem>
+                                    </Space>
+                                </ItemTemplate>
+                            </Select>
+                            <div style="margin-top: 4px; color: #8c8c8c; font-size: 12px;">
+                                <Icon Type="info-circle" Style="margin-right: 4px;" />
+                                选择此 Prompt 可以调用的工具（App Tool 或 MCP Tool）
                             </div>
                         </FormItem>
                         @if (_promptParameters.Any())
@@ -252,11 +291,59 @@
                                 {
                                     @if (config.TestResult.Success)
                                     {
-                                        <div class="response-container">
-                                            <pre class="@(config.IsStreaming ? "streaming" : "")">
-                                                @config.TestResult.Response
-                                            </pre>
-                                        </div>
+                                        @* 使用新的 Segments 按顺序展示内容 *@
+                                        @if (config.TestResult.Segments.Any())
+                                        {
+                                            @foreach (var segment in config.TestResult.Segments)
+                                            {
+                                                @if (segment.Type == ResponseSegmentType.Text)
+                                                {
+                                                    <div class="response-container">
+                                                        <pre>@segment.Text@if (config.IsStreaming && segment == config.TestResult.Segments.LastOrDefault(s => s.Type == ResponseSegmentType.Text))
+                                                        {<span class="cursor-effect"></span>}</pre>
+                                                    </div>
+                                                }
+                                                else if (segment.Type == ResponseSegmentType.ToolCalls && segment.ToolCalls != null)
+                                                {
+                                                    @foreach (var toolCall in segment.ToolCalls)
+                                                    {
+                                                        <div class="tool-call-container">
+                                                            <div class="tool-call-header">
+                                                                <span class="tool-icon">🔧</span>
+                                                                <span class="tool-name">@toolCall.ToolName</span>
+                                                                <span class="tool-status @(toolCall.Success ? "success" : "error")">
+                                                                    @(toolCall.Success ? "✓" : "✗")
+                                                                </span>
+                                                                @if (toolCall.DurationMs > 0)
+                                                                {
+                                                                    <span class="tool-duration">@(toolCall.DurationMs)ms</span>
+                                                                }
+                                                            </div>
+                                                            <div class="tool-call-body">
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">Input</div>
+                                                                    <pre class="tool-content">@toolCall.Arguments</pre>
+                                                                </div>
+                                                                @if (!string.IsNullOrEmpty(toolCall.Result))
+                                                                {
+                                                                    <div class="tool-section">
+                                                                        <div class="tool-section-title">Output</div>
+                                                                        <pre class="tool-content">@toolCall.Result</pre>
+                                                                    </div>
+                                                                }
+                                                                @if (!string.IsNullOrEmpty(toolCall.Error))
+                                                                {
+                                                                    <div class="tool-section">
+                                                                        <div class="tool-section-title error">Error</div>
+                                                                        <pre class="tool-content error">@toolCall.Error</pre>
+                                                                    </div>
+                                                                }
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                     else
                                     {
@@ -326,13 +413,77 @@
                             <PropertyColumn Property="c=>c.ConfigName" Title="Config Name" />
                             <PropertyColumn Property="c=>c.ModelType" Title="Model Type" />
                             <PropertyColumn Property="c=>c.Parameters" Title="Parameters" />
+                            <Column Title="Test Input" TData="string">
+                                @if (!string.IsNullOrEmpty(context.TestInput))
+                                {
+                                    <div class="history-response">
+                                        <pre>@context.TestInput</pre>
+                                    </div>
+                                }
+                            </Column>
                             <Column Title="Result" TData="TestConfigRecord">
                                 <div>
                                     @if (context.Success)
                                     {
-                                        <div class="history-response">
-                                            <pre>@context.Response</pre>
-                                        </div>
+                                        @* 优先显示 ResponseSegments，如果没有则显示 Response *@
+                                        @if (context.ResponseSegments?.Any() == true)
+                                        {
+                                            <div class="history-response-segments">
+                                                @foreach (var segment in context.ResponseSegments)
+                                                {
+                                                    @if (segment.Type == ResponseSegmentType.Text)
+                                                    {
+                                                        <div class="history-text-segment">
+                                                            <pre>@segment.Text</pre>
+                                                        </div>
+                                                    }
+                                                    else if (segment.Type == ResponseSegmentType.ToolCalls && segment.ToolCalls != null)
+                                                    {
+                                                        @foreach (var toolCall in segment.ToolCalls)
+                                                        {
+                                                            <div class="history-tool-call-compact">
+                                                                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #f0f0f0; border-radius: 3px; margin: 4px 0;">
+                                                                    <span style="color: #1890ff;">🔧</span>
+                                                                    <strong>@toolCall.ToolName</strong>
+                                                                    <span style="color: @(toolCall.Success ? "#52c41a" : "#ff4d4f");">
+                                                                        @(toolCall.Success ? "✓" : "✗")
+                                                                    </span>
+                                                                </div>
+                                                                <details style="margin-left: 20px;">
+                                                                    <summary style="cursor: pointer; color: #1890ff;">查看详情</summary>
+                                                                    <div style="margin-top: 4px; padding: 8px; background: #fafafa; border-radius: 3px;">
+                                                                        <div style="margin-bottom: 8px;">
+                                                                            <strong>Input:</strong>
+                                                                            <pre style="margin: 4px 0; font-size: 12px;">@toolCall.Arguments</pre>
+                                                                        </div>
+                                                                        @if (!string.IsNullOrEmpty(toolCall.Result))
+                                                                        {
+                                                                            <div style="margin-bottom: 8px;">
+                                                                                <strong>Output:</strong>
+                                                                                <pre style="margin: 4px 0; font-size: 12px;">@toolCall.Result</pre>
+                                                                            </div>
+                                                                        }
+                                                                        @if (!string.IsNullOrEmpty(toolCall.Error))
+                                                                        {
+                                                                            <div>
+                                                                                <strong style="color: #ff4d4f;">Error:</strong>
+                                                                                <pre style="margin: 4px 0; font-size: 12px; color: #ff4d4f;">@toolCall.Error</pre>
+                                                                            </div>
+                                                                        }
+                                                                    </div>
+                                                                </details>
+                                                            </div>
+                                                        }
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                        else if (!string.IsNullOrEmpty(context.Response))
+                                        {
+                                            <div class="history-response">
+                                                <pre>@context.Response</pre>
+                                            </div>
+                                        }
                                     }
                                     else
                                     {
@@ -371,14 +522,93 @@
                 <div class="chat-history-messages">
                     @foreach (var msg in _selectedConfigForHistory.ChatHistory)
                     {
-                        <div class="chat-message-item @msg.Role">
+                        var roleValue = msg.Role.Value;
+                        <div class="chat-message-item @roleValue">
                             <div class="message-header">
-                                <Tag Color="@(msg.Role == "user" ? "blue" : msg.Role == "system" ? "purple" : "green")">
-                                    @(msg.Role == "user" ? "👤 用户" : msg.Role == "system" ? "⚙️ 系统" : "🤖 助手")
+                                <Tag Color="@(roleValue == "user" ? "blue" : roleValue == "system" ? "purple" : roleValue == "tool" ? "orange" : "green")">
+                                    @if (roleValue == "user")
+                                    {
+                                        <span>👤 用户</span>
+                                    }
+                                    else if (roleValue == "system")
+                                    {
+                                        <span>⚙️ 系统</span>
+                                    }
+                                    else if (roleValue == "tool")
+                                    {
+                                        <span>🔧 工具结果</span>
+                                    }
+                                    else
+                                    {
+                                        <span>🤖 助手</span>
+                                    }
                                 </Tag>
                             </div>
                             <div class="message-content">
-                                <pre>@msg.Content</pre>
+                                @* 显示文本内容 *@
+                                @if (!string.IsNullOrEmpty(msg.Text))
+                                {
+                                    <pre>@msg.Text</pre>
+                                }
+                                
+                                @* 显示工具调用和结果 *@
+                                @if (msg.Contents != null && msg.Contents.Any())
+                                {
+                                    @foreach (var content in msg.Contents)
+                                    {
+                                        @if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
+                                        {
+                                            <div class="history-tool-call">
+                                                <div class="tool-call-header">
+                                                    <Icon Type="api" />
+                                                    <strong>@functionCall.Name</strong>
+                                                    @if (!string.IsNullOrEmpty(functionCall.CallId))
+                                                    {
+                                                        <span style="font-size: 12px; margin-left: 8px; color: #999;">
+                                                            CallId: @functionCall.CallId
+                                                        </span>
+                                                    }
+                                                </div>
+                                                @if (functionCall.Arguments != null && functionCall.Arguments.Any())
+                                                {
+                                                    <div class="tool-call-section">
+                                                        <div style="color: #999; font-size: 12px; margin-bottom: 4px;">INPUT</div>
+                                                        <pre>@System.Text.Json.JsonSerializer.Serialize(functionCall.Arguments, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })</pre>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                        else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
+                                        {
+                                            <div class="history-tool-result">
+                                                <div class="tool-result-header">
+                                                    <Icon Type="check-circle" />
+                                                    <strong>工具结果</strong>
+                                                    @if (!string.IsNullOrEmpty(functionResult.CallId))
+                                                    {
+                                                        <span style="font-size: 12px; margin-left: 8px; color: #999;">
+                                                            CallId: @functionResult.CallId
+                                                        </span>
+                                                    }
+                                                </div>
+                                                @if (functionResult.Result != null)
+                                                {
+                                                    <div class="tool-result-section">
+                                                        <div style="color: #999; font-size: 12px; margin-bottom: 4px;">OUTPUT</div>
+                                                        <pre>@functionResult.Result.ToString()</pre>
+                                                    </div>
+                                                }
+                                                @if (functionResult.Exception != null)
+                                                {
+                                                    <div class="tool-error-section">
+                                                        <div style="color: #ff4d4f; font-size: 12px; margin-bottom: 4px;">ERROR</div>
+                                                        <pre>@functionResult.Exception.Message</pre>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    }
+                                }
                             </div>
                         </div>
                     }
@@ -437,13 +667,132 @@
         color: #333;
     }
 
-    .streaming {
-        animation: typing 0.8s ease-in-out infinite;
+    .cursor-effect {
+        display: inline-block;
+        width: 2px;
+        height: 1.2em;
+        background-color: #1890ff;
+        margin-left: 1px;
+        vertical-align: text-top;
+        animation: blink 0.8s infinite;
+        position: relative;
+        top: 1px;
     }
 
-    @@keyframes typing {
-        0%, 100% { border-right: 3px solid #1890ff; }
-        50% { border-right: 3px solid transparent; }
+    @@keyframes blink {
+        0%, 100% {
+            opacity: 0;
+        }
+
+        50% {
+            opacity: 1;
+        }
+    }
+
+    /* 工具调用样式 - 简洁紧凑 */
+    .tool-call-container {
+        margin: 12px 0;
+        border: 1px solid #e6f7ff;
+        border-left: 3px solid #1890ff;
+        border-radius: 4px;
+        background: #f0f9ff;
+        overflow: hidden;
+    }
+
+    .tool-call-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: linear-gradient(135deg, #e6f7ff 0%, #f0f9ff 100%);
+        border-bottom: 1px solid #d6edff;
+        font-size: 13px;
+    }
+
+    .tool-icon {
+        font-size: 14px;
+    }
+
+    .tool-name {
+        font-weight: 600;
+        color: #1890ff;
+        flex: 1;
+    }
+
+    .tool-status {
+        font-weight: bold;
+        font-size: 12px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .tool-status.success {
+        background: #52c41a;
+        color: white;
+    }
+
+    .tool-status.error {
+        background: #ff4d4f;
+        color: white;
+    }
+
+    .tool-duration {
+        font-size: 11px;
+        color: #8c8c8c;
+        padding: 2px 6px;
+        background: rgba(0,0,0,0.04);
+        border-radius: 3px;
+    }
+
+    .tool-call-body {
+        padding: 12px;
+    }
+
+    .tool-section {
+        margin-bottom: 12px;
+    }
+
+    .tool-section:last-child {
+        margin-bottom: 0;
+    }
+
+    .tool-section-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #595959;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+
+    .tool-section-title.error {
+        color: #ff4d4f;
+    }
+
+    .tool-content {
+        margin: 0;
+        padding: 8px;
+        background: white;
+        border: 1px solid #e8e8e8;
+        border-radius: 3px;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        color: #262626;
+        max-height: 150px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    .tool-content.error {
+        background: #fff2f0;
+        border-color: #ffccc7;
+        color: #cf1322;
     }
 
     .history-test-configs {
@@ -468,6 +817,29 @@
         font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
         font-size: 13px;
         line-height: 1.6;
+    }
+
+    /* 历史记录中的响应片段 */
+    .history-response-segments {
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .history-text-segment pre {
+        margin: 4px 0;
+        padding: 8px;
+        background: #fafafa;
+        border-radius: 3px;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    .history-tool-call-compact {
+        margin: 4px 0;
+        font-size: 13px;
     }
 
     /* 聊天历史抽屉样式 */
@@ -522,6 +894,11 @@
         border-left: 3px solid #722ed1;
     }
 
+    .chat-message-item.tool .message-content {
+        background: #fff7e6;
+        border-left: 3px solid #fa8c16;
+    }
+
     .message-header {
         margin-bottom: 8px;
     }
@@ -540,6 +917,61 @@
         font-size: 14px;
         line-height: 1.8;
         color: #333;
+    }
+
+    /* 聊天历史中的工具调用样式 */
+    .history-tool-call,
+    .history-tool-result {
+        margin-top: 12px;
+        padding: 10px;
+        background: white;
+        border: 1px solid #e8e8e8;
+        border-radius: 4px;
+    }
+
+    .history-tool-call {
+        border-left: 3px solid #1890ff;
+    }
+
+    .history-tool-result {
+        border-left: 3px solid #52c41a;
+    }
+
+    .tool-call-header,
+    .tool-result-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #f0f0f0;
+    }
+
+    .tool-call-section,
+    .tool-result-section,
+    .tool-error-section {
+        margin-top: 8px;
+    }
+
+    .tool-call-section pre,
+    .tool-result-section pre,
+    .tool-error-section pre {
+        margin: 0;
+        padding: 8px;
+        background: #fafafa;
+        border: 1px solid #e8e8e8;
+        border-radius: 3px;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .tool-error-section pre {
+        background: #fff2f0;
+        border-color: #ffccc7;
+        color: #ff4d4f;
     }
 
     /* 卡片样式优化 */
@@ -603,6 +1035,10 @@
     private HashSet<string> _promptParameters = new();
     private Dictionary<string, string> _parameterValues = new();
 
+    // Tool selection
+    private List<ToolSelectionItem> _availableTools = new();
+    private IEnumerable<string> _selectedToolIds = Array.Empty<string>();
+
     private string _testContent = string.Empty;
     private bool _showChatHistoryDrawer = false;
     private PromptTestConfig? _selectedConfigForHistory = null;
@@ -636,10 +1072,101 @@
         {
             _availableConfigs = await LlmPoolService.GetConfigsAsync();
             _availableEndpoints = await LlmPoolService.GetEndpointsAsync();
+            await LoadAvailableToolsAsync();
         }
         catch (Exception ex)
         {
             _message.Error($"Failed to load data: {ex.Message}");
+        }
+    }
+
+    private async Task LoadAvailableToolsAsync()
+    {
+        try
+        {
+            var tools = await ToolMetadataService.GetAllToolsAsync();
+            _availableTools = tools.Select(t => new ToolSelectionItem
+            {
+                Value = $"{t.Source}:{t.SourceId}",
+                Label = t.Name,
+                ToolType = t.Source.ToString(), // "App" or "Mcp"
+                ToolId = t.SourceId // SourceId 现在已经是 string 类型
+            }).ToList();
+            
+            Logger.LogInformation("=== LoadAvailableToolsAsync ===");
+            Logger.LogInformation("Loaded {Count} available tools", _availableTools.Count);
+            foreach (var tool in _availableTools)
+            {
+                Logger.LogInformation("  Available Tool:");
+                Logger.LogInformation("    Value: {Value}", tool.Value);
+                Logger.LogInformation("    Label: {Label}", tool.Label);
+                Logger.LogInformation("    Type: {Type}", tool.ToolType);
+                Logger.LogInformation("    ToolId: {ToolId}", tool.ToolId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load tools: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPromptToolsAsync()
+    {
+        if (string.IsNullOrEmpty(_editingPrompt.Id))
+            return;
+
+        try
+        {
+            Logger.LogInformation("=== LoadPromptToolsAsync ===");
+            Logger.LogInformation("Loading tools for Prompt ID: {PromptId}", _editingPrompt.Id);
+            
+            var promptTools = await PromptService.GetPromptToolsAsync(_editingPrompt.Id);
+            
+            Logger.LogInformation("Retrieved {Count} PromptTools from database", promptTools.Count);
+            
+            foreach (var pt in promptTools)
+            {
+                Logger.LogInformation("  PromptTool from DB:");
+                Logger.LogInformation("    ToolId: {ToolId}", pt.ToolId);
+                Logger.LogInformation("    ToolType: {ToolType}", pt.ToolType);
+            }
+            
+            // 映射 ToolType 到 ToolSource 格式
+            _selectedToolIds = promptTools.Select(pt => 
+            {
+                var sourceType = pt.ToolType == ToolType.Internal ? "App" : "MCP";
+                var value = $"{sourceType}:{pt.ToolId}";
+                Logger.LogInformation("  Mapping: {ToolType} + {ToolId} -> {Value}", 
+                    pt.ToolType, pt.ToolId, value);
+                return value;
+            }).ToArray();
+            
+            Logger.LogInformation("Final _selectedToolIds ({Count} items):", _selectedToolIds.Count());
+            foreach (var id in _selectedToolIds)
+            {
+                Logger.LogInformation("  - {Id}", id);
+            }
+            
+            Logger.LogInformation("Available tools in _availableTools ({Count} items):", _availableTools.Count);
+            foreach (var tool in _availableTools)
+            {
+                Logger.LogInformation("  - {Value} (Label: {Label})", tool.Value, tool.Label);
+            }
+            
+            Logger.LogInformation("Checking if selected tools exist in available tools:");
+            foreach (var selectedId in _selectedToolIds)
+            {
+                var exists = _availableTools.Any(t => t.Value == selectedId);
+                Logger.LogInformation("  {SelectedId}: {Exists}", selectedId, exists ? "FOUND ✓" : "NOT FOUND ✗");
+            }
+            
+            // 通知 Blazor 组件状态已更改
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load prompt tools: {ex.Message}");
+            Logger.LogError(ex, "Error loading prompt tools for {PromptId}", _editingPrompt.Id);
         }
     }
 
@@ -650,15 +1177,33 @@
             _testConfigs = testConfigs.Select(c => new PromptTestConfig
             {
                 Type = c.Type,
-                ConfigId = c.ConfigId,
+                ConfigId = c.ConfigId ?? string.Empty,
                 Parameters = c.Parameters,
                 TestResult = new PromptTestResult
                 {
                     Success = c.Success,
-                    Response = c.Response,
-                    Error = c.Error
+                    Error = c.Error,
+                    // 🔥 优先使用 ResponseSegments，如果没有则从 Response 创建
+                    Segments = c.ResponseSegments?.Any() == true
+                        ? c.ResponseSegments.ToList()
+                        : !string.IsNullOrEmpty(c.Response)
+                            ? new List<ResponseSegment>
+                            {
+                                new ResponseSegment
+                                {
+                                    Type = ResponseSegmentType.Text,
+                                    Text = c.Response
+                                }
+                            }
+                            : new List<ResponseSegment>()
                 }
             }).ToList();
+
+            // 🔥 回显测试输入（如果存在）
+            if (!string.IsNullOrEmpty(testConfigs.First().TestInput))
+            {
+                _testContent = testConfigs.First().TestInput!;
+            }
 
             // Restore parameter values if they exist
             if (testConfigs.First().ParameterValues?.Any() == true)
@@ -702,6 +1247,9 @@
             }
 
             LoadTestConfigsAndParameters(latestHistory?.TestConfigs);
+
+            // Load associated tools
+            await LoadPromptToolsAsync();
 
             // Update parameters based on the loaded content
             if (!string.IsNullOrEmpty(_editingPrompt.Content))
@@ -792,7 +1340,13 @@
                     ConfigId = c.ConfigId,
                     Parameters = c.Parameters,
                     Success = c.TestResult?.Success ?? false,
-                    Response = c.TestResult?.Response,
+                    // 从 Segments 中提取所有文本内容
+                    Response = c.TestResult?.Segments
+                        .Where(s => s.Type == ResponseSegmentType.Text)
+                        .Select(s => s.Text)
+                        .Where(t => !string.IsNullOrEmpty(t))
+                        .DefaultIfEmpty(string.Empty)
+                        .Aggregate((a, b) => a + b),
                     Error = c.TestResult?.Error,
                     ConfigName = c.Type == "Model" 
                         ? _availableConfigs.FirstOrDefault(m => m.Id == c.ConfigId)?.Name 
@@ -807,11 +1361,65 @@
             await LlmPoolService.SavePromptHistoryAsync(history);
             _message.Success("History saved successfully");
 
+            // Save tool bindings
+            await SavePromptToolsAsync();
+
             NavigationManager.NavigateTo("/prompt-list");
         }
         catch (Exception ex)
         {
             _message.Error($"Failed to save prompt: {ex.Message}");
+        }
+    }
+
+    private async Task SavePromptToolsAsync()
+    {
+        if (string.IsNullOrEmpty(_editingPrompt.Id))
+            return;
+
+        try
+        {
+            Logger.LogInformation("Saving {Count} selected tools for Prompt {PromptId}: {Tools}", 
+                _selectedToolIds.Count(), _editingPrompt.Id, string.Join(", ", _selectedToolIds));
+            
+            var promptTools = _selectedToolIds.Select(toolId =>
+            {
+                var parts = toolId.Split(':', 2);
+                if (parts.Length != 2)
+                {
+                    Logger.LogWarning("Invalid tool ID format: {ToolId}", toolId);
+                    return null;
+                }
+
+                // Parse ToolType: "App" -> Internal, "MCP" -> Mcp
+                var toolTypeStr = parts[0];
+                var toolType = toolTypeStr.Equals("App", StringComparison.OrdinalIgnoreCase) 
+                    ? ToolType.Internal 
+                    : ToolType.Mcp;
+
+                var promptTool = new PromptTool
+                {
+                    PromptId = _editingPrompt.Id,
+                    ToolId = parts[1],
+                    ToolType = toolType
+                };
+                
+                Logger.LogDebug("  Creating PromptTool: ToolId={ToolId}, ToolType={ToolType}", 
+                    promptTool.ToolId, promptTool.ToolType);
+                
+                return promptTool;
+            })
+            .Where(pt => pt != null)
+            .Cast<PromptTool>()
+            .ToList();
+
+            await PromptService.SetPromptToolsAsync(_editingPrompt.Id, promptTools);
+            Logger.LogInformation("Successfully saved {Count} PromptTools", promptTools.Count);
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to save prompt tools: {ex.Message}");
+            Logger.LogError(ex, "Error saving prompt tools for {PromptId}", _editingPrompt.Id);
         }
     }
 
@@ -895,11 +1503,11 @@
                 try
                 {
                     config.IsStreaming = true;
-                    config.TestResult = new PromptTestResult { Success = true, Response = "" };
+                    config.TestResult = new PromptTestResult { Success = true };
                     StateHasChanged();
 
                     // 构建消息列表 - 每个配置独立的聊天历史
-                    var messages = new List<ChatMessage>();
+                    var messages = new List<AIChatMessage>();
                     
                     // 如果全局保留聊天历史并且该配置有历史，添加历史消息
                     if (_keepChatHistory && config.ChatHistory.Any())
@@ -909,17 +1517,51 @@
                     else
                     {
                         // 否则只添加系统消息
-                        messages.Add(new ChatMessage { Role = "system", Content = processedPromptContent });
+                        messages.Add(new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent));
                     }
                     
                     // 添加用户当前输入
                     if (!string.IsNullOrWhiteSpace(_testContent))
                     {
-                        messages.Add(new ChatMessage { Role = "user", Content = _testContent });
+                        messages.Add(new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, _testContent));
                     }
 
-                    // 流式调用 - 根据配置类型选择不同的调用方式
-                    IAsyncEnumerable<string> streamingResponse;
+                    // 获取 Prompt 关联的工具 - 使用 Microsoft.Extensions.AI
+                    List<Microsoft.Extensions.AI.AITool>? tools = null;
+                    if (_selectedToolIds.Any())
+                    {
+                        try
+                        {
+                            // 从 _availableTools 中筛选出选中的工具元数据
+                            var selectedMetadata = _availableTools
+                                .Where(t => _selectedToolIds.Contains(t.Value))
+                                .Select(t => new ToolMetadata
+                                {
+                                    Name = t.Label,
+                                    Description = t.Label, // 使用 Label 作为描述
+                                    Source = t.ToolType.Equals("App", StringComparison.OrdinalIgnoreCase) 
+                                        ? ToolSource.App 
+                                        : ToolSource.MCP,
+                                    SourceId = t.ToolId,
+                                    ParametersSchema = "{}" // Schema 在 CreateAITool 时会重新加载
+                                })
+                                .ToList();
+
+                            if (selectedMetadata.Any())
+                            {
+                                tools = await ToolProviderService.GetToolsFromMetadataAsync(selectedMetadata);
+                                Logger.LogInformation("Loaded {Count} AI tools for testing", tools?.Count ?? 0);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.LogError(ex, "Failed to load tools for testing");
+                            // 工具加载失败不影响测试继续
+                        }
+                    }
+
+                    // 流式调用 - 统一使用 ChatClientService
+                    IAsyncEnumerable<ChatStreamingUpdate> streamingResponse;
                     if (config.Type == "Model")
                     {
                         var llmConfig = await LlmPoolService.GetConfigByIdAsync(config.ConfigId!);
@@ -935,10 +1577,15 @@
                             parameters = ParseParametersToDict(_editingPrompt.ModelParameters);
                         }
 
-                        streamingResponse = ChatClientService.SendStreamingMessageAsync(
+                        Logger.LogInformation("Starting streaming with {MessageCount} messages, {ToolCount} tools", 
+                            messages.Count, tools?.Count ?? 0);
+
+                        // 使用新的 SendStreamingMessageWithDetailsAsync API 以获取工具调用详情
+                        streamingResponse = ChatClientService.SendStreamingMessageWithDetailsAsync(
                             llmConfig,
                             messages,
-                            parameters);
+                            parameters,
+                            tools);
                     }
                     else
                     {
@@ -948,41 +1595,52 @@
                             throw new Exception("Selected endpoint not found.");
                         }
 
-                        streamingResponse = ChatClientService.SendStreamingMessageAsync(
+                        streamingResponse = ChatClientService.SendStreamingMessageWithDetailsAsync(
                             endpoint,
-                            messages);
+                            messages,
+                            tools);
                     }
 
                     // 流式接收响应
                     try
                     {
-                        await foreach (var chunk in streamingResponse.WithCancellation(cts.Token))
+                        Logger.LogInformation("Starting to receive streaming chunks...");
+                        
+                        // 🔥 使用 ChatClientService 的流式方法处理片段拼接
+                        await foreach (var segments in LY.LlmPool.Web.Services.ChatClientService.ConvertToSegmentsStreamAsync(streamingResponse))
                         {
-                            config.TestResult.Response += chunk;
+                            config.TestResult.Segments = segments;
                             StateHasChanged();
                             await Task.Delay(10, cts.Token); // 保持打字效果的流畅性
                         }
+                        
+                        // 计算总文本长度和工具调用数量
+                        var totalTextLength = config.TestResult.Segments
+                            .Where(s => s.Type == ResponseSegmentType.Text)
+                            .Sum(s => s.Text?.Length ?? 0);
+                        var totalToolCalls = config.TestResult.Segments
+                            .Where(s => s.Type == ResponseSegmentType.ToolCalls)
+                            .Sum(s => s.ToolCalls?.Count ?? 0);
+                        
+                        Logger.LogInformation("Streaming completed. Text length: {Length}, Segments: {Segments}, Tool calls: {ToolCalls}", 
+                            totalTextLength, config.TestResult.Segments.Count, totalToolCalls);
 
-                        // 如果全局启用了保留聊天历史，更新该配置的历史记录
+                        // 🔑 如果全局启用了保留聊天历史，使用完整的 messages 列表（包含工具调用）
                         if (_keepChatHistory)
                         {
-                            // 如果这是第一次测试，添加系统消息
-                            if (!config.ChatHistory.Any())
-                            {
-                                config.ChatHistory.Add(new ChatMessage { Role = "system", Content = processedPromptContent });
-                            }
+                            Logger.LogInformation("更新聊天历史：messages 列表有 {Count} 条消息", messages.Count);
                             
-                            // 添加用户消息
-                            if (!string.IsNullOrWhiteSpace(_testContent))
-                            {
-                                config.ChatHistory.Add(new ChatMessage { Role = "user", Content = _testContent });
-                            }
+                            // 🎯 关键：直接替换为完整的 messages 列表
+                            // messages 已经被 FunctionInvokingChatClient 自动更新，包含：
+                            // - 系统消息
+                            // - 用户消息
+                            // - 助手消息（带 FunctionCallContent）
+                            // - 工具结果消息（带 FunctionResultContent）
+                            // - 最终助手响应
+                            config.ChatHistory.Clear();
+                            config.ChatHistory.AddRange(messages);
                             
-                            // 添加助手响应
-                            if (config.TestResult.Success && !string.IsNullOrEmpty(config.TestResult.Response))
-                            {
-                                config.ChatHistory.Add(new ChatMessage { Role = "assistant", Content = config.TestResult.Response });
-                            }
+                            Logger.LogInformation("聊天历史已更新，共 {Count} 条消息", config.ChatHistory.Count);
                         }
                     }
                     catch (Exception ex)
@@ -1102,7 +1760,17 @@
                     ConfigId = c.ConfigId,
                     Parameters = c.Parameters,
                     Success = c.TestResult?.Success ?? false,
-                    Response = c.TestResult?.Response,
+                    // 🔥 保存测试输入
+                    TestInput = _testContent,
+                    // 从 Segments 中提取所有文本内容（向后兼容）
+                    Response = c.TestResult?.Segments
+                        .Where(s => s.Type == ResponseSegmentType.Text)
+                        .Select(s => s.Text)
+                        .Where(t => !string.IsNullOrEmpty(t))
+                        .DefaultIfEmpty(string.Empty)
+                        .Aggregate((a, b) => a + b),
+                    // 🔥 保存完整的响应片段（包含工具调用）
+                    ResponseSegments = c.TestResult?.Segments.ToList(),
                     Error = c.TestResult?.Error,
                     // Add model/endpoint information
                     ConfigName = c.Type == "Model" 
@@ -1244,4 +1912,14 @@
 
         return result;
     }
+
+    // Tool selection helper class
+    private class ToolSelectionItem
+    {
+        public string Value { get; set; } = string.Empty; // Format: "{ToolType}:{ToolId}"
+        public string Label { get; set; } = string.Empty; // Tool name
+        public string ToolType { get; set; } = string.Empty; // "Internal" or "Mcp"
+        public string ToolId { get; set; } = string.Empty; // Actual tool ID
+    }
 }
+

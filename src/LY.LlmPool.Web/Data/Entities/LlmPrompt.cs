@@ -35,4 +35,9 @@ public class LlmPrompt
     /// </summary>
     [Column("model_parameters")]
     public string? ModelParameters { get; set; }
+
+    /// <summary>
+    /// 绑定的工具
+    /// </summary>
+    public virtual ICollection<PromptTool> PromptTools { get; set; } = new List<PromptTool>();
 } 

@@ -1,6 +1,8 @@
 using System.Text;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Tools;
+using Microsoft.SemanticKernel;
 
 namespace LY.LlmPool.Web.Services.Agents;
 
@@ -14,9 +16,10 @@ public class GroupChatStrategy : IOrchestrationStrategy
 
     public async Task<string> ExecuteAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
-        Func<LlmConfig, List<ChatMessage>, Task<ChatResponse>> sendMessage,
-        Func<LlmConfig, List<ChatMessage>, IAsyncEnumerable<string>> sendStreamingMessage,
+        IEnumerable<Microsoft.Extensions.AI.ChatMessage> userMessages,
+        ToolProviderService toolProviderService,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, Task<ChatResponse>> sendMessage,
+        Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, IEnumerable<KernelFunction>?, IAsyncEnumerable<string>> sendStreamingMessage,
         Func<string, string?, int, string, bool, Task>? onProgress = null,
         CancellationToken ct = default)
     {
@@ -26,7 +29,7 @@ public class GroupChatStrategy : IOrchestrationStrategy
         }
 
         var members = app.AgentMembers.OrderBy(m => m.Order).ToList();
-        var conversationHistory = new List<ChatMessage>(userMessages);
+        var conversationHistory = new List<Microsoft.Extensions.AI.ChatMessage>(userMessages);
 
         // 读取配置：最大轮次（可从 app.OrchestrationMode 或其他配置扩展）
         var maxRounds = DefaultMaxRounds;
@@ -44,18 +47,23 @@ public class GroupChatStrategy : IOrchestrationStrategy
                     continue;
                 }
 
-                var messages = new List<ChatMessage>();
+                var messages = new List<Microsoft.Extensions.AI.ChatMessage>();
 
                 // 添加系统提示
                 if (member.LlmPrompt != null && !string.IsNullOrWhiteSpace(member.LlmPrompt.Content))
                 {
-                    messages.Add(new ChatMessage { Role = "system", Content = member.LlmPrompt.Content });
+                    messages.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.System, member.LlmPrompt.Content));
                 }
 
                 // 添加对话历史
                 messages.AddRange(conversationHistory);
 
-                var resp = await sendMessage(member.LlmConfig, messages);
+                // 获取该成员关联的工具（通过 Prompt）
+                var aiTools = await toolProviderService.GetToolsForPromptAsync(member.LlmPrompt);
+                // TODO: Agent系统仍使用SemanticKernel的IChatClientService，暂时不支持AITool
+                IEnumerable<KernelFunction>? tools = null;
+
+                var resp = await sendMessage(member.LlmConfig, messages, tools);
                 if (!string.Equals(resp.Status, "success", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -78,7 +86,7 @@ public class GroupChatStrategy : IOrchestrationStrategy
                 }
 
                 // 添加到历史
-                conversationHistory.Add(new ChatMessage { Role = "assistant", Content = $"[{member.Name ?? "Agent"}] {agentMessage}" });
+                conversationHistory.Add(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, $"[{member.Name ?? "Agent"}] {agentMessage}"));
                 hasNewMessage = true;
 
                 if (onProgress != null)
@@ -95,7 +103,7 @@ public class GroupChatStrategy : IOrchestrationStrategy
         }
 
         // 返回最后一条消息
-        return conversationHistory.LastOrDefault()?.Content ?? "";
+        return conversationHistory.LastOrDefault()?.Text ?? "";
     }
 
     private static bool IsFinalAnswer(string text, out string extracted)
@@ -119,3 +127,4 @@ public class GroupChatStrategy : IOrchestrationStrategy
         return false;
     }
 }
+

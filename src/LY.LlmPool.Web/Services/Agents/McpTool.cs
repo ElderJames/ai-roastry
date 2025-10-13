@@ -5,7 +5,7 @@ namespace LY.LlmPool.Web.Services.Agents;
 /// <summary>
 /// MCP 工具占位实现：描述远端工具元信息；执行时返回占位结果，后续接入 MCP 客户端。
 /// </summary>
-public class McpTool : IAgentTool
+public class McpTool : ITool
 {
     public string Id { get; }
     public string Name { get; }

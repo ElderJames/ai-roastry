@@ -1,5 +1,6 @@
-﻿using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Tools;
 
 namespace LY.LlmPool.Web.Services.Agents;
 
@@ -9,17 +10,22 @@ namespace LY.LlmPool.Web.Services.Agents;
 public class AgentOrchestratorService
 {
     private readonly IChatClientService _chatClientService;
+    private readonly ToolProviderService _toolProviderService;
     private readonly ILogger<AgentOrchestratorService> _logger;
 
-    public AgentOrchestratorService(IChatClientService chatClientService, ILogger<AgentOrchestratorService> logger)
+    public AgentOrchestratorService(
+        IChatClientService chatClientService, 
+        ToolProviderService toolProviderService,
+        ILogger<AgentOrchestratorService> logger)
     {
         _chatClientService = chatClientService;
+        _toolProviderService = toolProviderService;
         _logger = logger;
     }
 
     public async Task<string> ExecuteAsync(
         LlmApp app,
-        IEnumerable<ChatMessage> userMessages,
+        IEnumerable<Microsoft.Extensions.AI.ChatMessage> userMessages,
         Func<string, string?, int, string, bool, Task>? onProgress = null,
         CancellationToken ct = default)
     {
@@ -39,9 +45,11 @@ public class AgentOrchestratorService
         return await strategy.ExecuteAsync(
             app,
             userMessages,
-            (cfg, msgs) => _chatClientService.SendMessageAsync(cfg, msgs),
-            (cfg, msgs) => _chatClientService.SendStreamingMessageAsync(cfg, msgs),
+            _toolProviderService,
+            (cfg, msgs, tools) => _chatClientService.SendMessageAsync(cfg, msgs, tools),
+            (cfg, msgs, tools) => _chatClientService.SendStreamingMessageAsync(cfg, msgs, tools),
             onProgress,
             ct);
     }
 }
+
