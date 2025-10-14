@@ -15,6 +15,7 @@
 @using Microsoft.JSInterop
 @using System.Text.RegularExpressions
 @using AIChatMessage = Microsoft.Extensions.AI.ChatMessage
+@using System.Text.Json
 @inject LlmPoolService LlmPoolService
 @inject IChatClientService ChatClientService
 @inject PromptService PromptService
@@ -166,8 +167,7 @@
                                                           AutoSize=true 
                                                           Value="@(_parameterValues.TryGetValue(param.Name, out var val) ? val : "")"
                                                           ValueChanged="@(newValue => OnParameterValueChanged(param.Name, newValue))"
-                                                          Placeholder="@($"请输入{param.Name}的值")" 
-                                                          style="flex: 1;" />
+                                                          Placeholder="@($"请输入{param.Name}的值")" />
                                             </div>
                                         }
                                     </Panel>
@@ -256,7 +256,7 @@
                 </div>
             </TitleTemplate>
             <ChildContent>
-                <div class="test-configs-list">
+                <div class="test-configs-list @(_testConfigs.Count == 1 ? "single-config" : "")">
                     @foreach (var config in _testConfigs)
                     {
                         <Card Size="@CardSize.Small" Class="mb-2">
@@ -460,7 +460,7 @@
                                                                         <div class="tool-section">
                                                                             <div class="tool-section-title">📥 参数</div>
                                                                             <div class="tool-section-content">
-                                                                                <pre>@System.Text.Json.JsonSerializer.Serialize(functionCall.Arguments, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })</pre>
+                                                                                <pre>@ToJson(functionCall.Arguments)</pre>
                                                                             </div>
                                                                         </div>
                                                                     }
@@ -821,7 +821,7 @@
                                                     {
                                                         <div class="tool-call-section">
                                                             <div style="color: #999; font-size: 12px; margin-bottom: 4px;">参数 (INPUT)</div>
-                                                            <pre>@System.Text.Json.JsonSerializer.Serialize(functionCall.Arguments, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })</pre>
+                                                            <pre>@ToJson(functionCall.Arguments)</pre>
                                                         </div>
                                                     }
                                                 </div>
@@ -925,6 +925,28 @@
         max-height: calc(100vh - 250px);
         overflow-y: auto;
         padding: 8px;
+    }
+
+    .test-configs-list.single-config {
+        max-height: calc(100vh - 200px);
+        min-height: calc(100vh - 200px);
+        height: calc(100vh - 200px);
+        display: flex;
+        flex-direction: column;
+    }
+
+    .test-configs-list.single-config > .ant-card {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 0 !important;
+    }
+
+    .test-configs-list.single-config > .ant-card > .ant-card-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
     }
 
     .parameters-container {
@@ -1322,6 +1344,15 @@
         border-radius: 4px;
         max-height: 400px;
         overflow-y: auto;
+    }
+
+    /* 单个配置时的聊天历史区域样式 */
+    .test-configs-list.single-config .chat-history-section {
+        max-height: none;
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
     }
 
     .chat-history-header-inline {
@@ -2229,6 +2260,21 @@
                     // 如果该配置有历史,添加历史消息
                     if (config.ChatHistory.Any())
                     {
+                        // 🔥 更新第一条 system prompt 为最新的 prompt 内容和参数
+                        var firstMessage = config.ChatHistory.FirstOrDefault();
+                        if (firstMessage != null && firstMessage.Role.Value == "system")
+                        {
+                            // 更新现有的 system prompt
+                            config.ChatHistory[0] = new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent);
+                            Logger.LogInformation("更新了 system prompt 为最新内容");
+                        }
+                        else if (firstMessage?.Role.Value != "system")
+                        {
+                            // 如果第一条不是 system 消息,在开头插入
+                            config.ChatHistory.Insert(0, new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent));
+                            Logger.LogInformation("在历史记录开头插入了 system prompt");
+                        }
+                        
                         messages.AddRange(config.ChatHistory);
                         Logger.LogInformation("加载了 {Count} 条历史消息用于多轮对话", config.ChatHistory.Count);
                     }
@@ -2422,7 +2468,7 @@
                                                 try
                                                 {
                                                     // 尝试解析为 JSON 对象
-                                                    resultValue = System.Text.Json.JsonSerializer.Deserialize<object>(toolCall.Result);
+                                                    resultValue = ToJson(toolCall.Result);
                                                 }
                                                 catch
                                                 {
@@ -2839,5 +2885,10 @@
             // 静默失败，滚动不是关键功能
             Logger.LogDebug(ex, "Failed to scroll to streaming response bottom");
         }
+    }
+
+    private string ToJson<T>(T obj)
+    {
+        return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
 }
