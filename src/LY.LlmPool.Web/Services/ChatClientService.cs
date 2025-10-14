@@ -12,6 +12,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Encodings.Web;
 using AIResponse = Microsoft.Extensions.AI.ChatResponse;
+using ParameterUtils = LY.LlmPool.Web.Components.ChatHelpers.ParameterUtils;
 
 namespace LY.LlmPool.Web.Services;
 
@@ -609,26 +610,7 @@ public class ChatClientService : IChatClientService
         }
 
         // 应用参数到 ChatOptions (temperature, max_tokens 等)
-        if (parameters != null && parameters.Count > 0)
-        {
-            if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
-            {
-                chatOptions.Temperature = Convert.ToSingle(temp);
-                _logger.LogInformation("设置 Temperature: {Temperature}", chatOptions.Temperature);
-            }
-            
-            if (parameters.TryGetValue("max_tokens", out var tokens) || parameters.TryGetValue("tokens", out tokens))
-            {
-                chatOptions.MaxOutputTokens = Convert.ToInt32(tokens);
-                _logger.LogInformation("设置 MaxOutputTokens: {MaxTokens}", chatOptions.MaxOutputTokens);
-            }
-            
-            if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
-            {
-                chatOptions.TopP = Convert.ToSingle(topP);
-                _logger.LogInformation("设置 TopP: {TopP}", chatOptions.TopP);
-            }
-        }
+        ParameterUtils.ApplyParametersToChatOptions(chatOptions, parameters);
 
         _logger.LogInformation("开始调用流式聊天完成服务");
         
@@ -967,26 +949,7 @@ public class ChatClientService : IChatClientService
         }
 
         // 应用参数到 ChatOptions
-        if (parameters != null && parameters.Count > 0)
-        {
-            if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
-            {
-                chatOptions.Temperature = Convert.ToSingle(temp);
-                _logger.LogInformation("设置 Temperature: {Temperature}", chatOptions.Temperature);
-            }
-            
-            if (parameters.TryGetValue("max_tokens", out var tokens) || parameters.TryGetValue("tokens", out tokens))
-            {
-                chatOptions.MaxOutputTokens = Convert.ToInt32(tokens);
-                _logger.LogInformation("设置 MaxOutputTokens: {MaxTokens}", chatOptions.MaxOutputTokens);
-            }
-            
-            if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
-            {
-                chatOptions.TopP = Convert.ToSingle(topP);
-                _logger.LogInformation("设置 TopP: {TopP}", chatOptions.TopP);
-            }
-        }
+        ParameterUtils.ApplyParametersToChatOptions(chatOptions, parameters);
 
         _logger.LogInformation("开始调用流式聊天完成服务(详细模式)");
 

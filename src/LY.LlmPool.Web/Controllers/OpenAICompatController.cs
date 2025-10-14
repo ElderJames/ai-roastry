@@ -10,6 +10,7 @@ using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
+using LY.LlmPool.Web.Components.ChatHelpers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
@@ -139,6 +140,7 @@ namespace LY.LlmPool.Web.Controllers
                 LlmApp? app = null;
                 string? promptContent = null;
                 LlmPrompt? prompt = null;
+                Dictionary<string, object>? modelParameters = null; // 从 Prompt.ModelParameters 解析的参数
                 List<AITool>? promptTools = null;
                 string? actualModelName = chatRequest.Model;
                 string? actualEndpointId = null;
@@ -203,14 +205,25 @@ namespace LY.LlmPool.Web.Controllers
                         {
                             promptContent = prompt.Content;
                             
-                            // 获取 Prompt 绑定的工具
-                            _logger.LogInformation("加载 Prompt {PromptId} 的工具...", prompt.Id);
-                            promptTools = await _toolProviderService.GetToolsForPromptAsync(prompt);
-                            if (promptTools != null && promptTools.Count > 0)
+                            // 解析 Prompt 的 ModelParameters
+                            if (!string.IsNullOrWhiteSpace(prompt.ModelParameters))
                             {
-                                _logger.LogInformation("成功加载 {Count} 个工具用于 Prompt {PromptId}", promptTools.Count, prompt.Id);
+                                modelParameters = ParameterUtils.ParseParametersToDict(prompt.ModelParameters);
+                                _logger.LogInformation("从 Prompt 解析模型参数: {ModelParameters}", prompt.ModelParameters);
                             }
                         }
+                    }
+                    
+                    // 🔧 获取 App 关联的所有工具（包括 App Tool 和 MCP Tool）
+                    _logger.LogInformation("加载 App {AppName} 的工具...", app.Name);
+                    promptTools = await _toolProviderService.GetToolsForAppAsync(app);
+                    if (promptTools != null && promptTools.Count > 0)
+                    {
+                        _logger.LogInformation("成功加载 {Count} 个工具用于 App {AppName}", promptTools.Count, app.Name);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("App {AppName} 没有关联的工具", app.Name);
                     }
 
                     if (config == null)
@@ -326,6 +339,7 @@ namespace LY.LlmPool.Web.Controllers
                             systemPrompt: promptContent,
                             tools: promptTools,
                             modelName: actualModelName,
+                            modelParameters: modelParameters,
                             cancellationToken: HttpContext.RequestAborted);
                     }
                     else
@@ -336,6 +350,7 @@ namespace LY.LlmPool.Web.Controllers
                             messages: convertedMessages,
                             systemPrompt: promptContent,
                             tools: promptTools,
+                            modelParameters: modelParameters,
                             cancellationToken: HttpContext.RequestAborted);
 
                         await WriteChatCompletionResponse(aiResponse, actualModelName);
@@ -698,48 +713,58 @@ namespace LY.LlmPool.Web.Controllers
             }).ToList();
         }
 
-    /// <summary>
-    /// 使用 Microsoft.Extensions.AI 处理聊天完成（简化版本）
-    /// </summary>
-    private async Task<AIChatResponse> ProcessChatWithAI(
-        LlmConfig config,
-        List<AIChatMessage> messages,
-        string? systemPrompt = null,
-        List<AITool>? tools = null,
-        bool stream = false,
-        CancellationToken cancellationToken = default)
-    {
-        // 创建 IChatClient
-        var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
-
-        // 转换消息
-        var aiMessages = ConvertToAIChatMessages(messages);
-
-        // 如果有系统提示，插入到开头
-        if (!string.IsNullOrEmpty(systemPrompt))
+        /// <summary>
+        /// 使用 Microsoft.Extensions.AI 处理聊天完成（简化版本）
+        /// </summary>
+        private async Task<AIChatResponse> ProcessChatWithAI(
+            LlmConfig config,
+            List<AIChatMessage> messages,
+            string? systemPrompt = null,
+            List<AITool>? tools = null,
+            Dictionary<string, object>? modelParameters = null,
+            bool stream = false,
+            CancellationToken cancellationToken = default)
         {
-            aiMessages.Insert(0, new AIChatMessage(ChatRole.System, systemPrompt));
+            // 创建 IChatClient
+            var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
+
+            // 转换消息
+            var aiMessages = messages;
+
+            // 如果有系统提示，插入到开头
+            if (!string.IsNullOrEmpty(systemPrompt))
+            {
+                aiMessages.Insert(0, new AIChatMessage(ChatRole.System, systemPrompt));
+            }
+
+            // 创建选项
+            var options = new ChatOptions();
+
+            // 添加工具（如果有）
+            if (tools != null && tools.Count > 0)
+            {
+                options.Tools = tools;
+                _logger.LogInformation("添加 {Count} 个工具到 ChatOptions", tools.Count);
+            }
+
+            // 应用模型参数（从 Prompt.ModelParameters）
+            if (modelParameters != null && modelParameters.Count > 0)
+            {
+                ParameterUtils.ApplyParametersToChatOptions(options, modelParameters);
+                _logger.LogInformation("应用 Prompt 模型参数到 ChatOptions");
+            }
+
+            // 调用 AI - 只支持非流式
+            if (stream)
+            {
+                throw new NotSupportedException("请使用 ProcessChatStreamingWithAI 处理流式响应");
+            }
+
+            var response = await chatClient.GetResponseAsync(aiMessages, options, cancellationToken);
+            return response;
         }
 
-        // 创建选项
-        var options = new ChatOptions();
-
-        // 添加工具（如果有）
-        if (tools != null && tools.Count > 0)
-        {
-            options.Tools = tools;
-            _logger.LogInformation("添加 {Count} 个工具到 ChatOptions", tools.Count);
-        }
-
-        // 调用 AI - 只支持非流式
-        if (stream)
-        {
-            throw new NotSupportedException("请使用 ProcessChatStreamingWithAI 处理流式响应");
-        }
-        
-        var response = await chatClient.GetResponseAsync(aiMessages, options, cancellationToken);
-        return response;
-    }        /// <summary>
+        /// <summary>
         /// 使用 Microsoft.Extensions.AI 处理流式聊天完成
         /// </summary>
         private async Task ProcessChatStreamingWithAI(
@@ -748,13 +773,14 @@ namespace LY.LlmPool.Web.Controllers
             string? systemPrompt = null,
             List<AITool>? tools = null,
             string? modelName = null,
+            Dictionary<string, object>? modelParameters = null,
             CancellationToken cancellationToken = default)
         {
             // 创建 IChatClient
             var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
 
             // 转换消息
-            var aiMessages = ConvertToAIChatMessages(messages);
+            var aiMessages = messages;
 
             // 如果有系统提示，插入到开头
             if (!string.IsNullOrEmpty(systemPrompt))
@@ -772,6 +798,13 @@ namespace LY.LlmPool.Web.Controllers
                 _logger.LogInformation("添加 {Count} 个工具到流式 ChatOptions", tools.Count);
             }
 
+            // 应用模型参数（从 Prompt.ModelParameters）
+            if (modelParameters != null && modelParameters.Count > 0)
+            {
+                ParameterUtils.ApplyParametersToChatOptions(options, modelParameters);
+                _logger.LogInformation("应用 Prompt 模型参数到 ChatOptions");
+            }
+
             // 设置响应头
             Response.StatusCode = (int)HttpStatusCode.OK;
             Response.ContentType = "text/event-stream";
@@ -787,39 +820,164 @@ namespace LY.LlmPool.Web.Controllers
                 if (cancellationToken.IsCancellationRequested)
                     break;
 
+                // 处理文本内容
                 var text = update.Text ?? string.Empty;
-                if (string.IsNullOrEmpty(text))
-                    continue;
-
-                fullContent.Append(text);
-
-                // 构建 SSE 格式的响应
-                var delta = firstChunk 
-                    ? (object)new { role = "assistant", content = text }
-                    : new { content = text };
-
-                var chunk = new
+                if (!string.IsNullOrEmpty(text))
                 {
-                    id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                    Object = "chat.completion.chunk",
-                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                    model = modelName,
-                    choices = new[]
+                    fullContent.Append(text);
+
+                    // 构建 SSE 格式的响应
+                    var delta = firstChunk 
+                        ? (object)new { role = "assistant", content = text }
+                        : new { content = text };
+
+                    var chunk = new
                     {
-                        new
+                        id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                        Object = "chat.completion.chunk",
+                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        model = modelName,
+                        choices = new[]
                         {
-                            index = 0,
-                            delta = delta,
-                            finish_reason = (string?)null
+                            new
+                            {
+                                index = 0,
+                                delta = delta,
+                                finish_reason = (string?)null
+                            }
+                        }
+                    };
+
+                    var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
+                    await Response.WriteAsync($"data: {json}\n\n");
+                    await Response.Body.FlushAsync(cancellationToken);
+
+                    firstChunk = false;
+                }
+
+                // 处理工具调用 (FunctionCallContent)
+                if (update.Contents != null)
+                {
+                    foreach (var content in update.Contents)
+                    {
+                        if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
+                        {
+                            var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
+                            
+                            // 序列化工具参数
+                            string argumentsJson;
+                            if (functionCall.Arguments != null && functionCall.Arguments.Count > 0)
+                            {
+                                argumentsJson = JsonSerializer.Serialize(functionCall.Arguments, _jsonSerializerOptions);
+                            }
+                            else
+                            {
+                                argumentsJson = "{}";
+                            }
+
+                            // 构建 OpenAI 格式的 tool_calls 更新
+                            var toolCallDelta = firstChunk
+                                ? (object)new
+                                {
+                                    role = "assistant",
+                                    tool_calls = new[]
+                                    {
+                                        new
+                                        {
+                                            index = 0,
+                                            id = callId,
+                                            type = "function",
+                                            function = new
+                                            {
+                                                name = functionCall.Name,
+                                                arguments = argumentsJson
+                                            }
+                                        }
+                                    }
+                                }
+                                : new
+                                {
+                                    tool_calls = new[]
+                                    {
+                                        new
+                                        {
+                                            index = 0,
+                                            id = callId,
+                                            type = "function",
+                                            function = new
+                                            {
+                                                name = functionCall.Name,
+                                                arguments = argumentsJson
+                                            }
+                                        }
+                                    }
+                                };
+
+                            var toolCallChunk = new
+                            {
+                                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                                Object = "chat.completion.chunk",
+                                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                model = modelName,
+                                choices = new[]
+                                {
+                                    new
+                                    {
+                                        index = 0,
+                                        delta = toolCallDelta,
+                                        finish_reason = (string?)null
+                                    }
+                                }
+                            };
+
+                            var toolCallJson = JsonSerializer.Serialize(toolCallChunk, _jsonSerializerOptions);
+                            await Response.WriteAsync($"data: {toolCallJson}\n\n");
+                            await Response.Body.FlushAsync(cancellationToken);
+
+                            _logger.LogInformation("返回工具调用 SSE 更新: {ToolName}, CallId: {CallId}", functionCall.Name, callId);
+                            firstChunk = false;
+                        }
+                        // 处理工具结果 (FunctionResultContent)
+                        else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
+                        {
+                            var callId = functionResult.CallId ?? string.Empty;
+                            var result = functionResult.Result?.ToString() ?? string.Empty;
+                            var isSuccess = functionResult.Exception == null;
+                            var errorMessage = functionResult.Exception?.Message;
+
+                            // 构建工具结果更新（使用 content 字段传递结果）
+                            var resultDelta = new
+                            {
+                                content = isSuccess 
+                                    ? $"\n[Tool Result: {callId}]\n{result}\n" 
+                                    : $"\n[Tool Error: {callId}]\n{errorMessage}\n"
+                            };
+
+                            var resultChunk = new
+                            {
+                                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                                Object = "chat.completion.chunk",
+                                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                model = modelName,
+                                choices = new[]
+                                {
+                                    new
+                                    {
+                                        index = 0,
+                                        delta = resultDelta,
+                                        finish_reason = (string?)null
+                                    }
+                                }
+                            };
+
+                            var resultJson = JsonSerializer.Serialize(resultChunk, _jsonSerializerOptions);
+                            await Response.WriteAsync($"data: {resultJson}\n\n");
+                            await Response.Body.FlushAsync(cancellationToken);
+
+                            _logger.LogInformation("返回工具结果 SSE 更新: CallId: {CallId}, Success: {Success}", callId, isSuccess);
                         }
                     }
-                };
-
-                var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
-                await Response.WriteAsync($"data: {json}\n\n");
-                await Response.Body.FlushAsync(cancellationToken);
-
-                firstChunk = false;
+                }
             }
 
             // 发送结束标记

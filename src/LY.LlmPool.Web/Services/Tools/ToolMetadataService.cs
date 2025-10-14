@@ -1,5 +1,6 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Models.Tools;
+using LY.LlmPool.Web.Services.Aggregation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using System.Text.Json;
@@ -13,7 +14,8 @@ public class ToolMetadataService
 {
     private readonly HybridCache _cache;
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
-    private readonly PromptParameterExtractor _parameterExtractor;
+    private readonly PromptParameterService _promptParameterService;
+    private readonly McpClientsFactory _mcpClientsFactory;
     private readonly ILogger<ToolMetadataService> _logger;
 
     private const string CacheKeyPrefix = "tool_metadata:";
@@ -22,12 +24,14 @@ public class ToolMetadataService
     public ToolMetadataService(
         HybridCache cache,
         IDbContextFactory<LlmDbContext> dbContextFactory,
-        PromptParameterExtractor parameterExtractor,
+        PromptParameterService promptParameterService,
+        McpClientsFactory mcpClientsFactory,
         ILogger<ToolMetadataService> logger)
     {
         _cache = cache;
         _dbContextFactory = dbContextFactory;
-        _parameterExtractor = parameterExtractor;
+        _promptParameterService = promptParameterService;
+        _mcpClientsFactory = mcpClientsFactory;
         _logger = logger;
     }
 
@@ -85,9 +89,9 @@ public class ToolMetadataService
         {
             try
             {
-                // 提取参数 (从 LlmPrompt.Content)
+                // 提取参数 (从 LlmPrompt.Content) - 支持带描述的参数格式 {{param|description}}
                 var promptTemplate = app.LlmPrompt?.Content ?? "";
-                var parameters = _parameterExtractor.ExtractParameters(promptTemplate);
+                var parameters = _promptParameterService.ExtractParameters(promptTemplate);
 
                 // 解析 ConfigJson 获取 parameterOverrides
                 Dictionary<string, object>? parameterOverrides = null;
@@ -103,7 +107,7 @@ public class ToolMetadataService
                 }
 
                 // 生成 JSON Schema
-                var schema = _parameterExtractor.GenerateParameterSchema(parameters, parameterOverrides);
+                var schema = _promptParameterService.GenerateParameterSchema(parameters, parameterOverrides);
 
                 // 创建 ToolMetadata
                 var metadata = new ToolMetadata
@@ -136,7 +140,7 @@ public class ToolMetadataService
     }
 
     /// <summary>
-    /// 扫描所有 MCP Tool 并缓存 (TODO: 集成 MCP SDK 后实现)
+    /// 扫描所有 MCP Tool 并缓存
     /// </summary>
     public async Task<List<ToolMetadata>> ScanMcpToolsAsync()
     {
@@ -153,24 +157,58 @@ public class ToolMetadataService
         {
             try
             {
-                // 简化实现：将每个 MCP Server 本身作为一个工具
-                // TODO: 未来需要从 MCP Server 获取实际的工具列表
-                var metadata = new ToolMetadata
+                _logger.LogDebug("Scanning tools from MCP Server: {ServerName} (ID: {ServerId})", 
+                    server.Name, server.Id);
+
+                // 获取 MCP Client
+                var client = await _mcpClientsFactory.GetMcpClientAsync(server.Id);
+                if (client == null)
                 {
-                    Name = server.Name,
-                    Description = server.Description ?? $"MCP Server: {server.Name}",
-                    Source = ToolSource.MCP,
-                    SourceId = server.Id,
-                    ParametersSchema = "{}",  // TODO: 从 SchemaCacheJson 或 MCP Server 获取
-                    ConfigJson = server.ConfigJson
-                };
+                    _logger.LogWarning("Failed to get MCP client for server: {ServerName}", server.Name);
+                    continue;
+                }
 
-                toolMetadataList.Add(metadata);
+                // 获取该 Server 的所有工具
+                var tools = await client.ListToolsAsync();
+                
+                _logger.LogDebug("Found {ToolCount} tools in MCP Server: {ServerName}", 
+                    tools.Count, server.Name);
 
-                // 缓存单个工具
-                await _cache.SetAsync($"{CacheKeyPrefix}{server.Name}", metadata);
+                // 为每个工具创建 ToolMetadata
+                foreach (var tool in tools)
+                {
+                    try
+                    {
+                        // 将 InputSchema 转换为 JSON 字符串
+                        var schemaJson = tool.ProtocolTool.InputSchema.ValueKind != JsonValueKind.Null 
+                            && tool.ProtocolTool.InputSchema.ValueKind != JsonValueKind.Undefined
+                            ? JsonSerializer.Serialize(tool.ProtocolTool.InputSchema)
+                            : "{}";
 
-                _logger.LogDebug("Cached MCP Tool: {Name}", server.Name);
+                        var metadata = new ToolMetadata
+                        {
+                            Name = tool.ProtocolTool.Name,
+                            Description = tool.ProtocolTool.Description ?? $"MCP Tool: {tool.ProtocolTool.Name}",
+                            Source = ToolSource.MCP,
+                            SourceId = $"{server.Id}:{tool.ProtocolTool.Name}", // 使用 "serverId:toolName" 作为唯一标识
+                            ParametersSchema = schemaJson,
+                            ConfigJson = server.ConfigJson
+                        };
+
+                        toolMetadataList.Add(metadata);
+
+                        // 缓存单个工具
+                        await _cache.SetAsync($"{CacheKeyPrefix}{metadata.Name}", metadata);
+
+                        _logger.LogDebug("Cached MCP Tool: {ToolName} from server {ServerName}", 
+                            tool.ProtocolTool.Name, server.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to process MCP Tool: {ToolName} from server {ServerName}", 
+                            tool.ProtocolTool.Name, server.Name);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -179,7 +217,8 @@ public class ToolMetadataService
             }
         }
 
-        _logger.LogInformation("Scanned {Count} MCP Tools", toolMetadataList.Count);
+        _logger.LogInformation("Scanned {Count} MCP Tools from {ServerCount} servers", 
+            toolMetadataList.Count, mcpServers.Count);
         return toolMetadataList;
     }
 
@@ -285,7 +324,7 @@ public class ToolMetadataService
 
             // 生成新的 ToolMetadata
             var promptTemplate = app.LlmPrompt?.Content ?? "";
-            var parameters = _parameterExtractor.ExtractParameters(promptTemplate);
+            var parameters = _promptParameterService.ExtractParameters(promptTemplate);
 
             Dictionary<string, object>? parameterOverrides = null;
             if (!string.IsNullOrWhiteSpace(app.ConfigJson))
@@ -299,7 +338,7 @@ public class ToolMetadataService
                 }
             }
 
-            var schema = _parameterExtractor.GenerateParameterSchema(parameters, parameterOverrides);
+            var schema = _promptParameterService.GenerateParameterSchema(parameters, parameterOverrides);
 
             var metadata = new ToolMetadata
             {
@@ -391,7 +430,7 @@ public class ToolMetadataService
     /// <summary>
     /// 刷新所有工具列表缓存
     /// </summary>
-    private async Task RefreshAllToolsCacheAsync()
+    public async Task RefreshAllToolsCacheAsync()
     {
         _logger.LogDebug("Refreshing all tools cache...");
 

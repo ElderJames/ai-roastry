@@ -1,5 +1,6 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Http;
 using System.Text.Json;
@@ -18,14 +19,22 @@ public class McpServerConfigService
     private readonly ILoggerFactory _loggerFactory;
     private readonly IHttpClientFactory? _httpClientFactory;
     private readonly IMcpClientFactory? _mcpClientFactory;
+    private readonly ToolMetadataService? _toolMetadataService;
 
-    public McpServerConfigService(LlmDbContext db, ILogger<McpServerConfigService> logger, ILoggerFactory loggerFactory, IHttpClientFactory? httpClientFactory = null, IMcpClientFactory? mcpClientFactory = null)
+    public McpServerConfigService(
+        LlmDbContext db, 
+        ILogger<McpServerConfigService> logger, 
+        ILoggerFactory loggerFactory, 
+        IHttpClientFactory? httpClientFactory = null, 
+        IMcpClientFactory? mcpClientFactory = null,
+        ToolMetadataService? toolMetadataService = null)
     {
         _db = db;
         _logger = logger;
         _loggerFactory = loggerFactory;
         _httpClientFactory = httpClientFactory;
         _mcpClientFactory = mcpClientFactory;
+        _toolMetadataService = toolMetadataService;
     }
 
     // Backwards-compatible constructor used by tests: (db, logger, httpClientFactory)
@@ -39,6 +48,13 @@ public class McpServerConfigService
         input.Id = Guid.NewGuid().ToString("N");
         _db.McpServerConfigs.Add(input);
         await _db.SaveChangesAsync(ct);
+        
+        // 刷新工具缓存
+        if (_toolMetadataService != null)
+        {
+            _ = Task.Run(async () => await _toolMetadataService.RefreshAllToolsCacheAsync());
+        }
+        
         return input;
     }
 
@@ -67,6 +83,13 @@ public class McpServerConfigService
         entity.Description = updated.Description;
         entity.SchemaCacheJson = updated.SchemaCacheJson;
         await _db.SaveChangesAsync(ct);
+        
+        // 刷新工具缓存
+        if (_toolMetadataService != null)
+        {
+            _ = Task.Run(async () => await _toolMetadataService.RefreshAllToolsCacheAsync());
+        }
+        
         return true;
     }
 
@@ -76,6 +99,13 @@ public class McpServerConfigService
         if (entity == null) return false;
         _db.McpServerConfigs.Remove(entity);
         await _db.SaveChangesAsync(ct);
+        
+        // 刷新工具缓存
+        if (_toolMetadataService != null)
+        {
+            _ = Task.Run(async () => await _toolMetadataService.RefreshAllToolsCacheAsync());
+        }
+        
         return true;
     }
 

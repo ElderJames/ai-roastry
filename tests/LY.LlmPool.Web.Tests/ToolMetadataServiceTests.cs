@@ -4,12 +4,15 @@ using System.Threading.Tasks;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models.Tools;
+using LY.LlmPool.Web.Services;
+using LY.LlmPool.Web.Services.Aggregation;
 using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Moq;
 using Xunit;
 
 namespace LY.LlmPool.Web.Tests;
@@ -39,8 +42,12 @@ public class ToolMetadataServiceTests : IAsyncLifetime
             options.MaximumKeyLength = 1024;
         });
         
+        // 注册 McpClientsFactory (真实实例,因为它是 sealed 类)
+        services.AddSingleton<McpClientsFactory>();
+        
         // 注册服务
-        services.AddTransient<PromptParameterExtractor>();
+        // PromptParameterExtractor has been merged into PromptParameterService
+        services.AddTransient<PromptParameterService>();
         services.AddTransient<ToolMetadataService>();
         services.AddLogging();
         

@@ -19,18 +19,15 @@ public class ToolProviderService
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ToolProviderService> _logger;
     private readonly PromptParameterService _promptParameterService;
-    private readonly PromptParameterExtractor _parameterExtractor;
 
     public ToolProviderService(
         IServiceProvider serviceProvider, 
         ILogger<ToolProviderService> logger,
-        PromptParameterService promptParameterService,
-        PromptParameterExtractor parameterExtractor)
+        PromptParameterService promptParameterService)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
         _promptParameterService = promptParameterService;
-        _parameterExtractor = parameterExtractor;
     }
 
     /// <summary>
@@ -155,6 +152,65 @@ public class ToolProviderService
     }
 
     /// <summary>
+    /// 从 App 关联的工具获取 AITool 列表
+    /// App 通过其 Prompt 的 PromptTools 关联多个 App Tool 和 MCP Tool
+    /// </summary>
+    public async Task<List<AITool>> GetToolsForAppAsync(LlmApp? app)
+    {
+        var tools = new List<AITool>();
+        
+        if (app == null)
+        {
+            _logger.LogWarning("GetToolsForAppAsync called with null app");
+            return tools;
+        }
+
+        _logger.LogInformation("=== GetToolsForAppAsync ===");
+        _logger.LogInformation("App ID: {AppId}, Name: {AppName}, Type: {AppType}", app.Id, app.Name, app.AppType);
+
+        // 如果 App 有关联的 Prompt，从 Prompt 的 PromptTools 加载工具
+        if (!string.IsNullOrEmpty(app.PromptId))
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var llmPoolService = scope.ServiceProvider.GetRequiredService<LlmPoolService>();
+            
+            var prompt = await llmPoolService.GetPromptByIdAsync(app.PromptId);
+            if (prompt != null)
+            {
+                _logger.LogInformation("App {AppName} has associated Prompt {PromptId}, loading tools from PromptTools", 
+                    app.Name, prompt.Id);
+                
+                // 直接使用 GetToolsForPromptAsync，它会处理所有 PromptTool（包括 App Tool 和 MCP Tool）
+                tools = await GetToolsForPromptAsync(prompt);
+                
+                if (tools.Any())
+                {
+                    _logger.LogInformation("Successfully loaded {Count} tools from Prompt {PromptId} for App {AppName}", 
+                        tools.Count, prompt.Id, app.Name);
+                }
+                else
+                {
+                    _logger.LogInformation("Prompt {PromptId} has no tools configured for App {AppName}", 
+                        prompt.Id, app.Name);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("App {AppId} references Prompt {PromptId} but Prompt not found", 
+                    app.Id, app.PromptId);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("App {AppId} ({AppName}) has no associated Prompt, no tools to load", 
+                app.Id, app.Name);
+        }
+
+        _logger.LogInformation("Total AITools loaded for App {AppName}: {Count}", app.Name, tools.Count);
+        return tools;
+    }
+
+    /// <summary>
     /// 根据 PromptTool 创建对应的 AITool
     /// </summary>
     private async Task<AITool?> CreateAIToolAsync(PromptTool promptTool)
@@ -183,21 +239,40 @@ public class ToolProviderService
     private async Task<AITool?> CreateAppToolAsync(string appId)
     {
         using var scope = _serviceProvider.CreateScope();
-        var appService = scope.ServiceProvider.GetRequiredService<AppService>();
         
         _logger.LogInformation("CreateAppToolAsync: Looking for App with ID {AppId}", appId);
         
-        // 加载 App 信息
-        var app = await appService.GetAppByIdAsync(appId);
-        if (app == null)
+        // 🔧 优化：先从 ToolMetadataService 缓存查找，验证工具是否存在
+        var toolMetadataService = scope.ServiceProvider.GetRequiredService<ToolMetadataService>();
+        var allTools = await toolMetadataService.GetAllToolsAsync();
+        var toolMetadata = allTools.FirstOrDefault(t => 
+            t.Source == ToolSource.App && 
+            t.SourceId.ToString() == appId);
+        
+        if (toolMetadata == null)
         {
-            _logger.LogError(
-                "❌ Tool App not found: ID {AppId}. " +
+            _logger.LogWarning(
+                "⚠️  App Tool not found in cache: ID {AppId}. " +
                 "Possible causes: " +
                 "1) App was deleted but PromptTool binding still exists; " +
                 "2) ToolMetadataService cache is outdated; " +
-                "3) Database migration issue. " +
-                "Solution: Edit the Prompt and remove/re-add the tool binding, or check database integrity.",
+                "3) App is not of type 'Tool'. ",
+                appId);
+            return null;
+        }
+        
+        _logger.LogInformation("Found App Tool in cache: {ToolName}", toolMetadata.Name);
+        
+        // 加载完整的 App 信息（需要 Prompt, Config 等）
+        var appService = scope.ServiceProvider.GetRequiredService<AppService>();
+        var app = await appService.GetAppByIdAsync(appId);
+        
+        if (app == null)
+        {
+            _logger.LogError(
+                "❌ Tool App not found in database: ID {AppId}. " +
+                "Cache is out of sync with database. " +
+                "Please refresh tool metadata cache.",
                 appId);
             return null;
         }
@@ -276,8 +351,8 @@ public class ToolProviderService
         _logger.LogInformation("Tool App {AppName} using Prompt: {PromptName}", 
             app.Name, toolPrompt.Name);
 
-        // 使用 PromptParameterExtractor 提取参数信息并生成 JSON Schema
-        var paramNames = new List<string>();
+        // 使用 PromptParameterService 提取参数信息(包含描述)并生成 JSON Schema
+        var paramInfos = new List<ParameterInfo>();
         string parameterSchemaJson = JsonSerializer.Serialize(new
         {
             type = "object",
@@ -287,12 +362,13 @@ public class ToolProviderService
         
         if (toolPrompt != null && !string.IsNullOrWhiteSpace(toolPrompt.Content))
         {
-            paramNames = _parameterExtractor.ExtractParameters(toolPrompt.Content).ToList();
+            // 使用 PromptParameterService 提取参数(支持描述: {{param|desc}})
+            paramInfos = _promptParameterService.ExtractParameters(toolPrompt.Content);
             
-            if (paramNames.Any())
+            if (paramInfos.Any())
             {
-                // 使用 PromptParameterExtractor 生成 OpenAPI 风格的 JSON Schema
-                parameterSchemaJson = _parameterExtractor.GenerateParameterSchema(paramNames, null);
+                // 使用 PromptParameterService 生成 OpenAPI 风格的 JSON Schema (包含参数描述)
+                parameterSchemaJson = _promptParameterService.GenerateParameterSchema(paramInfos, null);
                 _logger.LogInformation("Generated parameter schema for {AppName}: {Schema}", 
                     app.Name, parameterSchemaJson);
             }
@@ -390,7 +466,7 @@ public class ToolProviderService
         var aiFunction = new AppToolAIFunction(baseFunction, parameterSchemaJson);
 
         _logger.LogInformation("Created AIFunction for App Tool: {AppName} with {ParamCount} parameters", 
-            app.Name, paramNames.Count);
+            app.Name, paramInfos.Count);
 
         return aiFunction;
     }
@@ -426,8 +502,16 @@ public class ToolProviderService
         }
         
         // 解析 MCP Server ID 和 Tool Name
-        var serverId = mcpTool.SourceId;
-        var toolName = mcpTool.Name;
+        // SourceId 格式: "serverId:toolName"
+        var parts = mcpTool.SourceId.Split(':', 2);
+        if (parts.Length != 2)
+        {
+            _logger.LogError("Invalid MCP Tool SourceId format: {SourceId}. Expected format: 'serverId:toolName'", mcpTool.SourceId);
+            return null;
+        }
+        
+        var serverId = parts[0];
+        var toolName = parts[1]; // 使用 SourceId 中的工具名称，而不是 mcpTool.Name
         var toolDescription = mcpTool.Description ?? $"MCP Tool: {toolName}";
         
         _logger.LogInformation("Creating MCP Tool: {ToolName} from Server: {ServerId}", toolName, serverId);
@@ -435,8 +519,8 @@ public class ToolProviderService
         // ========== 优化 3: 获取 McpClientsFactory（利用其内置缓存） ==========
         var mcpClientsFactory = scope.ServiceProvider.GetRequiredService<McpClientsFactory>();
         
-        // 创建执行委托
-        var executeFunc = async (IReadOnlyList<KeyValuePair<string, object?>> arguments, CancellationToken ct) =>
+        // 创建执行委托（使用 AIFunctionArguments，与 App Tool 保持一致）
+        var executeFunc = async (AIFunctionArguments arguments, CancellationToken ct) =>
         {
             _logger.LogInformation("Executing MCP Tool {ToolName} (Server: {ServerId}) with arguments: {Args}", 
                 toolName, serverId, string.Join(", ", arguments.Select(a => $"{a.Key}={a.Value}")));
@@ -452,19 +536,28 @@ public class ToolProviderService
                     return errorMsg;
                 }
                 
-                // 转换参数为 Dictionary
+                // 转换 AIFunctionArguments 为 Dictionary（与 App Tool 相同的处理方式）
                 Dictionary<string, object?>? mcpArguments = null;
                 if (arguments.Any())
                 {
                     mcpArguments = new Dictionary<string, object?>();
                     foreach (var arg in arguments)
                     {
-                        mcpArguments[arg.Key] = arg.Value;
+                        if (arg.Value != null)
+                        {
+                            mcpArguments[arg.Key] = arg.Value;
+                        }
                     }
                 }
                 
-                // 调用 MCP Tool
-                var result = await client.CallToolAsync(toolName, mcpArguments);
+                _logger.LogInformation("Calling MCP Tool {ToolName} with arguments: {Args}", 
+                    toolName, System.Text.Json.JsonSerializer.Serialize(mcpArguments));
+                
+                // 调用 MCP Tool（显式转换为 IReadOnlyDictionary，与 McpInspectorService 保持一致）
+                var result = await client.CallToolAsync(toolName, mcpArguments as IReadOnlyDictionary<string, object?>);
+                
+                _logger.LogInformation("MCP Tool {ToolName} returned result type: {ResultType}", 
+                    toolName, result?.GetType().Name ?? "null");
                 
                 // ========== 优化 2: 智能结果解析 ==========
                 if (result != null)
@@ -483,21 +576,44 @@ public class ToolProviderService
             catch (Exception ex)
             {
                 var errorMsg = $"[MCP Error] Failed to execute tool '{toolName}': {ex.Message}";
-                _logger.LogError(ex, "Failed to execute MCP Tool {ToolName} on Server {ServerId}", toolName, serverId);
+                _logger.LogError(ex, "Failed to execute MCP Tool {ToolName} on Server {ServerId}. Exception Details: {ExceptionDetails}", 
+                    toolName, serverId, ex.ToString());
                 return errorMsg;
             }
         };
 
         // ========== 优化 1: 参数 Schema 支持 ==========
-        // Microsoft.Extensions.AI 会从委托签名自动推断参数
-        // MCP Tool 的参数 Schema 已在 ToolMetadata.ParametersSchema 中存储
-        // 注意: AIFunctionFactory.Create 的参数推断足够智能，无需显式传递 JSON Schema
-        
-        var aiFunction = AIFunctionFactory.Create(
+        // 先创建基本的 AIFunction（没有参数 Schema）
+        var baseFunction = AIFunctionFactory.Create(
             executeFunc,
             name: toolName,
             description: toolDescription
         );
+        
+        // 如果有参数 Schema，则用自定义包装类覆盖 JsonSchema
+        AIFunction aiFunction;
+        if (!string.IsNullOrWhiteSpace(mcpTool.ParametersSchema))
+        {
+            try
+            {
+                _logger.LogInformation("Tool {ToolName} has parameters schema: {Schema}", 
+                    toolName, mcpTool.ParametersSchema);
+                
+                aiFunction = new McpToolAIFunction(baseFunction, mcpTool.ParametersSchema);
+                
+                _logger.LogInformation("Created AIFunction with custom schema for MCP Tool: {ToolName}", toolName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse parameters schema for tool {ToolName}, using default function", toolName);
+                aiFunction = baseFunction;
+            }
+        }
+        else
+        {
+            _logger.LogInformation("Tool {ToolName} has no parameters schema", toolName);
+            aiFunction = baseFunction;
+        }
 
         _logger.LogInformation("Created AIFunction for MCP Tool: {ToolName} (Server: {ServerId})", 
             toolName, serverId);

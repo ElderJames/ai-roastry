@@ -4,97 +4,80 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 namespace LY.LlmPool.Web.Services;
 
 /// <summary>
-/// 模型参数辅助类,统一处理参数的解析和转换
+/// 模型参数辅助类 - 用于处理 JSON 格式的模型参数
 /// </summary>
 public static class ModelParameterHelper
 {
     /// <summary>
-    /// 从 JSON 字符串解析参数字典
+    /// 从 JSON 字符串解析参数
     /// </summary>
-    /// <param name="jsonString">JSON 格式的参数字符串,如 {"max_tokens": 2000, "thinking_enabled": true}</param>
-    /// <returns>参数字典,如果解析失败或为空则返回 null</returns>
-    public static Dictionary<string, object>? ParseFromJson(string? jsonString)
+    public static Dictionary<string, object>? ParseFromJson(string? json)
     {
-        if (string.IsNullOrWhiteSpace(jsonString))
+        if (string.IsNullOrWhiteSpace(json))
+        {
             return null;
+        }
 
         try
         {
-            var jsonDoc = JsonDocument.Parse(jsonString);
-            var result = new Dictionary<string, object>();
-
-            foreach (var property in jsonDoc.RootElement.EnumerateObject())
+            var result = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+            if (result == null)
             {
-                var value = property.Value.ValueKind switch
-                {
-                    JsonValueKind.Number => property.Value.TryGetInt32(out var intVal) ? (object)intVal : property.Value.GetDouble(),
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    JsonValueKind.String => property.Value.GetString() ?? string.Empty,
-                    _ => property.Value.ToString()
-                };
-                result[property.Name] = value;
+                return null;
             }
 
-            return result.Count > 0 ? result : null;
+            var parameters = new Dictionary<string, object>();
+            foreach (var kvp in result)
+            {
+                parameters[kvp.Key] = ConvertJsonElement(kvp.Value);
+            }
+
+            return parameters;
         }
-        catch (JsonException)
+        catch
         {
             return null;
         }
     }
 
     /// <summary>
-    /// 从字符串键值对格式解析参数字典
+    /// 从键值对字符串解析参数 (如: "temperature=0.7,max_tokens=100")
     /// </summary>
-    /// <param name="parametersString">键值对格式的参数字符串,如 "temperature=0.7,max_tokens=100"</param>
-    /// <returns>参数字典,如果解析失败或为空则返回 null</returns>
-    public static Dictionary<string, object>? ParseFromKeyValueString(string? parametersString)
+    public static Dictionary<string, object>? ParseFromKeyValueString(string? input)
     {
-        if (string.IsNullOrWhiteSpace(parametersString))
+        if (string.IsNullOrWhiteSpace(input))
+        {
             return null;
+        }
 
-        var result = new Dictionary<string, object>();
-        var pairs = parametersString.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var pairs = input.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
 
         foreach (var pair in pairs)
         {
-            var parts = pair.Split(new[] { '=', ':' }, 2);
-            if (parts.Length != 2) continue;
+            var parts = pair.Split(new[] { '=', ':' }, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2)
+            {
+                var key = parts[0].Trim();
+                var value = parts[1].Trim();
 
-            var key = parts[0].Trim().ToLowerInvariant();
-            var value = parts[1].Trim();
-
-            // 根据常见的参数名转换为合适的类型
-            if (key == "temperature" || key == "temp" || key == "top_p" || key == "topp")
-            {
-                if (double.TryParse(value, out var d))
-                    result[key] = d;
-            }
-            else if (key == "max_tokens" || key == "tokens" || key == "maxtokens")
-            {
-                if (int.TryParse(value, out var i))
-                    result[key] = i;
-            }
-            else if (value.Equals("true", StringComparison.OrdinalIgnoreCase))
-            {
-                result[key] = true;
-            }
-            else if (value.Equals("false", StringComparison.OrdinalIgnoreCase))
-            {
-                result[key] = false;
-            }
-            else if (int.TryParse(value, out var intVal))
-            {
-                result[key] = intVal;
-            }
-            else if (double.TryParse(value, out var doubleVal))
-            {
-                result[key] = doubleVal;
-            }
-            else
-            {
-                result[key] = value;
+                // 尝试解析为合适的类型
+                if (bool.TryParse(value, out var boolValue))
+                {
+                    result[key] = boolValue;
+                }
+                else if (int.TryParse(value, out var intValue))
+                {
+                    result[key] = intValue;
+                }
+                else if (double.TryParse(value, out var doubleValue))
+                {
+                    result[key] = doubleValue;
+                }
+                else
+                {
+                    result[key] = value;
+                }
             }
         }
 
@@ -102,23 +85,15 @@ public static class ModelParameterHelper
     }
 
     /// <summary>
-    /// 合并多个参数字典,后面的字典会覆盖前面的同名参数
+    /// 合并多个参数字典 (后面的优先级更高)
     /// </summary>
-    /// <param name="parameterDicts">要合并的参数字典列表</param>
-    /// <returns>合并后的参数字典,如果所有输入都为空则返回 null</returns>
-    public static Dictionary<string, object>? Merge(params Dictionary<string, object>?[] parameterDicts)
+    public static Dictionary<string, object>? Merge(params Dictionary<string, object>?[] dictionaries)
     {
-        Dictionary<string, object>? result = null;
-
-        foreach (var dict in parameterDicts)
+        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        
+        foreach (var dict in dictionaries)
         {
-            if (dict == null || dict.Count == 0) continue;
-
-            if (result == null)
-            {
-                result = new Dictionary<string, object>(dict);
-            }
-            else
+            if (dict != null)
             {
                 foreach (var kvp in dict)
                 {
@@ -127,80 +102,132 @@ public static class ModelParameterHelper
             }
         }
 
-        return result;
+        return result.Count > 0 ? result : null;
     }
 
     /// <summary>
-    /// 验证 JSON 字符串格式是否正确
+    /// 验证 JSON 格式
     /// </summary>
-    /// <param name="jsonString">要验证的 JSON 字符串</param>
-    /// <param name="errorMessage">如果验证失败,返回错误信息</param>
-    /// <returns>验证是否成功</returns>
-    public static bool ValidateJson(string? jsonString, out string? errorMessage)
+    public static bool ValidateJson(string? json, out string? errorMessage)
     {
-        if (string.IsNullOrWhiteSpace(jsonString))
+        errorMessage = null;
+
+        if (string.IsNullOrWhiteSpace(json))
         {
-            errorMessage = null;
-            return true; // 空字符串视为有效
+            return true; // 空字符串被认为是有效的
         }
 
         try
         {
-            using var doc = JsonDocument.Parse(jsonString);
-            
-            // 检查是否为对象类型
+            using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind != JsonValueKind.Object)
             {
                 errorMessage = "Must be a JSON object";
                 return false;
             }
-            
-            errorMessage = null;
             return true;
         }
         catch (JsonException ex)
         {
-            errorMessage = $"Invalid JSON: {ex.Message}";
+            errorMessage = "Invalid JSON: " + ex.Message;
             return false;
         }
     }
 
     /// <summary>
-    /// 将参数字典应用到 OpenAIPromptExecutionSettings
+    /// 应用参数到 OpenAI 执行设置
     /// </summary>
-    /// <param name="settings">要应用参数的 ExecutionSettings 对象</param>
-    /// <param name="parameters">参数字典</param>
     public static void ApplyToExecutionSettings(OpenAIPromptExecutionSettings settings, Dictionary<string, object>? parameters)
     {
-        if (parameters == null || parameters.Count == 0) return;
-
-        // Temperature
-        if (parameters.TryGetValue("temperature", out var temp) || parameters.TryGetValue("temp", out temp))
+        if (parameters == null || parameters.Count == 0)
         {
-            if (temp is double tempDouble)
-                settings.Temperature = tempDouble;
-            else if (double.TryParse(temp?.ToString(), out var tempValue))
-                settings.Temperature = tempValue;
+            return;
         }
 
-        // Max Tokens
-        if (parameters.TryGetValue("max_tokens", out var tokens) || 
-            parameters.TryGetValue("tokens", out tokens) || 
-            parameters.TryGetValue("maxtokens", out tokens))
+        // max_tokens (支持替代名称: tokens)
+        if (TryGetValue(parameters, out var maxTokens, "max_tokens", "tokens"))
         {
-            if (tokens is int tokensInt)
-                settings.MaxTokens = tokensInt;
-            else if (int.TryParse(tokens?.ToString(), out var tokensValue))
-                settings.MaxTokens = tokensValue;
+            settings.MaxTokens = Convert.ToInt32(maxTokens);
         }
 
-        // Top P
-        if (parameters.TryGetValue("top_p", out var topP) || parameters.TryGetValue("topp", out topP))
+        // temperature (支持替代名称: temp)
+        if (TryGetValue(parameters, out var temperature, "temperature", "temp"))
         {
-            if (topP is double topPDouble)
-                settings.TopP = topPDouble;
-            else if (double.TryParse(topP?.ToString(), out var topPValue))
-                settings.TopP = topPValue;
+            settings.Temperature = Convert.ToDouble(temperature);
         }
+
+        // top_p (支持替代名称: topp)
+        if (TryGetValue(parameters, out var topP, "top_p", "topp"))
+        {
+            settings.TopP = Convert.ToDouble(topP);
+        }
+
+        // frequency_penalty (支持替代名称: freq_penalty, frequency)
+        if (TryGetValue(parameters, out var frequencyPenalty, "frequency_penalty", "freq_penalty", "frequency"))
+        {
+            settings.FrequencyPenalty = Convert.ToDouble(frequencyPenalty);
+        }
+
+        // presence_penalty (支持替代名称: pres_penalty, presence)
+        if (TryGetValue(parameters, out var presencePenalty, "presence_penalty", "pres_penalty", "presence"))
+        {
+            settings.PresencePenalty = Convert.ToDouble(presencePenalty);
+        }
+    }
+
+    /// <summary>
+    /// 尝试从字典中获取值(支持多个可能的键名,不区分大小写)
+    /// </summary>
+    private static bool TryGetValue(Dictionary<string, object> parameters, out object? value, params string[] keys)
+    {
+        value = null;
+        foreach (var key in keys)
+        {
+            foreach (var kvp in parameters)
+            {
+                if (string.Equals(kvp.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = kvp.Value;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 转换 JsonElement 为合适的对象类型
+    /// </summary>
+    private static object ConvertJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString() ?? string.Empty,
+            JsonValueKind.Number => ConvertNumber(element),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null!,
+            _ => element.ToString()
+        };
+    }
+
+    /// <summary>
+    /// 转换数字类型的 JsonElement
+    /// </summary>
+    private static object ConvertNumber(JsonElement element)
+    {
+        // 优先尝试转换为整数
+        if (element.TryGetInt64(out var int64Value))
+        {
+            // 如果值在 int32 范围内,返回 int,否则返回 long
+            if (int64Value >= int.MinValue && int64Value <= int.MaxValue)
+            {
+                return (int)int64Value;
+            }
+            return int64Value;
+        }
+
+        // 如果不是整数,返回 double
+        return element.GetDouble();
     }
 }

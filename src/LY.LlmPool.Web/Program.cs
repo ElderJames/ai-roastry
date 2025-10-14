@@ -63,14 +63,15 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<LlmPoolService>();
 builder.Services.AddScoped<IChatClientService, ChatClientService>();
 builder.Services.AddScoped(sp => (ChatClientService)sp.GetRequiredService<IChatClientService>());
-builder.Services.AddScoped<PromptParameterService>();
+builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状态服务,可被 Singleton 依赖
+builder.Services.AddSingleton<PromptEnvironmentService>(); // Singleton - 环境变量替换服务
 builder.Services.AddScoped<CallRecordService>();
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
 builder.Services.AddScoped<McpServerConfigService>();
 // Using ModelContextProtocol SDK for MCP discovery (no custom SSE client registered)
 
 // Add Tool Metadata Services
-builder.Services.AddSingleton<LY.LlmPool.Web.Services.Tools.PromptParameterExtractor>();
+// PromptParameterExtractor has been merged into PromptParameterService
 builder.Services.AddSingleton<LY.LlmPool.Web.Services.Tools.ToolMetadataService>();
 
 // Configure HybridCache for tool metadata caching

@@ -68,9 +68,14 @@ public class TestConfigRecord
     public string? Response { get; set; }
     
     /// <summary>
-    /// 完整的响应片段（包含文本和工具调用）
+    /// 完整的响应片段（包含文本和工具调用）- 已弃用，使用 ChatHistory
     /// </summary>
     public List<Models.ResponseSegment>? ResponseSegments { get; set; }
+    
+    /// <summary>
+    /// 完整的聊天历史（包含用户消息、助手响应、工具调用等）
+    /// </summary>
+    public List<Microsoft.Extensions.AI.ChatMessage>? ChatHistory { get; set; }
     
     public string? Error { get; set; }
 } 

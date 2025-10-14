@@ -67,7 +67,7 @@ public class AgentStreamingPrefixTests
             capturedChunks.Add(text);
         }
 
-        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
 
         // Act
         await strategy.ExecuteAsync(
@@ -141,7 +141,7 @@ public class AgentStreamingPrefixTests
             capturedChunks.Add(text);
         }
 
-        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
 
         // Act
         await strategy.ExecuteAsync(
@@ -228,7 +228,7 @@ public class AgentStreamingPrefixTests
             capturedByAgent[agentName].Add(text);
         }
 
-        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
 
         // Act
         await strategy.ExecuteAsync(
@@ -293,7 +293,7 @@ public class AgentStreamingPrefixTests
             fullOutput.Append(text);
         }
 
-        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var mockToolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
 
         // Act
         await strategy.ExecuteAsync(app, userMessages, mockToolProvider, MockMessage, MockStreamingMessage, ProgressCallback);

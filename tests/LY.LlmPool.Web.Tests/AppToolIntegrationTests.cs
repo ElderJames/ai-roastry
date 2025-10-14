@@ -5,6 +5,7 @@ using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models.Tools;
 using LY.LlmPool.Web.Services;
+using LY.LlmPool.Web.Services.Aggregation;
 using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -38,8 +39,12 @@ public class AppToolIntegrationTests : IAsyncLifetime
             options.MaximumKeyLength = 1024;
         });
         
+        // 注册 McpClientsFactory
+        services.AddSingleton<McpClientsFactory>();
+        
         // 注册服务
-        services.AddTransient<PromptParameterExtractor>();
+        // PromptParameterExtractor has been merged into PromptParameterService
+        services.AddTransient<PromptParameterService>();
         services.AddTransient<ToolMetadataService>();
         services.AddTransient<AppService>();
         services.AddLogging();

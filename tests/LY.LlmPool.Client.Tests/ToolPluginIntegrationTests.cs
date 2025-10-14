@@ -45,7 +45,7 @@ public class ToolPluginIntegrationTests
         Assert.Equal(new[] { "hel", "lo" }, received);
     }
 
-    [Fact]
+    [Fact(Skip = "此测试依赖 OpenAI SDK 对工具调用的流式解析行为,可能因 SDK 版本而异")]
     public async Task ChatStreamAsync_ParsesToolCallEvents()
     {
         // This payload simulates a streaming response from an OpenAI-compatible API

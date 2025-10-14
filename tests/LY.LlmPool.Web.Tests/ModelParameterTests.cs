@@ -19,10 +19,23 @@ public class ModelParameterTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(4, result.Count);
-        Assert.Equal(2000, result["max_tokens"]);
-        Assert.Equal(0.7, result["temperature"]);
-        Assert.Equal(0.9, result["top_p"]);
-        Assert.Equal(true, result["thinking_enabled"]);
+        
+        // 检查类型和值
+        var maxTokens = result["max_tokens"];
+        Assert.IsType<int>(maxTokens);
+        Assert.Equal(2000, (int)maxTokens);
+        
+        var temperature = result["temperature"];
+        Assert.IsType<double>(temperature);
+        Assert.Equal(0.7, (double)temperature);
+        
+        var topP = result["top_p"];
+        Assert.IsType<double>(topP);
+        Assert.Equal(0.9, (double)topP);
+        
+        var thinkingEnabled = result["thinking_enabled"];
+        Assert.IsType<bool>(thinkingEnabled);
+        Assert.True((bool)thinkingEnabled);
     }
 
     [Fact]

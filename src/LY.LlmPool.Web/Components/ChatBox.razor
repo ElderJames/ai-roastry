@@ -4,15 +4,13 @@
 @using LY.LlmPool.Client
 @using System.Net.Http.Json
 @using Microsoft.AspNetCore.Http
-@using Microsoft.SemanticKernel.ChatCompletion
-@using Microsoft.SemanticKernel.Connectors.OpenAI
-@using Microsoft.SemanticKernel
 @using System.Text
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Forms
 @using System.ComponentModel
 @using System.Text.Json
 @using LY.LlmPool.Web.Components.ChatHelpers
+@using Microsoft.Extensions.AI
 
 @inject ChatClientService ChatClientService
 @inject IServiceProvider Services
@@ -55,7 +53,7 @@
                             {
                                 foreach (var item in message.ContentItems)
                                 {
-                                    if (item is TextContent textContent)
+                                    if (item is Microsoft.Extensions.AI.TextContent textContent)
                                     {
                                         var itemSegments = ParseMessageSegments(textContent.Text ?? string.Empty);
                                         if (itemSegments.HasThinking)
@@ -80,10 +78,10 @@
                                             <div class="message-text">@itemSegments.Visible</div>
                                         }
                                     }
-                                    else if (item is ImageContent imageContent && !string.IsNullOrEmpty(imageContent.Uri?.ToString()))
+                                    else if (item is Microsoft.Extensions.AI.DataContent dataContent && dataContent.Uri != null)
                                     {
                                         <div class="message-image">
-                                            <img src="@imageContent.Uri" alt="用户上传的图片" style="max-width: 300px; max-height: 300px; border-radius: 8px;" />
+                                            <img src="@dataContent.Uri" alt="用户上传的图片" style="max-width: 300px; max-height: 300px; border-radius: 8px;" />
                                         </div>
                                     }
                                 }
@@ -118,57 +116,89 @@
                                     </div>
                                     @if (toolItems.Count > 0)
                                     {
-                                        <div class="tool-calls-inline">
-                                            <div class="tool-calls-header">
-                                                <Tag Color="TagColor.Blue">工具调用</Tag>
+                                        <div class="tool-calls-section">
+                                            <div class="tool-calls-toggle">
+                                                <Tag Color="TagColor.Blue">🔧 工具调用</Tag>
                                                 <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="@(() => ToggleTools(messageIndex))">
                                                     @(IsToolsExpanded(messageIndex) ? "收起" : $"展开 ({toolItems.Count})")
                                                 </Button>
                                             </div>
                                             @if (IsToolsExpanded(messageIndex))
                                             {
-                                                <Space Direction="SpaceDirection.Vertical" Size="SpaceSize.Small" Style="width:100%">
+                                                <div class="tool-calls-list">
                                                     @foreach (var ev in toolItems)
                                                     {
-                                                        <Card Size="CardSize.Small">
-                                                            <Body>
-                                                                <div style="display:flex; justify-content:space-between; align-items:center;">
-                                                                    <span style="font-weight:600;">@ev.Name</span>
-                                                                    <Tag>@ev.Time.ToLocalTime().ToString("HH:mm:ss")</Tag>
+                                                        <div class="tool-call-card">
+                                                            <div class="tool-call-header">
+                                                                <Tag Color="TagColor.Orange">🔧 @ev.Name</Tag>
+                                                                @if (!string.IsNullOrEmpty(ev.Error))
+                                                                {
+                                                                    <Tag Color="TagColor.Red">✗ 失败</Tag>
+                                                                }
+                                                                else if (string.IsNullOrEmpty(ev.Result))
+                                                                {
+                                                                    <Tag Color="TagColor.Blue">⏳ 执行中...</Tag>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <Tag Color="TagColor.Green">✓ 成功</Tag>
+                                                                }
+                                                                <span class="tool-time">@ev.Time.ToLocalTime().ToString("HH:mm:ss")</span>
+                                                            </div>
+                                                            
+                                                            @if (!string.IsNullOrEmpty(ev.Arguments))
+                                                            {
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">📥 参数</div>
+                                                                    <div class="tool-section-content">
+                                                                        <pre>@ev.Arguments</pre>
+                                                                    </div>
                                                                 </div>
-                                                                <div style="margin-top:6px;">
-                                                                    <Text Type="TextElementType.Secondary">输入</Text>
-                                                                    <pre style="white-space:pre-wrap; word-break:break-word; background:#fafafa; padding:6px; border-radius:4px;">@ev.Arguments</pre>
+                                                            }
+                                                            
+                                                            @if (!string.IsNullOrEmpty(ev.Error))
+                                                            {
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">❌ 执行错误</div>
+                                                                    <div class="tool-section-content tool-result-error">
+                                                                        <pre>@ev.Error</pre>
+                                                                    </div>
                                                                 </div>
-                                                                <div style="margin-top:6px;">
-                                                                    <Text Type="TextElementType.Secondary">输出</Text>
-                                                                    @if (!string.IsNullOrEmpty(ev.Error))
-                                                                    {
-                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#fff2f0; padding:6px; border-radius:4px; border-left: 4px solid #ff4d4f;">@ev.Error</pre>
-                                                                    }
-                                                                    else if (string.IsNullOrEmpty(ev.Result))
-                                                                    {
-                                                                        <div style="display:flex; align-items:center; gap:6px;">
+                                                            }
+                                                            else if (string.IsNullOrEmpty(ev.Result))
+                                                            {
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">📤 返回结果</div>
+                                                                    <div class="tool-section-content">
+                                                                        <div class="tool-loading">
                                                                             <Spin Size="SpinSize.Small" />
                                                                             <span>等待结果…</span>
                                                                         </div>
-                                                                    }
-                                                                    else
-                                                                    {
-                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#f6ffed; padding:6px; border-radius:4px;">@ev.Result</pre>
-                                                                    }
-                                                                </div>
-                                                                @if (ev.Logs.Count > 0)
-                                                                {
-                                                                    <div style="margin-top:6px;">
-                                                                        <Text Type="TextElementType.Secondary">运行日志</Text>
-                                                                        <pre style="white-space:pre-wrap; word-break:break-word; background:#fffbe6; padding:6px; border-radius:4px;">@string.Join("\n", ev.Logs)</pre>
                                                                     </div>
-                                                                }
-                                                            </Body>
-                                                        </Card>
+                                                                </div>
+                                                            }
+                                                            else
+                                                            {
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">📤 返回结果</div>
+                                                                    <div class="tool-section-content tool-result-success">
+                                                                        <pre>@ev.Result</pre>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                            
+                                                            @if (ev.Logs.Count > 0)
+                                                            {
+                                                                <div class="tool-section">
+                                                                    <div class="tool-section-title">📋 运行日志</div>
+                                                                    <div class="tool-section-content tool-logs">
+                                                                        <pre>@string.Join("\n", ev.Logs)</pre>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        </div>
                                                     }
-                                                </Space>
+                                                </div>
                                             }
                                         </div>
                                     }
@@ -247,57 +277,6 @@
                     <Button Type="@ButtonType.Primary" OnClick="SendMessage" Loading="_isLoading">发送</Button>
                 </div>
             </div>
-
-            <!-- 工具调用过程面板 -->
-            <div class="tool-calls-panel" style="width:320px; min-width:280px; max-height:100%; display:flex; flex-direction:column;">
-                <Card Title="工具调用" Size="CardSize.Small" Style="flex:1; overflow:auto;">
-                    <Body>
-                        @if (_toolEvents.Count == 0)
-                        {
-                            <Empty Description="@("无工具调用")" />
-                        }
-                        else
-                        {
-                            <Space Direction="SpaceDirection.Vertical" Size="SpaceSize.Small" Style="width:100%">
-                                @foreach (var ev in _toolEvents)
-                                {
-                                    <Card Size="CardSize.Small" Hoverable>
-                                        <Body>
-                                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                                <span style="font-weight:600;">@ev.Name</span>
-                                                <Tag>@ev.Time.ToLocalTime().ToString("HH:mm:ss")</Tag>
-                                            </div>
-                                            <div style="margin-top:6px;">
-                                                <Text Type="TextElementType.Secondary">参数</Text>
-                                                <pre style="white-space:pre-wrap; word-break:break-word; background:#fafafa; padding:6px; border-radius:4px;">@ev.Arguments</pre>
-                                            </div>
-                                            <div style="margin-top:6px;">
-                                                <Text Type="TextElementType.Secondary">结果</Text>
-                                                @if (string.IsNullOrEmpty(ev.Result))
-                                                {
-                                                    <div style="display:flex; align-items:center; gap:6px;">
-                                                        <Spin Size="SpinSize.Small" />
-                                                        <span>等待结果…</span>
-                                                    </div>
-                                                }
-                                                else
-                                                {
-                                                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f6ffed; padding:6px; border-radius:4px;">@ev.Result</pre>
-                                                }
-                                            </div>
-                                        </Body>
-                                    </Card>
-                                }
-                            </Space>
-                        }
-                    </Body>
-                    <Extra>
-                        <Space>
-                            <Button Size="ButtonSize.Small" OnClick="@(() => _toolEvents.Clear())">清空</Button>
-                        </Space>
-                    </Extra>
-                </Card>
-            </div>
         </div>
     </Body>
 </Card>
@@ -316,7 +295,7 @@
     {
         public Microsoft.Extensions.AI.ChatRole Role { get; set; } = Microsoft.Extensions.AI.ChatRole.User;
         public string Text { get; set; } = string.Empty;
-        public ChatMessageContentItemCollection? ContentItems { get; set; }
+        public IList<Microsoft.Extensions.AI.AIContent>? ContentItems { get; set; }
         public DateTime Timestamp { get; set; } = DateTime.Now;
         public bool IsStreaming { get; set; }
     }
@@ -479,16 +458,16 @@
 
         if (_selectedImages.Count > 0)
         {
-            var contentItems = new ChatMessageContentItemCollection();
+            var contentItems = new List<Microsoft.Extensions.AI.AIContent>();
 
             if (!string.IsNullOrWhiteSpace(_currentMessage))
             {
-                contentItems.Add(new TextContent(_currentMessage.Trim()));
+                contentItems.Add(new Microsoft.Extensions.AI.TextContent(_currentMessage.Trim()));
             }
 
             foreach (var image in _selectedImages)
             {
-                contentItems.Add(new ImageContent(image.Data, image.MimeType));
+                contentItems.Add(new Microsoft.Extensions.AI.DataContent(image.Data, image.MimeType));
             }
 
             userMessage.ContentItems = contentItems;
@@ -596,72 +575,95 @@
 
             var stream = client.ChatStreamAsync(model!, initialMessages, parms, toolObjects, chatOptions);
             var assistantIndex = _messages.IndexOf(assistantMessage);
+            
+            // 用于累积流式工具调用信息 (callId -> 累积数据)
+            var toolCallAccumulator = new Dictionary<string, (string name, string arguments)>();
 
             await foreach (var chunk in stream)
             {
+                // 处理文本内容
                 var content = chunk.Content;
-                if (string.IsNullOrEmpty(content))
+                if (!string.IsNullOrEmpty(content))
                 {
-                    continue;
+                    assistantMessage.Text += content;
                 }
 
-                // 尝试解析为 JSON（假设 client 返回完整 JSON 行）
-                if (content.TrimStart().StartsWith("{"))
+                // 处理流式工具调用更新
+                if (chunk.Items != null && chunk.Items.Count > 0)
                 {
-                    try
+                    // MEAI 使用 FunctionCallContent 表示工具调用
+                    var toolCallUpdates = chunk.Items.OfType<Microsoft.Extensions.AI.FunctionCallContent>();
+                    foreach (var toolUpdate in toolCallUpdates)
                     {
-                        var parseResult = ChatMessageUtils.ParseStreamingContent(content);
-
-                        switch (parseResult.MessageType)
+                        var callId = toolUpdate.CallId ?? $"call_{Guid.NewGuid():N}";
+                        var name = toolUpdate.Name ?? string.Empty;
+                        var arguments = toolUpdate.Arguments != null && toolUpdate.Arguments.Count > 0
+                            ? System.Text.Json.JsonSerializer.Serialize(toolUpdate.Arguments, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })
+                            : string.Empty;
+                        
+                        if (!toolCallAccumulator.ContainsKey(callId))
                         {
-                            case StreamingMessageType.ToolCalls:
-                                if (parseResult.ToolCalls != null)
-                                {
-                                    foreach (var tc in parseResult.ToolCalls)
-                                    {
-                                        // 触发工具开始事件
-                                        var toolEv = StartToolEventForMessage(assistantIndex, tc.Name, tc.Arguments);
-                                        _toolCallIdToEvent[tc.Id] = toolEv;
-                                    }
-                                }
-                                break;
-
-                            case StreamingMessageType.ToolResult:
-                                // 匹配并设置结果
-                                if (!string.IsNullOrEmpty(parseResult.ToolCallId) && _toolCallIdToEvent.TryGetValue(parseResult.ToolCallId, out var ev))
-                                {
-                                    ToolCallUtils.HandleToolResult(ev, parseResult.ToolContent);
-                                }
-                                break;
-
-                            case StreamingMessageType.AssistantContent:
-                                if (!string.IsNullOrEmpty(parseResult.Content))
-                                {
-                                    assistantMessage.Text += parseResult.Content;
-                                }
-                                break;
-
-                            case StreamingMessageType.PlainText:
-                            default:
-                                // 普通文本
-                                assistantMessage.Text += content;
-                                break;
+                            // 初始化新的工具调用
+                            toolCallAccumulator[callId] = (name: name, arguments: arguments);
+                        }
+                        else
+                        {
+                            // 累积工具调用信息
+                            var current = toolCallAccumulator[callId];
+                            toolCallAccumulator[callId] = (
+                                name: string.IsNullOrEmpty(current.name) ? name : current.name,
+                                arguments: current.arguments + arguments
+                            );
+                        }
+                        
+                        // 如果工具调用完整(有名称),创建或更新工具事件
+                        var toolInfo = toolCallAccumulator[callId];
+                        if (!string.IsNullOrEmpty(toolInfo.name))
+                        {
+                            if (!_toolCallIdToEvent.ContainsKey(callId))
+                            {
+                                var toolEv = StartToolEventForMessage(assistantIndex, toolInfo.name, toolInfo.arguments);
+                                _toolCallIdToEvent[callId] = toolEv;
+                            }
+                            else if (_toolCallIdToEvent.TryGetValue(callId, out var existingEv))
+                            {
+                                // 更新工具参数（流式累积）
+                                existingEv.Arguments = toolInfo.arguments;
+                            }
                         }
                     }
-                    catch
+
+                    // 处理工具结果 (FunctionResultContent)
+                    var toolResultUpdates = chunk.Items.OfType<Microsoft.Extensions.AI.FunctionResultContent>();
+                    foreach (var resultUpdate in toolResultUpdates)
                     {
-                        // 不是有效 JSON，当普通文本处理
-                        assistantMessage.Text += content;
+                        var callId = resultUpdate.CallId ?? string.Empty;
+                        if (_toolCallIdToEvent.TryGetValue(callId, out var toolEv))
+                        {
+                            // 更新工具结果
+                            if (resultUpdate.Exception != null)
+                            {
+                                FailToolEvent(toolEv, resultUpdate.Exception.Message);
+                            }
+                            else if (resultUpdate.Result != null)
+                            {
+                                CompleteToolEvent(toolEv, resultUpdate.Result.ToString() ?? string.Empty);
+                            }
+                        }
                     }
-                }
-                else
-                {
-                    // 普通文本
-                    assistantMessage.Text += content;
                 }
 
                 StateHasChanged();
                 await ScrollToBottom();
+            }
+            
+            // 流式结束后，工具已经被自动执行，标记所有工具为"已执行"
+            foreach (var toolEv in _toolCallIdToEvent.Values)
+            {
+                if (string.IsNullOrEmpty(toolEv.Result))
+                {
+                    toolEv.Result = "工具已执行";
+                }
             }
         }
         finally
@@ -743,22 +745,19 @@
         StateHasChanged();
     }
 
-    // 示例工具方法：在模拟工具调用时，会通过 ChatClientService 注册为 Kernel 插件
-    [KernelFunction("echo")]
+    // 示例工具方法：使用 Description 属性,会被 LlmPoolClient 自动识别并注册为 MEAI 工具
     [Description("回显输入的文本")]
     public string Echo([Description("要回显的内容")] string text)
     {
         return text;
     }
 
-    [KernelFunction("get_time")]
     [Description("返回当前时间")]
     public string GetTime()
     {
         return DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
     }
 
-    [KernelFunction("sum")]
     [Description("计算两个整数的和")]
     public int Sum(
         [Description("加数 A")] int a = 0,
@@ -768,4 +767,387 @@
     }
 }
 
+<style>
+    /* 工具调用样式 - 参考 PromptEdit */
+    .tool-calls-section {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px dashed rgba(0, 0, 0, 0.06);
+    }
 
+    .tool-calls-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .tool-calls-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .tool-call-card {
+        margin: 0;
+        padding: 12px;
+        background: linear-gradient(135deg, #fff9f0 0%, #fff7e6 100%);
+        border: 1px solid #ffd591;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(250, 140, 22, 0.1);
+        transition: all 0.3s ease;
+    }
+
+    .tool-call-card:hover {
+        box-shadow: 0 4px 8px rgba(250, 140, 22, 0.15);
+        border-color: #ffa940;
+    }
+
+    .tool-call-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px dashed #ffd591;
+        flex-wrap: wrap;
+    }
+
+    .tool-time {
+        margin-left: auto;
+        font-size: 11px;
+        color: #8c8c8c;
+        padding: 2px 6px;
+        background: rgba(0,0,0,0.04);
+        border-radius: 3px;
+    }
+
+    .tool-section {
+        margin-top: 8px;
+    }
+
+    .tool-section:first-child {
+        margin-top: 0;
+    }
+
+    .tool-section-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: #8c4c00;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .tool-section-content {
+        padding: 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.8);
+        border: 1px solid rgba(0, 0, 0, 0.06);
+    }
+
+    .tool-section-content pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        color: #262626;
+    }
+
+    .tool-result-success {
+        background: #f6ffed;
+        border-color: #b7eb8f;
+    }
+
+    .tool-result-success pre {
+        color: #389e0d;
+    }
+
+    .tool-result-error {
+        background: #fff2f0;
+        border-color: #ffccc7;
+    }
+
+    .tool-result-error pre {
+        color: #cf1322;
+    }
+
+    .tool-logs {
+        background: #fffbe6;
+        border-color: #ffe58f;
+    }
+
+    .tool-logs pre {
+        color: #ad6800;
+    }
+
+    .tool-loading {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #8c8c8c;
+        padding: 4px 0;
+    }
+
+    /* 消息样式优化 */
+    .chat-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        gap: 16px;
+    }
+
+    .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+        background: #fafafa;
+        border-radius: 8px;
+    }
+
+    .message {
+        margin-bottom: 16px;
+        animation: slideIn 0.3s ease-out;
+    }
+
+    @@keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .message-content {
+        padding: 12px 16px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        background: white;
+    }
+
+    .message-user .message-content {
+        background: #e6f7ff;
+        border-left: 3px solid #1890ff;
+    }
+
+    .message-assistant .message-content {
+        background: #f6ffed;
+        border-left: 3px solid #52c41a;
+    }
+
+    .message-text {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #333;
+    }
+
+    .message-time {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #8c8c8c;
+        text-align: right;
+    }
+
+    /* 思维链样式 */
+    .thinking-section {
+        margin-bottom: 12px;
+        padding: 10px;
+        background: #fff7e6;
+        border: 1px solid #ffd591;
+        border-radius: 6px;
+    }
+
+    .thinking-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .thinking-content {
+        margin: 0;
+        padding: 8px;
+        background: rgba(255, 255, 255, 0.6);
+        border-radius: 4px;
+        font-size: 12px;
+        line-height: 1.5;
+        max-height: 200px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    /* 加载动画 */
+    .loading-dots {
+        display: flex;
+        gap: 4px;
+        padding: 8px 0;
+    }
+
+    .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #1890ff;
+        animation: bounce 1.4s infinite ease-in-out both;
+    }
+
+    .dot:nth-child(1) {
+        animation-delay: -0.32s;
+    }
+
+    .dot:nth-child(2) {
+        animation-delay: -0.16s;
+    }
+
+    @@keyframes bounce {
+        0%, 80%, 100% {
+            transform: scale(0);
+        }
+        40% {
+            transform: scale(1);
+        }
+    }
+
+    /* 光标效果 */
+    .cursor-effect {
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        background: #1890ff;
+        margin-left: 2px;
+        animation: blink 1s infinite;
+    }
+
+    @@keyframes blink {
+        0%, 50% {
+            opacity: 1;
+        }
+        51%, 100% {
+            opacity: 0;
+        }
+    }
+
+    /* 输入区域样式 */
+    .chat-input {
+        padding: 16px;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
+    }
+
+    .chat-input-info {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .chat-input-row {
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+    }
+
+    .upload-label {
+        padding: 4px 15px;
+        border: 1px solid #d9d9d9;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.3s;
+        background: white;
+        display: inline-block;
+    }
+
+    .upload-label:hover {
+        color: #1890ff;
+        border-color: #1890ff;
+    }
+
+    /* 图片预览 */
+    .image-preview-container {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+    }
+
+    .image-preview-item {
+        position: relative;
+        width: 100px;
+        height: 100px;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid #d9d9d9;
+    }
+
+    .image-preview-item img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .image-preview-item button {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: rgba(0,0,0,0.5);
+        border: none;
+        color: white;
+        border-radius: 50%;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+    }
+
+    .image-name {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(0,0,0,0.6);
+        color: white;
+        font-size: 10px;
+        padding: 2px 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* 滚动条美化 */
+    .chat-messages::-webkit-scrollbar,
+    .thinking-content::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .chat-messages::-webkit-scrollbar-track,
+    .thinking-content::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 3px;
+    }
+
+    .chat-messages::-webkit-scrollbar-thumb,
+    .thinking-content::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 3px;
+    }
+
+    .chat-messages::-webkit-scrollbar-thumb:hover,
+    .thinking-content::-webkit-scrollbar-thumb:hover {
+        background: #555;
+    }
+</style>

@@ -1,4 +1,4 @@
-using LY.LlmPool.Web.Services.Tools;
+using LY.LlmPool.Web.Services;
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -6,103 +6,18 @@ using Xunit;
 
 namespace LY.LlmPool.Web.Tests;
 
+/// <summary>
+/// Tests for PromptParameterService's GenerateParameterSchema and RenderPrompt methods
+/// (Previously tested via PromptParameterExtractor which has been merged)
+/// </summary>
 public class PromptParameterExtractorTests
 {
-    private readonly PromptParameterExtractor _extractor;
+    private readonly PromptParameterService _service;
 
     public PromptParameterExtractorTests()
     {
-        _extractor = new PromptParameterExtractor();
+        _service = new PromptParameterService();
     }
-
-    #region ExtractParameters Tests
-
-    [Fact]
-    public void ExtractParameters_SingleParameter_ReturnsCorrectParameter()
-    {
-        // Arrange
-        var template = "Hello {{name}}";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Single(result);
-        Assert.Contains("name", result);
-    }
-
-    [Fact]
-    public void ExtractParameters_MultipleParameters_ReturnsAllParameters()
-    {
-        // Arrange
-        var template = "{{greeting}} {{name}}, you are {{age}} years old";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Equal(3, result.Count);
-        Assert.Contains("greeting", result);
-        Assert.Contains("name", result);
-        Assert.Contains("age", result);
-    }
-
-    [Fact]
-    public void ExtractParameters_NestedParameter_ReturnsNestedParameter()
-    {
-        // Arrange
-        var template = "User name is {{user.name}} and email is {{user.email}}";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Equal(2, result.Count);
-        Assert.Contains("user.name", result);
-        Assert.Contains("user.email", result);
-    }
-
-    [Fact]
-    public void ExtractParameters_DuplicateParameters_ReturnsDeduplicated()
-    {
-        // Arrange
-        var template = "{{name}} {{name}} {{name}}";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Single(result);
-        Assert.Contains("name", result);
-    }
-
-    [Fact]
-    public void ExtractParameters_EmptyTemplate_ReturnsEmptyList()
-    {
-        // Arrange
-        var template = "";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Empty(result);
-    }
-
-    [Fact]
-    public void ExtractParameters_NoParameters_ReturnsEmptyList()
-    {
-        // Arrange
-        var template = "This is a plain text without parameters";
-
-        // Act
-        var result = _extractor.ExtractParameters(template);
-
-        // Assert
-        Assert.Empty(result);
-    }
-
-    #endregion
 
     #region GenerateParameterSchema Tests
 
@@ -113,7 +28,7 @@ public class PromptParameterExtractorTests
         var parameters = new List<string> { "name", "age" };
 
         // Act
-        var schemaJson = _extractor.GenerateParameterSchema(parameters);
+        var schemaJson = _service.GenerateParameterSchema(parameters);
         var schema = JsonSerializer.Deserialize<JsonElement>(schemaJson);
 
         // Assert
@@ -148,7 +63,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var schemaJson = _extractor.GenerateParameterSchema(parameters, overrides);
+        var schemaJson = _service.GenerateParameterSchema(parameters, overrides);
         var schema = JsonSerializer.Deserialize<JsonElement>(schemaJson);
 
         // Assert
@@ -169,7 +84,7 @@ public class PromptParameterExtractorTests
         var parameters = new List<string>();
 
         // Act
-        var schemaJson = _extractor.GenerateParameterSchema(parameters);
+        var schemaJson = _service.GenerateParameterSchema(parameters);
         var schema = JsonSerializer.Deserialize<JsonElement>(schemaJson);
 
         // Assert
@@ -194,7 +109,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var schemaJson = _extractor.GenerateParameterSchema(parameters, overrides);
+        var schemaJson = _service.GenerateParameterSchema(parameters, overrides);
         var schema = JsonSerializer.Deserialize<JsonElement>(schemaJson);
 
         // Assert
@@ -218,7 +133,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var result = _extractor.RenderPrompt(template, parameters);
+        var result = _service.RenderPrompt(template, parameters);
 
         // Assert
         Assert.Equal("Hello Alice, welcome to Wonderland!", result);
@@ -235,7 +150,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var result = _extractor.RenderPrompt(template, parameters);
+        var result = _service.RenderPrompt(template, parameters);
 
         // Assert
         Assert.Equal("Bob said hello. Bob is happy.", result);
@@ -254,7 +169,7 @@ public class PromptParameterExtractorTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
-            _extractor.RenderPrompt(template, parameters)
+            _service.RenderPrompt(template, parameters)
         );
         Assert.Contains("Missing required parameters: age", exception.Message);
     }
@@ -268,7 +183,7 @@ public class PromptParameterExtractorTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            _extractor.RenderPrompt(template, parameters)
+            _service.RenderPrompt(template, parameters)
         );
     }
 
@@ -280,7 +195,7 @@ public class PromptParameterExtractorTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
-            _extractor.RenderPrompt(template, null!)
+            _service.RenderPrompt(template, null!)
         );
         Assert.Contains("Missing required parameters", exception.Message);
     }
@@ -296,7 +211,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var result = _extractor.RenderPrompt(template, parameters);
+        var result = _service.RenderPrompt(template, parameters);
 
         // Assert
         Assert.Equal("Hello David and David", result);
@@ -314,7 +229,7 @@ public class PromptParameterExtractorTests
         };
 
         // Act
-        var result = _extractor.RenderPrompt(template, parameters);
+        var result = _service.RenderPrompt(template, parameters);
 
         // Assert
         Assert.Equal("User Eve has email eve@example.com", result);
@@ -330,12 +245,12 @@ public class PromptParameterExtractorTests
         // Arrange
         var template = "Translate '{{text}}' to {{language}}";
 
-        // Step 1: Extract parameters
-        var extractedParams = _extractor.ExtractParameters(template);
-        Assert.Equal(2, extractedParams.Count);
+        // Step 1: Extract parameters (returning List<ParameterInfo>)
+        var extractedParamInfos = _service.ExtractParameters(template);
+        Assert.Equal(2, extractedParamInfos.Count);
 
-        // Step 2: Generate schema
-        var schemaJson = _extractor.GenerateParameterSchema(extractedParams);
+        // Step 2: Generate schema from ParameterInfo list
+        var schemaJson = _service.GenerateParameterSchema(extractedParamInfos);
         var schema = JsonSerializer.Deserialize<JsonElement>(schemaJson);
         Assert.Equal(2, schema.GetProperty("required").GetArrayLength());
 
@@ -345,9 +260,142 @@ public class PromptParameterExtractorTests
             ["text"] = "Hello",
             ["language"] = "Chinese"
         };
-        var rendered = _extractor.RenderPrompt(template, renderParams);
+        var rendered = _service.RenderPrompt(template, renderParams);
         Assert.Equal("Translate 'Hello' to Chinese", rendered);
     }
 
     #endregion
+
+    #region ParameterInfo Tests (Description Support)
+
+    [Fact]
+    public void GenerateParameterSchema_WithParameterInfo_IncludesDescription()
+    {
+        // Arrange
+        var parameters = new List<ParameterInfo>
+        {
+            new ParameterInfo { Name = "name", Description = "用户名称" },
+            new ParameterInfo { Name = "age", Description = "用户年龄" }
+        };
+
+        // Act
+        var schemaJson = _service.GenerateParameterSchema(parameters, null);
+        var schema = JsonDocument.Parse(schemaJson);
+
+        // Assert
+        Assert.Equal("object", schema.RootElement.GetProperty("type").GetString());
+        
+        var properties = schema.RootElement.GetProperty("properties");
+        
+        // 检查 name 参数的描述
+        var nameProperty = properties.GetProperty("name");
+        Assert.Equal("string", nameProperty.GetProperty("type").GetString());
+        Assert.Equal("用户名称", nameProperty.GetProperty("description").GetString());
+        
+        // 检查 age 参数的描述
+        var ageProperty = properties.GetProperty("age");
+        Assert.Equal("string", ageProperty.GetProperty("type").GetString());
+        Assert.Equal("用户年龄", ageProperty.GetProperty("description").GetString());
+        
+        // 检查 required 数组
+        var required = schema.RootElement.GetProperty("required");
+        Assert.Equal(2, required.GetArrayLength());
+    }
+
+    [Fact]
+    public void GenerateParameterSchema_WithParameterInfoWithoutDescription_UsesDefaultDescription()
+    {
+        // Arrange
+        var parameters = new List<ParameterInfo>
+        {
+            new ParameterInfo { Name = "query", Description = null }
+        };
+
+        // Act
+        var schemaJson = _service.GenerateParameterSchema(parameters, null);
+        var schema = JsonDocument.Parse(schemaJson);
+
+        // Assert
+        var properties = schema.RootElement.GetProperty("properties");
+        var queryProperty = properties.GetProperty("query");
+        
+        // 没有描述时应使用默认格式
+        Assert.Equal("Parameter: query", queryProperty.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void GenerateParameterSchema_WithEmptyDescription_UsesDefaultDescription()
+    {
+        // Arrange
+        var parameters = new List<ParameterInfo>
+        {
+            new ParameterInfo { Name = "data", Description = "   " } // 空白描述
+        };
+
+        // Act
+        var schemaJson = _service.GenerateParameterSchema(parameters, null);
+        var schema = JsonDocument.Parse(schemaJson);
+
+        // Assert
+        var properties = schema.RootElement.GetProperty("properties");
+        var dataProperty = properties.GetProperty("data");
+        
+        // 空白描述应使用默认格式
+        Assert.Equal("Parameter: data", dataProperty.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void GenerateParameterSchema_WithParameterOverrides_OverridesDescription()
+    {
+        // Arrange
+        var parameters = new List<ParameterInfo>
+        {
+            new ParameterInfo { Name = "userId", Description = "用户ID" }
+        };
+        
+        var overrides = new Dictionary<string, object>
+        {
+            ["userId"] = new Dictionary<string, object>
+            {
+                ["type"] = "number",
+                ["description"] = "被覆盖的用户ID描述"
+            }
+        };
+
+        // Act
+        var schemaJson = _service.GenerateParameterSchema(parameters, overrides);
+        var schema = JsonDocument.Parse(schemaJson);
+
+        // Assert
+        var properties = schema.RootElement.GetProperty("properties");
+        var userIdProperty = properties.GetProperty("userId");
+        
+        // Override 应该覆盖原始描述
+        Assert.Equal("被覆盖的用户ID描述", userIdProperty.GetProperty("description").GetString());
+        Assert.Equal("number", userIdProperty.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void GenerateParameterSchema_BackwardCompatibility_WithStringList()
+    {
+        // Arrange
+        var stringParams = new List<string> { "param1", "param2" };
+
+        // Act
+        var schemaJson = _service.GenerateParameterSchema(stringParams, null);
+        var schema = JsonDocument.Parse(schemaJson);
+
+        // Assert
+        var properties = schema.RootElement.GetProperty("properties");
+        
+        // 向后兼容: 字符串参数列表应该使用默认描述
+        var param1Property = properties.GetProperty("param1");
+        Assert.Equal("Parameter: param1", param1Property.GetProperty("description").GetString());
+        
+        var param2Property = properties.GetProperty("param2");
+        Assert.Equal("Parameter: param2", param2Property.GetProperty("description").GetString());
+    }
+
+    #endregion
 }
+

@@ -29,7 +29,7 @@ public class AgentOrchestratorTests
             return Task.FromResult(Ok(cfg.Id == "cfg-1" ? "first" : "second"));
         });
 
-        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
         var orchestrator = new LY.LlmPool.Web.Services.Agents.AgentOrchestratorService(chatClient, toolProvider, new NullLogger<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>());
 
         var cfg1 = new LlmConfig { Id = "cfg-1", Name = "c1", Model = "m", BaseUrl = "http://localhost" };
@@ -67,7 +67,7 @@ public class AgentOrchestratorTests
             return Task.FromResult(Ok(response));
         });
 
-        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
         var orchestrator = new LY.LlmPool.Web.Services.Agents.AgentOrchestratorService(chatClient, toolProvider, new NullLogger<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>());
 
         var cfg1 = new LlmConfig { Id = "cfg-1", Name = "c1", Model = "m", BaseUrl = "http://localhost" };
@@ -96,7 +96,7 @@ public class AgentOrchestratorTests
     public async Task ExecuteAsync_InvalidAppType_ThrowsException()
     {
         var chatClient = new MockChatClientService((cfg, msgs) => Task.FromResult(Ok("test")));
-        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!, null!).Object;
+        var toolProvider = new Mock<ToolProviderService>(null!, new NullLogger<ToolProviderService>(), null!).Object;
         var orchestrator = new LY.LlmPool.Web.Services.Agents.AgentOrchestratorService(chatClient, toolProvider, new NullLogger<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>());
 
         var app = new LlmApp
