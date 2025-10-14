@@ -21,15 +21,14 @@ public interface IMcpServerService
     /// <param name="serverId">The unique server ID.</param>
     /// <param name="serverConfig">The server configuration.</param>
     /// <returns>Task representing the asynchronous operation.</returns>
-    Task CreateServerAsync(string serverId, McpServerConfigDto serverConfig);
+    Task CreateServerAsync(McpServerConfigDto serverConfig);
 
     /// <summary>
     /// Updates an existing MCP server configuration.
     /// </summary>
-    /// <param name="serverId">The server ID to update.</param>
     /// <param name="serverConfig">The updated server configuration.</param>
     /// <returns>Task representing the asynchronous operation.</returns>
-    Task UpdateServerAsync(string serverId, McpServerConfigDto serverConfig);
+    Task UpdateServerAsync(McpServerConfigDto serverConfig);
 
     /// <summary>
     /// Deletes an MCP server configuration.
@@ -41,7 +40,6 @@ public interface IMcpServerService
     /// <summary>
     /// Toggles the enabled status of an MCP server.
     /// </summary>
-    /// <param name="serverId">The server ID to toggle.</param>
     /// <param name="enabled">The new enabled status.</param>
     /// <returns>Task representing the asynchronous operation.</returns>
     Task ToggleServerStatusAsync(string serverId, bool enabled);
@@ -66,6 +64,8 @@ public interface IMcpServerService
     /// <param name="serverId">The server ID to check.</param>
     /// <returns>True if the server ID exists, false otherwise.</returns>
     Task<bool> ServerExistsAsync(string serverId);
+
+    Task<(int tools, int prompts, int resources)> FetchAndCacheSchemaAsync(string id, CancellationToken ct = default);
 
 }
 

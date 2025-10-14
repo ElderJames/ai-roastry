@@ -6,6 +6,8 @@
 @inject McpServerConfigService McpService
 @inject MessageService _message
 @inject IJSRuntime JSRuntime
+@inject NavigationManager NavigationManager
+@inherits McpConfigBase
 
 <PageTitle>MCP Server 配置</PageTitle>
 
@@ -13,53 +15,213 @@
     <TitleTemplate>
         <div class="d-flex justify-content-between align-items-center">
             <div>MCP Server 配置</div>
-            <div>
-                <Button Type="@ButtonType.Primary" OnClick="ShowAddDialog">
+            <div> 
+                <Button Type="@ButtonType.Primary" OnClick="AddNewServer">
                     <Icon Type="plus" /> 新建
+                </Button>
+                 <Button Type="ButtonType.Default" OnClick="RefreshServerList" Loading="@refreshLoading">
+                    <Icon Type="reload" Theme="IconThemeType.Outline" />
+                    @(refreshLoading ? "Refreshing..." : "Refresh")
                 </Button>
             </div>
         </div>
     </TitleTemplate>
     <ChildContent>
-        <Table TItem="McpServerConfig" DataSource="_items" Size="@TableSize.Middle">
-            <Column TData="string" Title="名称">
-                @context.Name
-            </Column>
-            <Column TData="string" Title="URL" Width="380">
-                <a href="@context.Url" target="_blank">@context.Url</a>
-            </Column>
-            <Column TData="string" Title="描述">
-                @context.Description
-            </Column>
-            <Column TData="string" Title="工具数" Width="80">
-                @GetToolsCount(context)
-            </Column>
-            <Column TData="string" Title="提示词数" Width="90">
-                @GetPromptsCount(context)
-            </Column>
-            <ActionColumn Title="操作" Width="180">
-                <Space>
+        <div style="margin-bottom: 16px; padding: 16px; background: #fafafa; border-radius: 6px;">
+            <Row Gutter="16">
+                <Col Span="12">
+                    <Input Placeholder="Search servers by ID, type, command, or URL..." 
+                           @bind-Value="@searchText" 
+                           @oninput="OnSearchTextChanged"
+                           AllowClear="true"
+                           Size="InputSize.Default">
+                        <Prefix>
+                            <Icon Type="search" Theme="IconThemeType.Outline" />
+                        </Prefix>
+                    </Input>
+                </Col>
+                <Col Span="6">
+                    <Select TItemValue="string" TItem="string"
+                            @bind-Value="@searchType" 
+                            Placeholder="Filter by type"
+                            AllowClear="true"
+                            Style="width: 100%;"
+                            OnSelectedItemChanged="OnSearchTypeChanged"
+                            OnClearSelected="OnSearchTypeClear">
+                        <SelectOptions>
+                            <SelectOption TItemValue="string" TItem="string" Value="@("")" Label="All Types" />
+                            <SelectOption TItemValue="string" TItem="string" Value="@("stdio")" Label="stdio" />
+                            <SelectOption TItemValue="string" TItem="string" Value="@("sse")" Label="sse" />
+                            <SelectOption TItemValue="string" TItem="string" Value="@("http")" Label="http" />
+                        </SelectOptions>
+                    </Select>
+                </Col>
+                <Col Span="6">
+                    <Select TItemValue="string" TItem="string"
+                            @bind-Value="@searchStatus" 
+                            Placeholder="Filter by status"
+                            AllowClear="true"
+                            Style="width: 100%;"
+                            OnSelectedItemChanged="OnSearchStatusChanged"
+                            OnClearSelected="OnSearchStatusClear">
+                        <SelectOptions>
+                            <SelectOption TItemValue="string" TItem="string" Value="@("")" Label="All Status" />
+                            <SelectOption TItemValue="string" TItem="string" Value="@("enabled")" Label="Enabled" />
+                            <SelectOption TItemValue="string" TItem="string" Value="@("disabled")" Label="Disabled" />
+                        </SelectOptions>
+                    </Select>
+                </Col>
+            </Row>
+            @if (filteredServerData.Length != serverData.Length)
+            {
+                <div style="margin-top: 12px;">
+                    <Text Type="TextElementType.Secondary">
+                        Showing @filteredServerData.Length of @serverData.Length servers
+                    </Text>
+                    <Button Type="ButtonType.Link" 
+                            Size="ButtonSize.Small" 
+                            OnClick="ClearAllFilters"
+                            Style="margin-left: 8px;">
+                        Clear all filters
+                    </Button>
+                </div>
+            }
+        </div>
+
+        <Table TItem="McpServerInfo" DataSource="@filteredServerData" OnRowClick="OnRowClick" PageSize="10">
+            <AntDesign.Column Title="Name" TData="string" DataIndex="@nameof(McpServerInfo.Name)">
+                <a>@context.Name</a>
+            </AntDesign.Column>
+            <AntDesign.Column Title="Type" TData="string" DataIndex="@nameof(McpServerInfo.Type)">
+                @{
+                    var typeColor = context.Type switch
+                    {
+                        "stdio" => TagColor.Blue,
+                        "sse" => TagColor.Green,
+                        "http" => TagColor.Orange,
+                        _ => TagColor.Default
+                    };
+                }
+                <Tag Color="@typeColor">@context.Type</Tag>
+            </AntDesign.Column>
+            <AntDesign.Column Title="Status" TData="bool" DataIndex="@nameof(McpServerInfo.Enabled)">
+                @{
+                    var isToggleLoading = serverToggleLoading.GetValueOrDefault(context.ServerId, false);
+                }
+                @if (isToggleLoading)
+                {
+                    <Tag Color="TagColor.Processing">
+                        <Icon Type="loading" Theme="IconThemeType.Outline" />
+                        Processing...
+                    </Tag>
+                }
+                else if (context.Enabled)
+                {
+                    <Tag Color="TagColor.Success">
+                        <Icon Type="check-circle" Theme="IconThemeType.Outline" />
+                        Enabled
+                    </Tag>
+                }
+                else
+                {
+                    <Tag Color="TagColor.Error">
+                        <Icon Type="close-circle" Theme="IconThemeType.Outline" />
+                        Disabled
+                    </Tag>
+                }
+            </AntDesign.Column> 
+            <AntDesign.Column Title="Configuration" TData="string" DataIndex="@nameof(McpServerInfo.Configuration)">
+                @if (!string.IsNullOrEmpty(context.Command))
+                {
+                    <div>
+                        <Text Strong>Command:</Text> <Text Code>@context.Command</Text>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(context.Url))
+                {
+                    <div>
+                        <Text Strong>URL:</Text> <Text Code>@context.Url</Text>
+                    </div>
+                }
+                @if (context.Args?.Length > 0)
+                {
+                    <div>
+                        <Text Strong>Args:</Text> <Text Code>@string.Join(" ", context.Args)</Text>
+                    </div>
+                }
+            </AntDesign.Column>
+            <ActionColumn Title="Action">
+                @{
+                    var isToggleLoading = serverToggleLoading.GetValueOrDefault(context.ServerId, false);
+                    var isDeleteLoading = serverDeleteLoading.GetValueOrDefault(context.ServerId, false);
+                    var isAnyLoading = isToggleLoading || isDeleteLoading;
+                }
+                <Space Size="SpaceSize.Middle">
                     <SpaceItem>
-                        <Button Size="@ButtonSize.Small" OnClick="() => Edit(context)">
-                            <Icon Type="edit" /> 编辑
+                        <Button Type="ButtonType.Default" 
+                                Size="ButtonSize.Small" 
+                                OnClick="() => InspectServer(context.ServerId)"
+                                Disabled="@isAnyLoading">
+                            <Icon Type="experiment" Theme="IconThemeType.Outline" />
+                            Inspector
                         </Button>
                     </SpaceItem>
                     <SpaceItem>
-                        <Popconfirm Title="确认删除该配置？" OkText="删除" CancelText="取消" OnConfirm="() => Delete(context)">
-                            <Button Danger Size="@ButtonSize.Small">
-                                <Icon Type="delete" /> 删除
-                            </Button>
-                        </Popconfirm>
-                    </SpaceItem>
-                    <SpaceItem>
-                        <Button Loading="@(_fetchingId == context.Id)" Size="@ButtonSize.Small" OnClick="() => FetchProto(context)">
+                        <Button Loading="@(_fetchingId == context.ServerId)" Size="@ButtonSize.Small" OnClick="() => FetchProto(context.ServerId)">
                             <Icon Type="download" /> 获取 Proto
                         </Button>
                     </SpaceItem>
                     <SpaceItem>
-                        <Button Loading="@(_toolsLoadingId == context.Id)" Size="@ButtonSize.Small" OnClick="() => ViewTools(context)">
+                        <Button Loading="@(_toolsLoadingId == context.ServerId)" Size="@ButtonSize.Small" OnClick="() => ViewTools(context)">
                             查看工具
                         </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        @if (context.Enabled)
+                        {
+                            <Button Type="ButtonType.Primary" 
+                                    Size="ButtonSize.Small" 
+                                    OnClick="() => ToggleServerStatus(context.ServerId)"
+                                    Loading="@isToggleLoading"
+                                    Disabled="@isAnyLoading">
+                                <Icon Type="pause-circle" Theme="IconThemeType.Outline" />
+                                @(isToggleLoading ? "Disabling..." : "禁用")
+                            </Button>
+                        }
+                        else
+                        {
+                            <Button Type="ButtonType.Primary" 
+                                    Size="ButtonSize.Small" 
+                                    OnClick="() => ToggleServerStatus(context.ServerId)"
+                                    Loading="@isToggleLoading"
+                                    Disabled="@isAnyLoading">
+                                <Icon Type="play-circle" Theme="IconThemeType.Outline" />
+                                @(isToggleLoading ? "Enabling..." : "启用")
+                            </Button>
+                        }
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Size="ButtonSize.Small" 
+                                OnClick="() => EditServer(context.ServerId)"
+                                Disabled="@isAnyLoading">
+                            <Icon Type="edit" Theme="IconThemeType.Outline" />
+                            编辑
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Popconfirm Title="确认删除该服务配置？" 
+                                   OnConfirm="() => DeleteServer(context.ServerId)"
+                                   OkText="Yes" 
+                                   CancelText="No"
+                                   Disabled="@isAnyLoading">
+                            <Button Danger 
+                                    Size="ButtonSize.Small"
+                                    Loading="@isDeleteLoading"
+                                    Disabled="@isAnyLoading">
+                                <Icon Type="delete" Theme="IconThemeType.Outline" />
+                                @(isDeleteLoading ? "Deleting..." : "删除")
+                            </Button>
+                        </Popconfirm>
                     </SpaceItem>
                 </Space>
             </ActionColumn>
@@ -84,11 +246,250 @@
     </Form>
 </Modal>
 
+<Modal Title="Add New MCP Server"
+       Visible="@addServerModalVisible"
+       OnOk="HandleAddServerOk"
+       OnCancel="HandleAddServerCancel"
+       ConfirmLoading="@addServerLoading"
+       Width="800">
+    <Form Model="@newServerModel" 
+          LabelColSpan="6" 
+          WrapperColSpan="18"
+          OnFinish="OnAddServerFormFinish"
+          OnFinishFailed="OnAddServerFormFinishFailed"
+          @ref="addServerForm">
+        
+        <FormItem Label="名称" Required>
+            <Input @bind-Value="@context.ServerName" Placeholder="Enter unique server Name" />
+            <ValidationMessage For="@(() => newServerModel.ServerName)" />
+        </FormItem>
+
+        <FormItem Label="Server Type" Required>
+            <Select @bind-Value="@context.Type" 
+                    Placeholder="Select server type"
+                    OnSelectedItemChanged="EventCallback.Factory.Create<string>(this, OnServerTypeChanged)">
+                <SelectOptions>
+                    <SelectOption Value="@("stdio")" Label="stdio - Command line executable" />
+                    <SelectOption Value="@("sse")" Label="sse - Server-Sent Events" />
+                    <SelectOption Value="@("http")" Label="http - HTTP endpoint" />
+                </SelectOptions>
+            </Select>
+            <ValidationMessage For="@(() => newServerModel.Type)" />
+        </FormItem>
+
+        @if (newServerModel.Type == "stdio")
+        {
+            <FormItem Label="Command" Required>
+                <Input @bind-Value="@context.Command" Placeholder="Enter command to execute" />
+                <ValidationMessage For="@(() => newServerModel.Command)" />
+            </FormItem>
+
+            <FormItem Label="Arguments">
+                <TextArea @bind-Value="@argumentsText" 
+                         Placeholder="Enter arguments (one per line)" 
+                         Rows="3" />
+            </FormItem>
+        }
+
+        @if (newServerModel.Type == "sse" || newServerModel.Type == "http")
+        {
+            <FormItem Label="URL" Required>
+                <Input @bind-Value="@context.Url" Placeholder="Enter server URL (http:// or https://)" />
+                <ValidationMessage For="@(() => newServerModel.Url)" />
+            </FormItem>
+
+            <FormItem Label="HTTP Headers">
+                <div>
+                    @if (headers.Any())
+                    {
+                        @foreach (var (header, index) in headers.Select((h, i) => (h, i)))
+                        {
+                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                                <Input @bind-Value="@header.Key" Placeholder="Header name" Style="flex: 1;" />
+                                <span>:</span>
+                                <Input @bind-Value="@header.Value" Placeholder="Header value" Style="flex: 1;" />
+                                <Button Type="ButtonType.Text" 
+                                        Danger 
+                                        Icon="delete" 
+                                        Size="ButtonSize.Small"
+                                        OnClick="() => RemoveHeader(index)" />
+                            </div>
+                        }
+                    }
+                    <Button Type="ButtonType.Dashed" 
+                            Icon="plus" 
+                            OnClick="AddHeader"
+                            Style="width: 100%;">
+                        Add Header
+                    </Button>
+                </div>
+            </FormItem>
+        }
+
+        @if (newServerModel.Type == "stdio")
+        {
+            <FormItem Label="Environment Variables">
+                <div>
+                    @if (environmentVariables.Any())
+                    {
+                        @foreach (var (key, index) in environmentVariables.Select((kv, i) => (kv, i)))
+                        {
+                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                                <Input @bind-Value="@key.Key" Placeholder="Variable name" Style="flex: 1;" />
+                                <span>=</span>
+                                <Input @bind-Value="@key.Value" Placeholder="Variable value" Style="flex: 1;" />
+                                <Button Type="ButtonType.Text" 
+                                        Danger 
+                                        Icon="delete" 
+                                        Size="ButtonSize.Small"
+                                        OnClick="() => RemoveEnvironmentVariable(index)" />
+                            </div>
+                        }
+                    }
+                    <Button Type="ButtonType.Dashed" 
+                            Icon="plus" 
+                            OnClick="AddEnvironmentVariable"
+                            Style="width: 100%;">
+                        Add Environment Variable
+                    </Button>
+                </div>
+            </FormItem>
+        }
+
+        <FormItem Label="Enabled">
+            <Switch @bind-Value="@context.Enabled" CheckedChildren="Yes" UnCheckedChildren="No" />
+        </FormItem>
+
+        <FormItem Label="描述">
+            <TextArea @bind-Value="context!.Description" />
+        </FormItem>
+
+    </Form>
+</Modal>
+
+
+<Modal Title="Edit MCP Server"
+       Visible="@editServerModalVisible"
+       OnOk="HandleEditServerOk"
+       OnCancel="HandleEditServerCancel"
+       ConfirmLoading="@editServerLoading"
+       Width="800">
+    <Form Model="@editServerModel" 
+          LabelColSpan="6" 
+          WrapperColSpan="18"
+          OnFinish="OnEditServerFormFinish"
+          OnFinishFailed="OnEditServerFormFinishFailed"
+          @ref="editServerForm">
+        
+        <FormItem Label="Server ID">
+            <Input @bind-Value="@context.ServerName" Placeholder="Server Name"/>
+        </FormItem>
+
+        <FormItem Label="Server Type" Required>
+            <Select @bind-Value="@context.Type" 
+                    Placeholder="Select server type"
+                    OnSelectedItemChanged="EventCallback.Factory.Create<string>(this, OnEditServerTypeChanged)">
+                <SelectOptions>
+                    <SelectOption Value="@("stdio")" Label="stdio - Command line executable" />
+                    <SelectOption Value="@("sse")" Label="sse - Server-Sent Events" />
+                    <SelectOption Value="@("http")" Label="http - HTTP endpoint" />
+                </SelectOptions>
+            </Select>
+            <ValidationMessage For="@(() => editServerModel.Type)" />
+        </FormItem>
+
+        @if (editServerModel.Type == "stdio")
+        {
+            <FormItem Label="Command" Required>
+                <Input @bind-Value="@context.Command" Placeholder="Enter command to execute" />
+                <ValidationMessage For="@(() => editServerModel.Command)" />
+            </FormItem>
+
+            <FormItem Label="Arguments">
+                <TextArea @bind-Value="@editArgumentsText" 
+                         Placeholder="Enter arguments (one per line)" 
+                         Rows="3" />
+            </FormItem>
+        }
+
+        @if (editServerModel.Type == "sse" || editServerModel.Type == "http")
+        {
+            <FormItem Label="URL" Required>
+                <Input @bind-Value="@context.Url" Placeholder="Enter server URL (http:// or https://)" />
+                <ValidationMessage For="@(() => editServerModel.Url)" />
+            </FormItem>
+
+            <FormItem Label="HTTP Headers">
+                <div>
+                    @if (editHeaders.Any())
+                    {
+                        @foreach (var (header, index) in editHeaders.Select((h, i) => (h, i)))
+                        {
+                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                                <Input @bind-Value="@header.Key" Placeholder="Header name" Style="flex: 1;" />
+                                <span>:</span>
+                                <Input @bind-Value="@header.Value" Placeholder="Header value" Style="flex: 1;" />
+                                <Button Type="ButtonType.Text" 
+                                        Danger 
+                                        Icon="delete" 
+                                        Size="ButtonSize.Small"
+                                        OnClick="() => RemoveEditHeader(index)" />
+                            </div>
+                        }
+                    }
+                    <Button Type="ButtonType.Dashed" 
+                            Icon="plus" 
+                            OnClick="AddEditHeader"
+                            Style="width: 100%;">
+                        Add Header
+                    </Button>
+                </div>
+            </FormItem>
+        }
+
+        @if (editServerModel.Type == "stdio")
+        {
+            <FormItem Label="Environment Variables">
+                <div>
+                    @if (editEnvironmentVariables.Any())
+                    {
+                        @foreach (var (key, index) in editEnvironmentVariables.Select((kv, i) => (kv, i)))
+                        {
+                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                                <Input @bind-Value="@key.Key" Placeholder="Variable name" Style="flex: 1;" />
+                                <span>=</span>
+                                <Input @bind-Value="@key.Value" Placeholder="Variable value" Style="flex: 1;" />
+                                <Button Type="ButtonType.Text" 
+                                        Danger 
+                                        Icon="delete" 
+                                        Size="ButtonSize.Small"
+                                        OnClick="() => RemoveEditEnvironmentVariable(index)" />
+                            </div>
+                        }
+                    }
+                    <Button Type="ButtonType.Dashed" 
+                            Icon="plus" 
+                            OnClick="AddEditEnvironmentVariable"
+                            Style="width: 100%;">
+                        Add Environment Variable
+                    </Button>
+                </div>
+            </FormItem>
+        }
+
+        <FormItem Label="Enabled">
+            <Switch @bind-Value="@context.Enabled" CheckedChildren="Yes" UnCheckedChildren="No" />
+        </FormItem>
+
+    </Form>
+</Modal>
+
+
 @code {
     private List<McpServerConfig> _items = new();
     private bool _showDialog;
     private McpServerConfig? _editing;
-    private string? _fetchingId;
+    //private string? _fetchingId;
     // tools modal state
     private bool _showToolsModal;
     private string? _toolsLoadingId;
@@ -105,14 +506,9 @@
         public string? FormattedJson { get; set; }
     }
 
-    protected override async Task OnInitializedAsync()
-    {
-        await ReloadAsync();
-    }
-
     private async Task ReloadAsync()
     {
-        _items = await McpService.ListAsync();
+        _items = await McpService.ListAsync(); 
         StateHasChanged();
     }
 
@@ -190,28 +586,7 @@
             _message.Error($"删除失败: {ex.Message}");
         }
     }
-
-    private async Task FetchProto(McpServerConfig item)
-    {
-        try
-        {
-            _fetchingId = item.Id;
-            StateHasChanged();
-            var (tools, prompts) = await McpService.FetchAndCacheSchemaAsync(item.Id);
-            _message.Success($"已获取: 工具 {tools} 个，提示词 {prompts} 个");
-            await ReloadAsync();
-        }
-        catch (Exception ex)
-        {
-            _message.Error($"获取失败: {ex.Message}");
-        }
-        finally
-        {
-            _fetchingId = null;
-            StateHasChanged();
-        }
-    }
-
+     
     private int GetToolsCount(McpServerConfig cfg)
     {
         if (string.IsNullOrWhiteSpace(cfg.SchemaCacheJson)) return 0;
@@ -229,14 +604,14 @@
         _showDialog = false;
     }
 
-    private async Task ViewTools(McpServerConfig item)
+    private async Task ViewTools(McpServerInfo item)
     {
         try
         {
-            _toolsLoadingId = item.Id;
+            _toolsLoadingId = item.ServerId;
             _tools.Clear();
             StateHasChanged();
-            var details = await McpService.GetToolsDetailedAsync(item.Id);
+            var details = await McpService.GetToolsDetailedAsync(item.ServerId);
             // map to local list for UI
             _tools.AddRange(details.Select(t => new ToolRow {
                 Id = t.Id,
@@ -292,6 +667,8 @@
         _showToolsModal = false;
         _tools.Clear();
     }
+
+    protected void InspectServer(string serverId) => NavigationManager.NavigateTo($"/inspector?server={serverId}");
 }
 
 <Modal Title="MCP 工具列表" Visible="@_showToolsModal" OnOk="CloseToolsModal" OnCancel="CloseToolsModal" Width="800">

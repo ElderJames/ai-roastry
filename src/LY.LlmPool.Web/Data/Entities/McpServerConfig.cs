@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -13,6 +14,12 @@ namespace LY.LlmPool.Web.Data.Entities
         public string? Command { get; set; }
         public string? Args { get; set; }
         public string? Env { get; set; }
+
+        public string? Headers  { get; set; }
+
+        [Required(ErrorMessage = "Server type is required")]
+        [DisplayName("Server Type")]
+        public string Type { get; set; } = "";
         public bool IsEnabled { get; set; } = true;
         public string? ConfigJson { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

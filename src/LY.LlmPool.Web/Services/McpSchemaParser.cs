@@ -35,6 +35,33 @@ namespace LY.LlmPool.Web.Services
             }
         }
 
+        public static (int tools, int prompts, int resources) McpParseCounts(string json)
+        {
+            try
+            {
+                var opts = new JsonDocumentOptions { AllowTrailingCommas = true };
+                using var doc = JsonDocument.Parse(json, opts);
+                int tools = 0, prompts = 0, resources = 0;
+                if (doc.RootElement.TryGetProperty("tools", out var toolsElem) && toolsElem.ValueKind == JsonValueKind.Array)
+                {
+                    tools = toolsElem.GetArrayLength();
+                }
+                if (doc.RootElement.TryGetProperty("prompts", out var promptsElem) && promptsElem.ValueKind == JsonValueKind.Array)
+                {
+                    prompts = promptsElem.GetArrayLength();
+                }
+                if (doc.RootElement.TryGetProperty("resources", out var resourcesElem) && promptsElem.ValueKind == JsonValueKind.Array)
+                {
+                    resources = resourcesElem.GetArrayLength();
+                }
+                return (tools, prompts, resources);
+            }
+            catch
+            {
+                return (0, 0,0);
+            }
+        }
+
         public static List<(string id, string name)> GetTools(string json)
         {
             var list = new List<(string id, string name)>();

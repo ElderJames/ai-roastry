@@ -1,10 +1,12 @@
-﻿using LY.LlmPool.Web.Data;
+﻿using HandlebarsDotNet;
+using LY.LlmPool.Web.Data;
+using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Aggregation;
 using Microsoft.EntityFrameworkCore;
+using ModelContextProtocol;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-
 namespace LY.LlmPool.Web.Services;
 
 /// <summary>
@@ -61,27 +63,21 @@ public class McpServerService : IMcpServerService
         }
     } 
     /// <summary>
-    /// 待完善
+    /// 
     /// </summary>
     /// <param name="serverId"></param>
     /// <param name="serverConfig"></param>
     /// <returns></returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="ArgumentNullException"></exception>
-    public async Task CreateServerAsync(string serverId, McpServerConfigDto serverConfig)
+    public async Task CreateServerAsync(McpServerConfigDto serverConfig)
     {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         try
         {
-            if (string.IsNullOrWhiteSpace(serverId))
-                throw new ArgumentException("Server ID is required", nameof(serverId));
-
             if (serverConfig == null)
                 throw new ArgumentNullException(nameof(serverConfig));
-
-            // Check if server ID already exists
-            if (await ServerExistsAsync(serverId))
-                throw new ArgumentException($"Server with ID '{serverId}' already exists");
-
+             
             // Validate the configuration
             if (!ValidateServerConfig(serverConfig))
             {
@@ -89,65 +85,74 @@ public class McpServerService : IMcpServerService
                 throw new ArgumentException($"Invalid configuration: {string.Join(", ", errors)}");
             }
             //更新数据库 todo
-            //await UpdateConfigurationFileAsync(serverId, serverConfig);
-
+            var data = AsMcpServerConfigDto(serverConfig);
+           
+            dbContext.Add(data);
+            
             // Add only the new MCP client for this server
-            _logger.LogInformation("Adding MCP client for new server {ServerId}", serverId);
-            await _mcpClientsFactory.AddClientAsync(serverId);
+            _logger.LogInformation("Adding MCP client for new server {ServerId}", serverConfig.Id);
+            await _mcpClientsFactory.AddClientAsync(serverConfig.Id);
 
-            _logger.LogInformation("Created MCP server {ServerId}", serverId);
+            await dbContext.SaveChangesAsync();
+            _logger.LogInformation("Created MCP server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating MCP server {ServerId}", serverId);
+            _logger.LogError(ex, "Error creating MCP server {Name}", serverConfig.Name);
             throw;
         }
     }
     /// <summary>
-    /// 待完善
+    /// 
     /// </summary>
     /// <param name="serverId"></param>
     /// <param name="serverConfig"></param>
     /// <returns></returns>
     /// <exception cref="ArgumentException"></exception>
     /// <exception cref="ArgumentNullException"></exception>
-    public async Task UpdateServerAsync(string serverId, McpServerConfigDto serverConfig)
+    public async Task UpdateServerAsync(McpServerConfigDto serverConfig)
     {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         try
-        {
-            if (string.IsNullOrWhiteSpace(serverId))
-                throw new ArgumentException("Server ID is required", nameof(serverId));
+        { 
+            var entity = await dbContext.McpServerConfigs.FirstOrDefaultAsync(x => x.Id == serverConfig.Id);
+            if (string.IsNullOrWhiteSpace(serverConfig.Id))
+                throw new ArgumentException("Server ID is required", nameof(serverConfig.Id));
 
-            if (serverConfig == null)
-                throw new ArgumentNullException(nameof(serverConfig));
-
-            // Check if server exists
-            if (!await ServerExistsAsync(serverId))
-                throw new ArgumentException($"Server with ID '{serverId}' not found");
-
+            if (entity == null)
+                throw new ArgumentNullException(nameof(entity));
+             
             // Validate the configuration
             if (!ValidateServerConfig(serverConfig))
             {
                 var errors = GetValidationErrors(serverConfig);
                 throw new ArgumentException($"Invalid configuration: {string.Join(", ", errors)}");
             }
-            //更新数据库 todo
-            //await UpdateConfigurationFileAsync(serverId, serverConfig);
-
+            var data = AsMcpServerConfigDto(serverConfig);
+            entity.Name = data.Name;
+            entity.Type = data.Type;
+            entity.Command = data.Command;
+            entity.Url = data.Url;
+            entity.Args = data.Args;
+            entity.Env = data.Env;
+            entity.Headers = data.Headers;
+            entity.IsEnabled = data.IsEnabled;
+            entity.UpdatedAt = DateTime.UtcNow;
+            await dbContext.SaveChangesAsync();
             // Update only the specific MCP client for this server
-            _logger.LogInformation("Updating MCP client for server {ServerId}", serverId);
-            await _mcpClientsFactory.UpdateClientAsync(serverId);
-
-            _logger.LogInformation("Updated MCP server {ServerId}", serverId);
+            _logger.LogInformation("Updating MCP client for server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
+            await _mcpClientsFactory.UpdateClientAsync(serverConfig.Id);
+             
+            _logger.LogInformation("Updated MCP server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error updating MCP server {ServerId}", serverId);
+            _logger.LogError(ex, "Error updating MCP server {ServerId}", serverConfig.Id);
             throw;
         }
     }
     /// <summary>
-    /// 待完善
+    ///
     /// </summary>
     /// <param name="serverId"></param>
     /// <param name="serverConfig"></param>
@@ -156,21 +161,23 @@ public class McpServerService : IMcpServerService
     /// <exception cref="ArgumentNullException"></exception>
     public async Task DeleteServerAsync(string serverId)
     {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync(); 
         try
         {
             if (string.IsNullOrWhiteSpace(serverId))
                 throw new ArgumentException("Server ID is required", nameof(serverId));
-
-            // Check if server exists
-            if (!await ServerExistsAsync(serverId))
-                throw new ArgumentException($"Server with ID '{serverId}' not found");
-            //更新数据库 todo
-            //await RemoveServerFromConfigurationAsync(serverId);
+             
+            //更新数据库 
+            var entity = await dbContext.McpServerConfigs.FirstOrDefaultAsync(x => x.Id == serverId);
+            if (entity == null) 
+                throw new ArgumentException($"Server with Name '{entity?.Name}' not found");
+            dbContext.McpServerConfigs.Remove(entity);
+            await dbContext.SaveChangesAsync();
 
             // Remove only the specific MCP client for this server
             _logger.LogInformation("Removing MCP client for deleted server {ServerId}", serverId);
             await _mcpClientsFactory.RemoveClientAsync(serverId);
-
+           
             _logger.LogInformation("Deleted MCP server {ServerId}", serverId);
         }
         catch (Exception ex)
@@ -180,13 +187,12 @@ public class McpServerService : IMcpServerService
         }
     }
     /// <summary>
-    /// 待完善
+    /// 
     /// </summary>
     /// <param name="serverId"></param>
-    /// <param name="serverConfig"></param>
+    /// <param name="enabled"></param>
     /// <returns></returns>
     /// <exception cref="ArgumentException"></exception>
-    /// <exception cref="ArgumentNullException"></exception>
     public async Task ToggleServerStatusAsync(string serverId, bool enabled)
     {
         try
@@ -240,6 +246,22 @@ public class McpServerService : IMcpServerService
         }
     }
 
+    public McpServerConfig AsMcpServerConfigDto(McpServerConfigDto serverConfig)
+    {
+
+        return new McpServerConfig
+        {
+            Id = serverConfig.Id,
+            Name = serverConfig.Name ?? "",
+            Type = serverConfig.Type ?? "http",
+            Command = serverConfig.Command,
+            Url = serverConfig.Url ?? "",
+            Args = (serverConfig.Args != null && serverConfig.Args.Any()) ? string.Join("\n", serverConfig.Args) : null, //(serverConfig.Args != null && serverConfig.Args.Count() > 0) ? JsonSerializer.Serialize(serverConfig.Args) : null,
+            Env = (serverConfig.Env != null && serverConfig.Env.Any()) ? JsonSerializer.Serialize(serverConfig.Env) : null,
+            Headers = (serverConfig.Headers != null && serverConfig.Headers.Any()) ? JsonSerializer.Serialize(serverConfig.Headers) : null,
+            IsEnabled = serverConfig.Enabled ?? true
+        };
+    }
     private string GetConfigurationSummary(McpServerConfigDto config)
     {
         if (!string.IsNullOrEmpty(config.Command))
@@ -262,19 +284,17 @@ public class McpServerService : IMcpServerService
         { 
             // Read the current configuration
             await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-            var mcpServerConfigs = await dbContext.McpServerConfigs.AsNoTracking().ToListAsync();
-            var mcpServerConfigDtos = _mcpClientsFactory.ASMcpServerConfig(mcpServerConfigs);
+            var entity = await dbContext.McpServerConfigs.FirstOrDefaultAsync(x => x.Id == serverId);
+            if (string.IsNullOrWhiteSpace(serverId))
+                throw new ArgumentException("Server ID is required", nameof(serverId));
+
 
             // Update the server status
-            if (mcpServerConfigDtos.ContainsKey(serverId))
+            if (entity != null)
             {
                 //更新数据库 todo
-                mcpServerConfigDtos[serverId].Enabled = enabled;
-
-                // Serialize and write back to file
-                var json = JsonSerializer.Serialize(mcpServerConfigDtos, GetJsonSerializerOptions());
-
-               
+                entity.IsEnabled = enabled;
+                await dbContext.SaveChangesAsync();
             }
             else
             {
@@ -283,7 +303,7 @@ public class McpServerService : IMcpServerService
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Failed to update server status in configuration file: {ex.Message}", ex);
+            throw new InvalidOperationException($"Failed to update server status in configuration: {ex.Message}", ex);
         }
     }
  
@@ -298,5 +318,103 @@ public class McpServerService : IMcpServerService
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
     }
-  
+
+    public async Task<(int tools, int prompts, int resources)> FetchAndCacheSchemaAsync(string id, CancellationToken ct = default)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var entity = await dbContext.McpServerConfigs.FirstOrDefaultAsync(x => x.Id == id);
+
+        if (entity == null) throw new InvalidOperationException("MCP config not found");
+
+        string? content = null;
+
+        var mcpClient = await _mcpClientsFactory.GetMcpClientAsync(id, ct);
+        if (mcpClient == null)
+        {
+            throw new InvalidOperationException($"Client not found for server '{id}'");
+        }
+
+        // Use the official SDK only (no HTTP fallback). Build an HttpClient and ask the factory to create an SDK adapter.
+        try
+        { 
+           
+            var tools = new List<object>();
+            try
+            {
+                await foreach (var t in mcpClient.EnumerateToolsAsync(McpJsonUtilities.DefaultOptions, ct))
+                {
+                    try
+                    {
+                        tools.Add(new
+                        {
+                            id = t.Name ?? string.Empty,
+                            name = string.IsNullOrWhiteSpace(t.Title) ? (t.Name ?? string.Empty) : t.Title,
+                            description = t.Description,
+                            json_schema = t.JsonSchema
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Failed to enumerate tool {Tool} from MCP {Id}", t?.Name, id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // If enumeration fails part-way (or immediately), log but continue to attempt prompts
+                _logger.LogDebug(ex, "Failed to enumerate tools from MCP {Id}", id);
+            }
+
+            var prompts = new List<object>();
+            try
+            {
+                var ps = await mcpClient.ListPromptsAsync(ct).ConfigureAwait(false);
+                foreach (var p in ps)
+                {
+                    prompts.Add(new { name = p.Name, title = p.Title, description = p.Description });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to list prompts from MCP {Id}", id);
+            }
+
+            var resources = new List<object>();
+            try
+            {
+                var ps = await mcpClient.ListResourcesAsync(ct).ConfigureAwait(false);
+                foreach (var p in ps)
+                {
+                    resources.Add(new { name = p.Name, title = p.Title, description = p.Description });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to list prompts from MCP {Id}", id);
+            }
+
+            var wrapper = new { tools, prompts, resources };
+            content = JsonSerializer.Serialize(wrapper, McpJsonUtilities.DefaultOptions);
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SDK-based MCP discovery failed for MCP {Id}", id);
+            throw new InvalidOperationException("Failed to fetch MCP schema/proto from server via SDK.", ex);
+        }
+
+        if (string.IsNullOrEmpty(content))
+        {
+            throw new InvalidOperationException("Failed to fetch MCP schema/proto from server.");
+        }
+
+        entity.SchemaCacheJson = content;
+        await dbContext.SaveChangesAsync(ct);
+
+        return ParseCounts(content);
+    }
+    public static (int tools, int prompts,int resources) ParseCounts(string json)
+    {
+        return McpSchemaParser.McpParseCounts(json);
+    }
 }

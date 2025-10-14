@@ -11,6 +11,7 @@ namespace LY.LlmPool.Web.Services.Aggregation;
 
 public class McpServerConfigDto
 {
+    public string Id { get; set; }
     public string? Name { get; set; }
     /// <summary>
     /// if the server is enabled. Defaults to true.

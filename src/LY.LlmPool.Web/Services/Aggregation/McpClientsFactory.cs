@@ -3,6 +3,7 @@ using LY.LlmPool.Web.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Client;
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace LY.LlmPool.Web.Services.Aggregation;
 
@@ -258,13 +259,19 @@ public sealed class McpClientsFactory
         return mcpServerConfig
                 .ToDictionary(c => c.Id, c => new McpServerConfigDto
                 {
+                    Id = c.Id,
                     Name = c.Name,
                     Url = c.Url,
                     Enabled = c.IsEnabled,
                     Command = c.Command,
-                    Args = c.Args?.Split(","),
-                    Env = c.Env?.Split(",").Select(e => e.Split('=')).ToDictionary(kv => kv[0], kv => kv.Length > 1 ? kv[1] : null),
-                    Type = "http",//默认http，后续可扩展stdio等
+                    Args = string.IsNullOrWhiteSpace(c.Args) ? default :
+                            c.Args.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(arg => arg.Trim())
+                            .Where(arg => !string.IsNullOrWhiteSpace(arg))
+                            .ToArray(),
+                    Env = string.IsNullOrWhiteSpace(c.Env) ? new() : JsonSerializer.Deserialize<Dictionary<string, string?>>(c.Env),
+                    Headers = string.IsNullOrWhiteSpace(c.Headers) ? new() : JsonSerializer.Deserialize<Dictionary<string, string>>(c.Headers),
+                    Type = string.IsNullOrWhiteSpace(c.Type) ? "http" : c.Type,
                 });
     }
 
