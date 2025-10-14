@@ -666,4 +666,120 @@ public class PromptParameterServiceTests
     }
 
     #endregion
+
+    #region 环境变量替换测试
+
+    [Fact]
+    public void ReplaceParameters_WithEnvironmentVariables_ReplacesCorrectly()
+    {
+        // Arrange
+        var template = "Current date is @date, time is @time";
+
+        // Act
+        var result = _service.ReplaceParameters(template, null);
+
+        // Assert
+        Assert.DoesNotContain("@date", result);
+        Assert.DoesNotContain("@time", result);
+        Assert.Contains(DateTime.Now.Year.ToString(), result);
+        Assert.Matches(@"\d{4}-\d{2}-\d{2}", result); // 日期格式
+        Assert.Matches(@"\d{2}:\d{2}:\d{2}", result); // 时间格式
+    }
+
+    [Fact]
+    public void ReplaceParameters_WithParametersAndEnvironmentVariables_ReplacesBoth()
+    {
+        // Arrange
+        var template = "Hello {{name}}, today is @date at @time";
+        var parameters = new Dictionary<string, object>
+        {
+            { "name", "Alice" }
+        };
+
+        // Act
+        var result = _service.ReplaceParameters(template, parameters);
+
+        // Assert
+        Assert.Contains("Hello Alice", result);
+        Assert.DoesNotContain("{{name}}", result);
+        Assert.DoesNotContain("@date", result);
+        Assert.DoesNotContain("@time", result);
+        Assert.Contains(DateTime.Now.Year.ToString(), result);
+    }
+
+    [Fact]
+    public void ReplaceParameters_WithCustomDateFormat_ReplacesCorrectly()
+    {
+        // Arrange
+        var template = "Date: @datetime:yyyy/MM/dd HH:mm";
+
+        // Act
+        var result = _service.ReplaceParameters(template, null);
+
+        // Assert
+        Assert.DoesNotContain("@datetime", result);
+        Assert.Matches(@"\d{4}/\d{2}/\d{2} \d{2}:\d{2}", result);
+    }
+
+    [Fact]
+    public void ReplaceParameters_WithTimestampAndGuid_ReplacesCorrectly()
+    {
+        // Arrange
+        var template = "Timestamp: @timestamp, ID: @guid:N";
+
+        // Act
+        var result = _service.ReplaceParameters(template, null);
+
+        // Assert
+        Assert.DoesNotContain("@timestamp", result);
+        Assert.DoesNotContain("@guid", result);
+        Assert.Matches(@"Timestamp: \d+", result);
+        Assert.Matches(@"ID: [a-f0-9]{32}", result); // GUID without hyphens
+    }
+
+    [Fact]
+    public void ReplaceParameters_WithSystemInfo_ReplacesCorrectly()
+    {
+        // Arrange
+        var template = "Machine: @machine, OS: @os";
+
+        // Act
+        var result = _service.ReplaceParameters(template, null);
+
+        // Assert
+        Assert.DoesNotContain("@machine", result);
+        Assert.DoesNotContain("@os", result);
+        Assert.Contains(Environment.MachineName, result);
+    }
+
+    [Fact]
+    public void ReplaceParameters_WithComplexMix_ReplacesAllCorrectly()
+    {
+        // Arrange
+        var template = "Hello {{*name|用户名}}, today is @date. Your ID is @guid:N and timestamp is @timestamp.";
+        var parameters = new Dictionary<string, object>
+        {
+            { "name", "Bob" }
+        };
+
+        // Act
+        var result = _service.ReplaceParameters(template, parameters);
+
+        // Assert
+        // 验证参数替换
+        Assert.Contains("Hello Bob", result);
+        Assert.DoesNotContain("{{", result);
+        
+        // 验证环境变量替换
+        Assert.DoesNotContain("@date", result);
+        Assert.DoesNotContain("@guid", result);
+        Assert.DoesNotContain("@timestamp", result);
+        
+        // 验证内容存在
+        Assert.Matches(@"\d{4}-\d{2}-\d{2}", result); // 日期
+        Assert.Matches(@"[a-f0-9]{32}", result); // GUID
+        Assert.Matches(@"timestamp is \d+", result); // 时间戳
+    }
+
+    #endregion
 }

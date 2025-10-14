@@ -57,33 +57,44 @@ public class PromptParameterService
     // 参数名支持字母、数字、下划线和点号(用于嵌套参数如user.name)
     private static readonly Regex ParameterPattern = new(@"\{\{(\*?)([a-zA-Z_][a-zA-Z0-9_.]*?)(?:\|([^}]*))?\}\}", RegexOptions.Compiled);
 
-    // 旧格式的正则,用于向后兼容
-    private static readonly Regex LegacyParameterPattern = new(@"\{\{([a-zA-Z_][a-zA-Z0-9_.]*?)\}\}", RegexOptions.Compiled);
+    // 匹配 @variable 格式的环境变量 (支持格式化参数,如 @datetime:yyyy-MM-dd HH:mm:ss)
+    // 格式字符串匹配非贪婪模式,在遇到 ., , ; ! ? @ 或换行,或者空格+and/is/or/the等常见连接词时停止
+    private static readonly Regex EnvironmentVariablePattern = new(@"@([a-zA-Z_][a-zA-Z0-9_]*)(?::([^.,;!?@\r\n]+?)(?=\s+(?:and|is|or|the|to|in|on|at|of|for|with|from|by)\b|[.,;!?@\r\n]|$))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>
-    /// 替换Prompt模板中的参数占位符
+    /// 替换Prompt模板中的参数占位符和环境变量
     /// </summary>
     /// <param name="promptTemplate">包含参数占位符的Prompt模板</param>
     /// <param name="parameters">参数字典</param>
     /// <returns>替换后的Prompt内容</returns>
     public string ReplaceParameters(string promptTemplate, Dictionary<string, object>? parameters)
     {
-        if (string.IsNullOrEmpty(promptTemplate) || parameters == null || parameters.Count == 0)
+        if (string.IsNullOrEmpty(promptTemplate))
         {
             return promptTemplate;
         }
 
-        return ParameterPattern.Replace(promptTemplate, match =>
+        // 第一步: 替换参数占位符 {{param}}
+        string result = promptTemplate;
+        if (parameters != null && parameters.Count > 0)
         {
-            var paramName = match.Groups[2].Value; // Group 2 现在是参数名
-            if (parameters.TryGetValue(paramName, out var value))
+            result = ParameterPattern.Replace(result, match =>
             {
-                return value?.ToString() ?? string.Empty;
-            }
+                var paramName = match.Groups[2].Value; // Group 2 现在是参数名
+                if (parameters.TryGetValue(paramName, out var value))
+                {
+                    return value?.ToString() ?? string.Empty;
+                }
 
-            // 如果参数不存在，保留原始占位符
-            return match.Value;
-        });
+                // 如果参数不存在，保留原始占位符
+                return match.Value;
+            });
+        }
+
+        // 第二步: 替换环境变量 @variable
+        result = ReplaceEnvironmentVariables(result);
+
+        return result;
     }
 
     /// <summary>
@@ -625,4 +636,161 @@ public class PromptParameterService
             return null; // 解析失败，跳过验证
         }
     }
+
+    #region 环境变量替换
+
+    /// <summary>
+    /// 替换 Prompt 中的环境变量 (@variable 格式)
+    /// </summary>
+    /// <param name="promptContent">Prompt 内容</param>
+    /// <returns>替换后的 Prompt 内容</returns>
+    private string ReplaceEnvironmentVariables(string promptContent)
+    {
+        if (string.IsNullOrEmpty(promptContent))
+        {
+            return promptContent;
+        }
+
+        var now = DateTime.Now;
+        var utcNow = DateTime.UtcNow;
+
+        return EnvironmentVariablePattern.Replace(promptContent, match =>
+        {
+            var variableName = match.Groups[1].Value.ToLowerInvariant();
+            var format = match.Groups.Count > 2 && match.Groups[2].Success 
+                ? match.Groups[2].Value 
+                : null;
+
+            return variableName switch
+            {
+                // 日期时间相关
+                "datetime" => format != null ? FormatDateTime(now, format) : GetFullDateTime(now),
+                "date" => FormatDateTime(now, format ?? "yyyy-MM-dd"),
+                "time" => FormatDateTime(now, format ?? "HH:mm:ss"),
+                "year" => now.Year.ToString(),
+                "month" => FormatDateTime(now, format ?? "MM"),
+                "day" => FormatDateTime(now, format ?? "dd"),
+                "weekday" => GetWeekdayName(now, format),
+                "timezone" => GetTimezoneInfo(format),
+                
+                // Unix 时间戳
+                "timestamp" => GetUnixTimestamp(format),
+                "timestamp_ms" => GetUnixTimestampMs(),
+                
+                // UTC 时间
+                "utc" => FormatDateTime(utcNow, format ?? "yyyy-MM-dd HH:mm:ss"),
+                "utc_date" => FormatDateTime(utcNow, format ?? "yyyy-MM-dd"),
+                "utc_time" => FormatDateTime(utcNow, format ?? "HH:mm:ss"),
+                
+                // 系统信息
+                // "user" => userName ?? Environment.UserName,
+                "machine" => Environment.MachineName,
+                "os" => Environment.OSVersion.ToString(),
+                
+                // 随机值
+                "guid" => SafeFormatGuid(format),
+                "random" => GetRandomValue(format),
+                
+                // 未知变量保持原样
+                _ => match.Value
+            };
+        });
+    }
+
+    private static string GetFullDateTime(DateTime dateTime)
+    {
+        // 生成完整的日期时间信息: 2024-10-13 15:30:45 星期日 UTC+08:00
+        var weekdayZh = dateTime.ToString("dddd", new System.Globalization.CultureInfo("zh-CN"));
+        var tz = TimeZoneInfo.Local;
+        var offset = tz.BaseUtcOffset.ToString(@"\+hh\:mm");
+        return $"{dateTime:yyyy-MM-dd HH:mm:ss} {weekdayZh} UTC{offset}";
+    }
+
+    private static string FormatDateTime(DateTime dateTime, string format)
+    {
+        try
+        {
+            return dateTime.ToString(format);
+        }
+        catch
+        {
+            return dateTime.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+    }
+
+    private static string GetWeekdayName(DateTime dateTime, string? format)
+    {
+        return format?.ToLowerInvariant() switch
+        {
+            "en" => dateTime.ToString("dddd", new System.Globalization.CultureInfo("en-US")),
+            "short" => dateTime.ToString("ddd", new System.Globalization.CultureInfo("en-US")),
+            "number" => ((int)dateTime.DayOfWeek).ToString(),
+            _ => dateTime.ToString("dddd", new System.Globalization.CultureInfo("zh-CN"))
+        };
+    }
+
+    private static string GetTimezoneInfo(string? format)
+    {
+        var tz = TimeZoneInfo.Local;
+        return format?.ToLowerInvariant() switch
+        {
+            "name" => tz.DisplayName,
+            "id" => tz.Id,
+            "offset" => tz.BaseUtcOffset.ToString(@"hh\:mm"),
+            _ => tz.BaseUtcOffset.ToString(@"\+hh\:mm")
+        };
+    }
+
+    private static string GetUnixTimestamp(string? format)
+    {
+        var useUtc = format?.ToLowerInvariant() == "utc";
+        var dateTime = useUtc ? DateTime.UtcNow : DateTime.Now;
+        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var offset = useUtc ? dateTime : dateTime.ToUniversalTime();
+        return ((long)(offset - epoch).TotalSeconds).ToString();
+    }
+
+    private static string GetUnixTimestampMs()
+    {
+        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        return ((long)(DateTime.UtcNow - epoch).TotalMilliseconds).ToString();
+    }
+
+    private static string GetRandomValue(string? format)
+    {
+        var random = new Random();
+        if (string.IsNullOrEmpty(format))
+        {
+            return random.Next(0, 101).ToString();
+        }
+
+        if (int.TryParse(format, out var max))
+        {
+            return random.Next(0, max + 1).ToString();
+        }
+
+        var parts = format.Split('-');
+        if (parts.Length == 2 && int.TryParse(parts[0], out var min) && int.TryParse(parts[1], out var maxRange))
+        {
+            return random.Next(min, maxRange + 1).ToString();
+        }
+
+        return random.Next(0, 101).ToString();
+    }
+
+    /// <summary>
+    /// 安全格式化 Guid，仅允许合法格式，非法格式回退为 "D"
+    /// </summary>
+    private static string SafeFormatGuid(string? format)
+    {
+        var allowedFormats = new[] { "D", "d", "N", "n", "B", "b", "P", "p", "X", "x" };
+        var fmt = string.IsNullOrWhiteSpace(format) ? "D" : format.Trim();
+        if (!allowedFormats.Contains(fmt))
+        {
+            fmt = "D";
+        }
+        return Guid.NewGuid().ToString(fmt);
+    }
+
+    #endregion
 }

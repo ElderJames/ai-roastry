@@ -19,11 +19,11 @@ public class DatetimeFormatDemo
     [Fact]
     public void Demo_DatetimeFullFormat()
     {
-        var service = new PromptEnvironmentService();
+        var service = new PromptParameterService();
         
         // 演示默认完整格式
         var prompt1 = "现在是 @datetime";
-        var result1 = service.ReplaceEnvironmentVariables(prompt1);
+        var result1 = service.ReplaceParameters(prompt1, null);
         _output.WriteLine("完整格式:");
         _output.WriteLine(result1);
         _output.WriteLine("");
@@ -36,14 +36,14 @@ public class DatetimeFormatDemo
 时区: @timezone
 完整: @datetime
 ";
-        var result2 = service.ReplaceEnvironmentVariables(prompt2);
+        var result2 = service.ReplaceParameters(prompt2, null);
         _output.WriteLine("各组件对比:");
         _output.WriteLine(result2);
         _output.WriteLine("");
         
         // 演示自定义格式仍然可用
         var prompt3 = "自定义格式: @datetime:yyyy年MM月dd日 HH时mm分ss秒";
-        var result3 = service.ReplaceEnvironmentVariables(prompt3);
+        var result3 = service.ReplaceParameters(prompt3, null);
         _output.WriteLine("自定义格式:");
         _output.WriteLine(result3);
         
@@ -56,7 +56,7 @@ public class DatetimeFormatDemo
     [Fact]
     public void Demo_AllEnvironmentVariables()
     {
-        var service = new PromptEnvironmentService();
+        var service = new PromptParameterService();
         
         var prompt = @"
 === 时间信息 ===
@@ -79,7 +79,6 @@ UTC日期: @utc_date
 UTC时间: @utc_time
 
 === 系统信息 ===
-用户: @user
 主机: @machine
 系统: @os
 
@@ -89,13 +88,13 @@ GUID: @guid
 随机0-1000: @random:1000
 ";
         
-        var result = service.ReplaceEnvironmentVariables(prompt);
+        var result = service.ReplaceParameters(prompt, null);
         _output.WriteLine("所有环境变量示例:");
         _output.WriteLine(result);
         
         // 验证所有变量都被替换
         Assert.DoesNotContain("@datetime", result);
         Assert.DoesNotContain("@date", result);
-        Assert.DoesNotContain("@user", result);
+        Assert.DoesNotContain("@machine", result);
     }
 }

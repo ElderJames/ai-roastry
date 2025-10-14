@@ -21,7 +21,6 @@
 @inject PromptService PromptService
 @inject ToolMetadataService ToolMetadataService
 @inject ToolProviderService ToolProviderService
-@inject PromptEnvironmentService PromptEnvironmentService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
@@ -2244,15 +2243,16 @@
         {
             // Process the prompt content with parameter values
             var processedPromptContent = _editingPrompt.Content;
+            
+            // 🔧 使用 PromptParameterService 正确替换参数（支持所有格式：{{param}}、{{*param}}、{{param|desc}}、{{*param|desc}}）
+            var parameterService = new PromptParameterService();
+            var paramDict = new Dictionary<string, object>();
             foreach (var param in _parameterValues)
             {
-                // 替换参数时需要考虑带 * 的情况
-                processedPromptContent = processedPromptContent.Replace($"{{{{{param.Key}}}}}", param.Value);
-                processedPromptContent = processedPromptContent.Replace($"{{{{*{param.Key}}}}}", param.Value);
+                paramDict[param.Key] = param.Value;
             }
-
-            // 🔥 替换环境变量 (如 @datetime, @user 等)
-            processedPromptContent = PromptEnvironmentService.ReplaceEnvironmentVariables(processedPromptContent);
+            // ReplaceParameters 方法现在已包含环境变量替换功能 (如 @datetime, @user 等)
+            processedPromptContent = parameterService.ReplaceParameters(processedPromptContent, paramDict);
 
             // 使用实例级别的取消令牌
             var cancellationToken = _testCancellationTokenSource.Token;

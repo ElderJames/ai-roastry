@@ -63,8 +63,7 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddScoped<LlmPoolService>();
 builder.Services.AddScoped<IChatClientService, ChatClientService>();
 builder.Services.AddScoped(sp => (ChatClientService)sp.GetRequiredService<IChatClientService>());
-builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状态服务,可被 Singleton 依赖
-builder.Services.AddSingleton<PromptEnvironmentService>(); // Singleton - 环境变量替换服务
+builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状态服务,可被 Singleton 依赖(包含环境变量替换功能)
 builder.Services.AddScoped<CallRecordService>();
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
 builder.Services.AddScoped<McpServerConfigService>();
