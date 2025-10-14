@@ -157,7 +157,11 @@
                                         {
                                             <div style="margin-bottom: 8px;display: flex; flex-direction: column; gap: 4px;">
                                                 <div style="display: flex; align-items: center;">
-                                                    <Text Strong="true" style="margin-right: 8px;">@($"{"{{" + param.Name + (param.Description != null ? "|" + param.Description : "") + "}}"}"):</Text>
+                                                    <Text Strong="true" style="margin-right: 8px;">@(param.Name):</Text>
+                                                    @if (param.IsRequired)
+                                                    {
+                                                        <Tag Color="@("red")" Style="margin-right: 8px;">必填</Tag>
+                                                    }
                                                     @if (!string.IsNullOrEmpty(param.Description))
                                                     {
                                                         <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45);">(@param.Description)</span>
@@ -167,7 +171,7 @@
                                                           AutoSize=true 
                                                           Value="@(_parameterValues.TryGetValue(param.Name, out var val) ? val : "")"
                                                           ValueChanged="@(newValue => OnParameterValueChanged(param.Name, newValue))"
-                                                          Placeholder="@($"请输入{param.Name}的值")" />
+                                                          Placeholder="@($"请输入{param.Name}的值" + (param.IsRequired ? " (必填)" : ""))" />
                                             </div>
                                         }
                                     </Panel>
@@ -455,15 +459,12 @@
                                                                     </div>
                                                                     
                                                                     @* 工具参数 *@
-                                                                    @if (functionCall.Arguments != null && functionCall.Arguments.Any())
-                                                                    {
-                                                                        <div class="tool-section">
-                                                                            <div class="tool-section-title">📥 参数</div>
-                                                                            <div class="tool-section-content">
-                                                                                <pre>@ToJson(functionCall.Arguments)</pre>
-                                                                            </div>
+                                                                    <div class="tool-section">
+                                                                        <div class="tool-section-title">📥 参数</div>
+                                                                        <div class="tool-section-content">
+                                                                            <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
                                                                         </div>
-                                                                    }
+                                                                    </div>
                                                                     
                                                                     @* 工具结果 *@
                                                                     @if (hasResult)
@@ -636,7 +637,7 @@
                                                                     <div style="margin-top: 4px; padding: 8px; background: #fafafa; border-radius: 3px;">
                                                                         <div style="margin-bottom: 8px;">
                                                                             <strong>Input:</strong>
-                                                                            <pre style="margin: 4px 0; font-size: 12px;">@toolCall.Arguments</pre>
+                                                                            <pre style="margin: 4px 0; font-size: 12px;">@(string.IsNullOrEmpty(toolCall.Arguments) ? "{}" : toolCall.Arguments)</pre>
                                                                         </div>
                                                                         @if (!string.IsNullOrEmpty(toolCall.Result))
                                                                         {
@@ -817,13 +818,10 @@
                                                             </span>
                                                         }
                                                     </div>
-                                                    @if (functionCall.Arguments != null && functionCall.Arguments.Any())
-                                                    {
-                                                        <div class="tool-call-section">
-                                                            <div style="color: #999; font-size: 12px; margin-bottom: 4px;">参数 (INPUT)</div>
-                                                            <pre>@ToJson(functionCall.Arguments)</pre>
-                                                        </div>
-                                                    }
+                                                    <div class="tool-call-section">
+                                                        <div style="color: #999; font-size: 12px; margin-bottom: 4px;">参数 (INPUT)</div>
+                                                        <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
+                                                    </div>
                                                 </div>
                                             }
                                             else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
@@ -2223,6 +2221,18 @@
             return;
         }
 
+        // 验证必传参数
+        var missingRequiredParams = _promptParameters
+            .Where(p => p.IsRequired && (!_parameterValues.ContainsKey(p.Name) || string.IsNullOrWhiteSpace(_parameterValues[p.Name])))
+            .Select(p => p.Name)
+            .ToList();
+
+        if (missingRequiredParams.Any())
+        {
+            _message.Error($"必填参数未填写: {string.Join(", ", missingRequiredParams)}");
+            return;
+        }
+
         // 创建新的取消令牌
         _testCancellationTokenSource?.Cancel();
         _testCancellationTokenSource?.Dispose();
@@ -2236,7 +2246,9 @@
             var processedPromptContent = _editingPrompt.Content;
             foreach (var param in _parameterValues)
             {
+                // 替换参数时需要考虑带 * 的情况
                 processedPromptContent = processedPromptContent.Replace($"{{{{{param.Key}}}}}", param.Value);
+                processedPromptContent = processedPromptContent.Replace($"{{{{*{param.Key}}}}}", param.Value);
             }
 
             // 🔥 替换环境变量 (如 @datetime, @user 等)

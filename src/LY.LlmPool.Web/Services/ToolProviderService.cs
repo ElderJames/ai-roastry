@@ -380,6 +380,21 @@ public class ToolProviderService
             using var execScope = _serviceProvider.CreateScope();
             var chatClientService = execScope.ServiceProvider.GetRequiredService<IChatClientService>();
 
+            // 🔑 验证必填参数
+            if (toolPrompt != null && !string.IsNullOrWhiteSpace(toolPrompt.Content))
+            {
+                var validationError = _promptParameterService.ValidateParametersDetailed(
+                    toolPrompt.Content,
+                    arguments
+                );
+                
+                if (validationError != null)
+                {
+                    _logger.LogWarning("Tool {ToolName} validation failed", app.Name);
+                    return validationError;
+                }
+            }
+
             // 构建消息列表
             var messages = new List<AIChatMessage>();
 
@@ -527,6 +542,21 @@ public class ToolProviderService
             
             try
             {
+                // 🔑 验证必填参数（如果有 Schema）
+                if (!string.IsNullOrWhiteSpace(mcpTool.ParametersSchema))
+                {
+                    var validationError = _promptParameterService.ValidateParametersFromSchemaDetailed(
+                        mcpTool.ParametersSchema,
+                        arguments
+                    );
+                    
+                    if (validationError != null)
+                    {
+                        _logger.LogWarning("MCP Tool {ToolName} validation failed", toolName);
+                        return validationError;
+                    }
+                }
+                
                 // 获取 MCP Client（McpClientsFactory 内部已有 ConcurrentDictionary 缓存）
                 var client = await mcpClientsFactory.GetMcpClientAsync(serverId, ct);
                 if (client == null)
