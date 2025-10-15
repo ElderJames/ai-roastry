@@ -1032,11 +1032,13 @@ public class ChatClientService : IChatClientService
                                 callId, toolCallInfo.IsSuccess, toolCallInfo.Result);
                             
                             // 🔑 立即yield结果更新，让前端能实时看到Result
+                            // 🔑 工具结果更新使用与原调用相同的 batchId（从工具调用信息中获取）
                             _logger.LogInformation("立即返回工具结果更新: CallId: {CallId}", callId);
                             yield return new ChatStreamingUpdate
                             {
                                 ToolCalls = new List<ToolCallInfo> { toolCallInfo },
-                                FinishReason = "tool_result" // 新的FinishReason，表示单个工具的结果更新
+                                FinishReason = "tool_result", // 新的FinishReason，表示单个工具的结果更新
+                                CallBatchId = null  // 🔑 结果更新不创建新批次，保持与原调用关联
                             };
                         }
                         else
@@ -1065,11 +1067,17 @@ public class ChatClientService : IChatClientService
                     // ⏱️ 延迟一小段时间，等待可能的 FunctionResultContent
                     await Task.Delay(100);
                     
+                    // 🔑 为这批并行调用生成唯一的批次ID
+                    var batchId = Guid.NewGuid().ToString("N");
+                    
                     yield return new ChatStreamingUpdate
                     {
                         ToolCalls = newToolCalls,
-                        FinishReason = "tool_calls"
+                        FinishReason = "tool_calls",
+                        CallBatchId = batchId  // 🔑 标识这是同一批次的并行调用
                     };
+                    
+                    _logger.LogInformation("工具调用批次 {BatchId} 包含 {Count} 个工具", batchId, newToolCalls.Count);
                     
                     // 标记这些工具调用已返回
                     foreach (var toolCall in newToolCalls)
@@ -1115,6 +1123,9 @@ public class ChatClientService : IChatClientService
         ResponseSegment? currentTextSegment = null;
         ResponseSegment? currentToolCallSegment = null;
         var toolCallsById = new Dictionary<string, ToolCallRecord>();
+        
+        // 🔑 追踪每个工具调用所属的批次ID
+        var callIdToBatchId = new Dictionary<string, string>();
         
         await foreach (var update in streamingUpdates)
         {
@@ -1191,6 +1202,12 @@ public class ChatClientService : IChatClientService
                             // 新的工具调用
                             toolCallsById[toolCall.CallId] = toolCall;
                             
+                            // 🔑 记录工具调用的批次ID
+                            if (!string.IsNullOrEmpty(update.CallBatchId))
+                            {
+                                callIdToBatchId[toolCall.CallId] = update.CallBatchId;
+                            }
+                            
                             // 只在首次出现时创建片段 (FinishReason 是 tool_calls)
                             if (update.FinishReason == "tool_calls")
                             {
@@ -1200,18 +1217,29 @@ public class ChatClientService : IChatClientService
                                     currentTextSegment = null;
                                 }
                                 
-                                // 封闭上一个工具片段
-                                if (currentToolCallSegment != null)
-                                {
-                                    currentToolCallSegment = null;
-                                }
+                                // 🔑 检查是否应该创建新的工具调用片段
+                                // 如果当前片段的 batchId 与新工具的 batchId 不同，则创建新片段
+                                var shouldCreateNewSegment = currentToolCallSegment == null ||
+                                    (currentToolCallSegment.CallBatchId != update.CallBatchId);
                                 
-                                currentToolCallSegment = new ResponseSegment
+                                if (shouldCreateNewSegment)
                                 {
-                                    Type = ResponseSegmentType.ToolCalls,
-                                    ToolCalls = new List<ToolCallRecord> { toolCall }
-                                };
-                                segments.Add(currentToolCallSegment);
+                                    // 封闭上一个工具片段
+                                    currentToolCallSegment = null;
+                                    
+                                    currentToolCallSegment = new ResponseSegment
+                                    {
+                                        Type = ResponseSegmentType.ToolCalls,
+                                        ToolCalls = new List<ToolCallRecord> { toolCall },
+                                        CallBatchId = update.CallBatchId  // 🔑 保存批次ID
+                                    };
+                                    segments.Add(currentToolCallSegment);
+                                }
+                                else
+                                {
+                                    // 同一批次，添加到当前片段
+                                    currentToolCallSegment.ToolCalls!.Add(toolCall);
+                                }
                                 
                                 hasUpdate = true;
                             }

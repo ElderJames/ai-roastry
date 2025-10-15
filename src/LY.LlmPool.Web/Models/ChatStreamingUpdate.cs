@@ -27,6 +27,13 @@ public class ChatStreamingUpdate
     /// 完成原因(如果有)
     /// </summary>
     public string? FinishReason { get; set; }
+
+    /// <summary>
+    /// 工具调用批次ID - 用于标识同一批次的并行调用
+    /// 同一批次的工具调用应该在界面上以网格布局并排显示
+    /// 不同批次的工具调用应该垂直排列
+    /// </summary>
+    public string? CallBatchId { get; set; }
 }
 
 /// <summary>

@@ -417,47 +417,65 @@
                                                         var toolResults = msg.Contents.OfType<Microsoft.Extensions.AI.FunctionResultContent>().ToDictionary(r => r.CallId);
                                                         var processedCallIds = new HashSet<string>();
                                                         
-                                                        // 🔥 新增：收集连续的工具调用以支持并行展示（忽略 FunctionResultContent）
-                                                        var contentGroups = new List<object>(); // 存储内容组：TextContent 或 List<FunctionCallContent>
+                                                        // 🔥 新增：根据 CallBatchId 分组工具调用以支持并行展示
+                                                        // 🔑 关键改进：按批次ID分组，而不是按连续性分组
+                                                        var contentGroups = new List<object>(); // 存储内容组：TextContent 或 Dictionary<batchId, List<FunctionCallContent>>
                                                         List<Microsoft.Extensions.AI.FunctionCallContent>? currentToolGroup = null;
+                                                        string? currentBatchId = null;
+                                                        
+                                                        // 🔑 首先收集所有 FunctionCallContent 并按 batchId 分组
+                                                        var toolCallsByBatch = new Dictionary<string, List<Microsoft.Extensions.AI.FunctionCallContent>>();
+                                                        var batchOrder = new List<string>(); // 保持批次顺序
                                                         
                                                         foreach (var content in msg.Contents)
                                                         {
                                                             if (content is Microsoft.Extensions.AI.FunctionCallContent funcCall)
                                                             {
-                                                                if (currentToolGroup == null)
+                                                                // 获取批次ID
+                                                                var batchId = funcCall.AdditionalProperties?.TryGetValue("CallBatchId", out var batchIdObj) == true
+                                                                    ? batchIdObj?.ToString() ?? funcCall.CallId  // 如果有 batchId 使用 batchId
+                                                                    : funcCall.CallId;  // 否则使用 callId 作为唯一批次
+                                                                
+                                                                if (!toolCallsByBatch.ContainsKey(batchId))
                                                                 {
-                                                                    currentToolGroup = new List<Microsoft.Extensions.AI.FunctionCallContent>();
+                                                                    toolCallsByBatch[batchId] = new List<Microsoft.Extensions.AI.FunctionCallContent>();
+                                                                    batchOrder.Add(batchId);
                                                                 }
-                                                                currentToolGroup.Add(funcCall);
+                                                                
+                                                                toolCallsByBatch[batchId].Add(funcCall);
                                                             }
                                                             else if (content is Microsoft.Extensions.AI.FunctionResultContent)
                                                             {
                                                                 // 🔥 关键：忽略 FunctionResultContent，它们会和 FunctionCallContent 配对显示
-                                                                // 不中断工具组，继续收集
                                                                 continue;
                                                             }
-                                                            else
+                                                            else if (content is Microsoft.Extensions.AI.TextContent textContent)
                                                             {
-                                                                // 遇到文本等其他内容，保存之前的工具组
-                                                                if (currentToolGroup != null)
+                                                                // 遇到文本，先封闭之前收集的工具批次
+                                                                if (toolCallsByBatch.Any())
                                                                 {
-                                                                    contentGroups.Add(currentToolGroup);
-                                                                    currentToolGroup = null;
+                                                                    // 按批次顺序添加工具调用组
+                                                                    foreach (var batchId in batchOrder)
+                                                                    {
+                                                                        contentGroups.Add(toolCallsByBatch[batchId]);
+                                                                    }
+                                                                    
+                                                                    toolCallsByBatch.Clear();
+                                                                    batchOrder.Clear();
                                                                 }
                                                                 
-                                                                // 添加当前内容
-                                                                if (content is Microsoft.Extensions.AI.TextContent)
-                                                                {
-                                                                    contentGroups.Add(content);
-                                                                }
+                                                                // 添加文本内容
+                                                                contentGroups.Add(textContent);
                                                             }
                                                         }
                                                         
-                                                        // 处理最后一组工具调用
-                                                        if (currentToolGroup != null)
+                                                        // 处理最后剩余的工具调用批次
+                                                        if (toolCallsByBatch.Any())
                                                         {
-                                                            contentGroups.Add(currentToolGroup);
+                                                            foreach (var batchId in batchOrder)
+                                                            {
+                                                                contentGroups.Add(toolCallsByBatch[batchId]);
+                                                            }
                                                         }
                                                         
                                                         // 🔥 按内容组渲染
@@ -477,74 +495,154 @@
                                                             }
                                                             else if (group is List<Microsoft.Extensions.AI.FunctionCallContent> toolGroup)
                                                             {
-                                                                @* 🔥 并行工具调用展示 - 网格布局 *@
-                                                                <div class="tool-calls-parallel-container">
-                                                                    @foreach (var functionCall in toolGroup)
-                                                                    {
-                                                                        // 避免重复处理
-                                                                        if (processedCallIds.Contains(functionCall.CallId))
+                                                                @* 🔥 工具调用展示 - 根据数量决定布局 *@
+                                                                @if (toolGroup.Count > 1)
+                                                                {
+                                                                    @* 多个工具 = 真正的并行调用 - 使用网格布局 *@
+                                                                    <div class="tool-calls-parallel-container">
+                                                                        <div class="parallel-header">
+                                                                            <Tag Color="TagColor.Cyan" Icon="@IconType.Outline.Thunderbolt">
+                                                                                ⚡ 并行执行 (@toolGroup.Count 个工具)
+                                                                            </Tag>
+                                                                        </div>
+                                                                        
+                                                                        <div class="parallel-tools-grid">
+                                                                        @foreach (var functionCall in toolGroup)
                                                                         {
-                                                                            continue;
-                                                                        }
-                                                                        processedCallIds.Add(functionCall.CallId);
-                                                                        
-                                                                        // 查找对应的结果
-                                                                        var hasResult = toolResults.TryGetValue(functionCall.CallId, out var functionResult);
-                                                                        
-                                                                        <div class="tool-call-card">
-                                                                            @* 工具调用头部 *@
-                                                                            <div class="tool-call-header">
-                                                                                <Tag Color="TagColor.Orange">🔧 @functionCall.Name</Tag>
-                                                                                @if (hasResult)
-                                                                                {
-                                                                                    @if (functionResult!.Exception == null)
+                                                                            // 避免重复处理
+                                                                            if (processedCallIds.Contains(functionCall.CallId))
+                                                                            {
+                                                                                continue;
+                                                                            }
+                                                                            processedCallIds.Add(functionCall.CallId);
+                                                                            
+                                                                            // 查找对应的结果
+                                                                            var hasResult = toolResults.TryGetValue(functionCall.CallId, out var functionResult);
+                                                                            
+                                                                            <div class="tool-call-card">
+                                                                                @* 工具调用头部 *@
+                                                                                <div class="tool-call-header">
+                                                                                    <Tag Color="TagColor.Orange">🔧 @functionCall.Name</Tag>
+                                                                                    @if (hasResult)
                                                                                     {
-                                                                                        <Tag Color="TagColor.Green">✓ 成功</Tag>
+                                                                                        @if (functionResult!.Exception == null)
+                                                                                        {
+                                                                                            <Tag Color="TagColor.Green">✓ 成功</Tag>
+                                                                                        }
+                                                                                        else
+                                                                                        {
+                                                                                            <Tag Color="TagColor.Red">✗ 失败</Tag>
+                                                                                        }
                                                                                     }
                                                                                     else
                                                                                     {
-                                                                                        <Tag Color="TagColor.Red">✗ 失败</Tag>
+                                                                                        <Tag Color="TagColor.Blue">⏳ 执行中...</Tag>
                                                                                     }
+                                                                                </div>
+                                                                                
+                                                                                @* 工具参数 *@
+                                                                                <div class="tool-section">
+                                                                                    <div class="tool-section-title">📥 参数</div>
+                                                                                    <div class="tool-section-content">
+                                                                                        <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
+                                                                                    </div>
+                                                                                </div>
+                                                                                
+                                                                                @* 工具结果 *@
+                                                                                @if (hasResult)
+                                                                                {
+                                                                                    @if (functionResult!.Exception == null && functionResult.Result != null)
+                                                                                    {
+                                                                                        <div class="tool-section">
+                                                                                            <div class="tool-section-title">📤 返回结果</div>
+                                                                                            <div class="tool-section-content tool-result-success">
+                                                                                                <pre>@(JsonSerializer.Deserialize<string>(functionResult.Result.ToString()))</pre>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    }
+                                                                                    else if (functionResult!.Exception != null)
+                                                                                    {
+                                                                                        <div class="tool-section">
+                                                                                            <div class="tool-section-title">❌ 执行错误</div>
+                                                                                            <div class="tool-section-content tool-result-error">
+                                                                                                <pre>@functionResult.Exception.Message</pre>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    }
+                                                                                }
+                                                                            </div>
+                                                                        }
+                                                                        </div>
+                                                                    </div>
+                                                                }
+                                                                else
+                                                                {
+                                                                    @* 单个工具 = 串行调用 - 使用独立块显示 *@
+                                                                    var functionCall = toolGroup.First();
+                                                                    
+                                                                    // 避免重复处理
+                                                                    if (processedCallIds.Contains(functionCall.CallId))
+                                                                    {
+                                                                        continue;
+                                                                    }
+                                                                    processedCallIds.Add(functionCall.CallId);
+                                                                    
+                                                                    // 查找对应的结果
+                                                                    var hasResult = toolResults.TryGetValue(functionCall.CallId, out var functionResult);
+                                                                    
+                                                                    <div class="tool-call-card" style="margin: 8px 0;">
+                                                                        @* 工具调用头部 *@
+                                                                        <div class="tool-call-header">
+                                                                            <Tag Color="TagColor.Orange">🔧 @functionCall.Name</Tag>
+                                                                            @if (hasResult)
+                                                                            {
+                                                                                @if (functionResult!.Exception == null)
+                                                                                {
+                                                                                    <Tag Color="TagColor.Green">✓ 成功</Tag>
                                                                                 }
                                                                                 else
                                                                                 {
-                                                                                    <Tag Color="TagColor.Blue">⏳ 执行中...</Tag>
-                                                                                }
-                                                                            </div>
-                                                                            
-                                                                            @* 工具参数 *@
-                                                                            <div class="tool-section">
-                                                                                <div class="tool-section-title">📥 参数</div>
-                                                                                <div class="tool-section-content">
-                                                                                    <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
-                                                                                </div>
-                                                                            </div>
-                                                                            
-                                                                            @* 工具结果 *@
-                                                                            @if (hasResult)
-                                                                            {
-                                                                                @if (functionResult!.Exception == null && functionResult.Result != null)
-                                                                                {
-                                                                                    <div class="tool-section">
-                                                                                        <div class="tool-section-title">📤 返回结果</div>
-                                                                                        <div class="tool-section-content tool-result-success">
-                                                                                            <pre>@functionResult.Result.ToString()</pre>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                }
-                                                                                else if (functionResult!.Exception != null)
-                                                                                {
-                                                                                    <div class="tool-section">
-                                                                                        <div class="tool-section-title">❌ 执行错误</div>
-                                                                                        <div class="tool-section-content tool-result-error">
-                                                                                            <pre>@functionResult.Exception.Message</pre>
-                                                                                        </div>
-                                                                                    </div>
+                                                                                    <Tag Color="TagColor.Red">✗ 失败</Tag>
                                                                                 }
                                                                             }
+                                                                            else
+                                                                            {
+                                                                                <Tag Color="TagColor.Blue">⏳ 执行中...</Tag>
+                                                                            }
                                                                         </div>
-                                                                    }
-                                                                </div>
+                                                                        
+                                                                        @* 工具参数 *@
+                                                                        <div class="tool-section">
+                                                                            <div class="tool-section-title">📥 参数</div>
+                                                                            <div class="tool-section-content">
+                                                                                <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
+                                                                            </div>
+                                                                        </div>
+                                                                        
+                                                                        @* 工具结果 *@
+                                                                        @if (hasResult)
+                                                                        {
+                                                                            @if (functionResult!.Exception == null && functionResult.Result != null)
+                                                                            {
+                                                                                <div class="tool-section">
+                                                                                    <div class="tool-section-title">📤 返回结果</div>
+                                                                                    <div class="tool-section-content tool-result-success">
+                                                                                        <pre>@(JsonSerializer.Deserialize<string>(functionResult.Result.ToString()))</pre>
+                                                                                    </div>
+                                                                                </div>
+                                                                            }
+                                                                            else if (functionResult!.Exception != null)
+                                                                            {
+                                                                                <div class="tool-section">
+                                                                                    <div class="tool-section-title">❌ 执行错误</div>
+                                                                                    <div class="tool-section-content tool-result-error">
+                                                                                        <pre>@functionResult.Exception.Message</pre>
+                                                                                    </div>
+                                                                                </div>
+                                                                            }
+                                                                        }
+                                                                    </div>
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -739,234 +837,6 @@
             </div>
         </ExpandTemplate>
     </Table>
-</Drawer>
-
-<Drawer Title="@(_selectedConfigForHistory != null ? GetConfigName(_selectedConfigForHistory) + " - 聊天历史" : "聊天历史")"
-        Visible="@_showChatHistoryDrawer"
-        Width="700"
-        OnClose="CloseChatHistoryDrawer">
-    @if (_selectedConfigForHistory != null)
-    {
-        <div class="chat-history-drawer-content">
-            @if (_selectedConfigForHistory.ChatHistory.Any())
-            {
-                <div class="chat-history-header">
-                    <div style="margin-bottom: 16px;">
-                        <Space>
-                            <SpaceItem>
-                                <Statistic Title="总消息数" Value="@_selectedConfigForHistory.ChatHistory.Count" />
-                            </SpaceItem>
-                            <SpaceItem>
-                                <Statistic Title="用户消息" Value="@_selectedConfigForHistory.ChatHistory.Count(m => m.Role.Value == "user")" ValueStyle="color: #1890ff;" />
-                            </SpaceItem>
-                            <SpaceItem>
-                                <Statistic Title="助手回复" Value="@_selectedConfigForHistory.ChatHistory.Count(m => m.Role.Value == "assistant")" ValueStyle="color: #52c41a;" />
-                            </SpaceItem>
-                            <SpaceItem>
-                                <Statistic Title="工具调用" 
-                                          Value="@_selectedConfigForHistory.ChatHistory.Count(m => m.Contents != null && m.Contents.Any(c => c is Microsoft.Extensions.AI.FunctionCallContent))" 
-                                          ValueStyle="color: #fa8c16;" />
-                            </SpaceItem>
-                        </Space>
-                    </div>
-                    <Alert Type="@AlertType.Info" 
-                           Message="多轮对话模式" 
-                           Description="当前配置已启用历史消息保留，所有消息将在下次测试时继续使用。"
-                           ShowIcon="true"
-                           Closable />
-                </div>
-                <div class="chat-history-messages">
-                    @{
-                        var messageIndex = 0;
-                        var userMessageCount = 0;
-                    }
-                    @foreach (var msg in _selectedConfigForHistory.ChatHistory)
-                    {
-                        messageIndex++;
-                        var roleValue = msg.Role.Value;
-                        if (roleValue == "user")
-                        {
-                            userMessageCount++;
-                        }
-                        
-                        <div class="chat-message-item @roleValue">
-                            <div class="message-header">
-                                <Space Size="@SpaceSize.Small">
-                                    <SpaceItem>
-                                        <Tag Color="@(roleValue == "user" ? "blue" : roleValue == "system" ? "purple" : roleValue == "tool" ? "orange" : "green")">
-                                            @if (roleValue == "user")
-                                            {
-                                                <span>👤 用户 #@userMessageCount</span>
-                                            }
-                                            else if (roleValue == "system")
-                                            {
-                                                <span>⚙️ 系统</span>
-                                            }
-                                            else if (roleValue == "tool")
-                                            {
-                                                <span>🔧 工具结果</span>
-                                            }
-                                            else
-                                            {
-                                                <span>🤖 助手</span>
-                                            }
-                                        </Tag>
-                                    </SpaceItem>
-                                    <SpaceItem>
-                                        <Text Type="@TextElementType.Secondary" Style="font-size: 12px;">
-                                            #@messageIndex
-                                        </Text>
-                                    </SpaceItem>
-                                    @* 显示工具调用标记 *@
-                                    @if (msg.Contents != null && msg.Contents.Any(c => c is Microsoft.Extensions.AI.FunctionCallContent))
-                                    {
-                                        var toolCallsCount = msg.Contents.Count(c => c is Microsoft.Extensions.AI.FunctionCallContent);
-                                        <SpaceItem>
-                                            <Tag Color="@("orange")" Style="font-size: 11px;">
-                                                🔧 @toolCallsCount 个工具
-                                            </Tag>
-                                        </SpaceItem>
-                                    }
-                                    @if (msg.Contents != null && msg.Contents.Any(c => c is Microsoft.Extensions.AI.FunctionResultContent))
-                                    {
-                                        var resultsCount = msg.Contents.Count(c => c is Microsoft.Extensions.AI.FunctionResultContent);
-                                        <SpaceItem>
-                                            <Tag Color="@("green")" Style="font-size: 11px;">
-                                                ✓ @resultsCount 个结果
-                                            </Tag>
-                                        </SpaceItem>
-                                    }
-                                </Space>
-                            </div>
-                            <div class="message-content">
-                                @* 优先显示 Contents 中的所有段落 *@
-                                @if (msg.Contents != null && msg.Contents.Any())
-                                {
-                                    var segmentIndex = 0;
-                                    @foreach (var content in msg.Contents)
-                                    {
-                                        segmentIndex++;
-                                        <div class="message-segment">
-                                            <div style="font-size: 11px; color: #999; margin-bottom: 4px;">
-                                                Segment #@segmentIndex
-                                            </div>
-                                            
-                                            @if (content is Microsoft.Extensions.AI.TextContent textContent)
-                                            {
-                                                <div class="segment-text">
-                                                    <div style="color: #666; font-size: 12px; margin-bottom: 4px;">
-                                                        <Icon Type="file-text" /> 文本内容
-                                                    </div>
-                                                    <pre>@textContent.Text</pre>
-                                                </div>
-                                            }
-                                            else if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
-                                            {
-                                                <div class="history-tool-call">
-                                                    <div class="tool-call-header">
-                                                        <Icon Type="api" />
-                                                        <strong>工具调用: @functionCall.Name</strong>
-                                                        @if (!string.IsNullOrEmpty(functionCall.CallId))
-                                                        {
-                                                            <span style="font-size: 12px; margin-left: 8px; color: #999;">
-                                                                ID: @functionCall.CallId
-                                                            </span>
-                                                        }
-                                                    </div>
-                                                    <div class="tool-call-section">
-                                                        <div style="color: #999; font-size: 12px; margin-bottom: 4px;">参数 (INPUT)</div>
-                                                        <pre>@(functionCall.Arguments != null && functionCall.Arguments.Any() ? ToJson(functionCall.Arguments) : "{}")</pre>
-                                                    </div>
-                                                </div>
-                                            }
-                                            else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
-                                            {
-                                                <div class="history-tool-result">
-                                                    <div class="tool-result-header">
-                                                        <Icon Type="check-circle" />
-                                                        <strong>工具结果</strong>
-                                                        @if (!string.IsNullOrEmpty(functionResult.CallId))
-                                                        {
-                                                            <span style="font-size: 12px; margin-left: 8px; color: #999;">
-                                                                ID: @functionResult.CallId
-                                                            </span>
-                                                        }
-                                                    </div>
-                                                    @if (functionResult.Result != null)
-                                                    {
-                                                        <div class="tool-result-section">
-                                                            <div style="color: #999; font-size: 12px; margin-bottom: 4px;">返回值 (OUTPUT)</div>
-                                                            <pre>@functionResult.Result.ToString()</pre>
-                                                        </div>
-                                                    }
-                                                    @if (functionResult.Exception != null)
-                                                    {
-                                                        <div class="tool-error-section">
-                                                            <div style="color: #ff4d4f; font-size: 12px; margin-bottom: 4px;">
-                                                                <Icon Type="exclamation-circle" /> 错误 (ERROR)
-                                                            </div>
-                                                            <pre>@functionResult.Exception.Message</pre>
-                                                        </div>
-                                                    }
-                                                </div>
-                                            }
-                                            else if (content is Microsoft.Extensions.AI.DataContent dataContent)
-                                            {
-                                                <div class="segment-data">
-                                                    <div style="color: #666; font-size: 12px; margin-bottom: 4px;">
-                                                        <Icon Type="file" /> 数据内容
-                                                    </div>
-                                                    @if (!string.IsNullOrEmpty(dataContent.Uri))
-                                                    {
-                                                        <div>URI: @dataContent.Uri</div>
-                                                    }
-                                                    @if (!string.IsNullOrEmpty(dataContent.MediaType))
-                                                    {
-                                                        <div style="color: #999; font-size: 11px;">
-                                                            MediaType: @dataContent.MediaType
-                                                        </div>
-                                                    }
-                                                </div>
-                                            }
-                                            else
-                                            {
-                                                <div class="segment-unknown">
-                                                    <div style="color: #999; font-size: 12px;">
-                                                        <Icon Type="question-circle" /> 
-                                                        未知内容类型: @content.GetType().Name
-                                                    </div>
-                                                </div>
-                                            }
-                                        </div>
-                                    }
-                                }
-                                else if (!string.IsNullOrEmpty(msg.Text))
-                                {
-                                    @* 如果没有 Contents,显示 Text (兼容旧格式) *@
-                                    <div class="message-segment">
-                                        <div style="color: #666; font-size: 12px; margin-bottom: 4px;">
-                                            <Icon Type="file-text" /> 文本内容
-                                        </div>
-                                        <pre>@msg.Text</pre>
-                                    </div>
-                                }
-                                else
-                                {
-                                    <div style="color: #999; font-style: italic;">
-                                        (空消息)
-                                    </div>
-                                }
-                            </div>
-                        </div>
-                    }
-                </div>
-            }
-            else
-            {
-                <Empty Description="@("暂无聊天历史")" />
-            }
-        </div>
-    }
 </Drawer>
 
 <style>
@@ -1213,10 +1083,31 @@
 
     /* 🔥 并行工具调用容器 - 网格布局 */
     .tool-calls-parallel-container {
+        background: linear-gradient(135deg, #e6f7ff 0%, #bae7ff 100%);
+        border: 2px solid #91d5ff;
+        border-radius: 12px;
+        padding: 16px;
+        margin: 12px 0;
+        box-shadow: 0 4px 12px rgba(24, 144, 255, 0.15);
+        transition: all 0.3s ease;
+    }
+
+    .tool-calls-parallel-container:hover {
+        box-shadow: 0 6px 16px rgba(24, 144, 255, 0.25);
+        border-color: #40a9ff;
+    }
+
+    .parallel-header {
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .parallel-tools-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
         gap: 12px;
-        margin: 8px 0;
     }
 
     /* 🔥 单个工具调用卡片 */
@@ -1350,10 +1241,18 @@
         color: #cf1322;
     }
 
-    /* 响应式调整：窄屏幕时单列显示 */
+    /* 响应式调整:窄屏幕时单列显示 */
     @@media (max-width: 768px) {
         .tool-calls-parallel-container {
+            padding: 12px;
+        }
+
+        .parallel-tools-grid {
             grid-template-columns: 1fr;
+        }
+
+        .tool-call-card {
+            padding: 12px;
         }
     }
 
@@ -1611,38 +1510,52 @@
 
     /* 工具调用卡片样式 */
     .tool-call-card {
-        margin: 8px 0;
-        padding: 12px;
-        background: linear-gradient(135deg, #fff9f0 0%, #fff7e6 100%);
-        border: 1px solid #ffd591;
+        margin: 0;
+        padding: 14px;
+        background: linear-gradient(135deg, #ffffff 0%, #fafafa 100%);
+        border: 1px solid #d9d9d9;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(250, 140, 22, 0.1);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
         transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .tool-call-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #fa8c16 0%, #faad14 100%);
+        border-radius: 8px 8px 0 0;
     }
 
     .tool-call-card:hover {
-        box-shadow: 0 4px 8px rgba(250, 140, 22, 0.15);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
         border-color: #ffa940;
+        transform: translateY(-2px);
     }
 
     .tool-call-header {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin-bottom: 8px;
-        padding-bottom: 8px;
-        border-bottom: 1px dashed #ffd591;
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 2px solid #f0f0f0;
     }
 
     .tool-section {
-        margin-top: 8px;
+        margin-top: 10px;
     }
 
     .tool-section-title {
         font-size: 12px;
         font-weight: 600;
-        color: #8c4c00;
-        margin-bottom: 4px;
+        color: #595959;
+        margin-bottom: 6px;
         display: flex;
         align-items: center;
         gap: 4px;
@@ -2721,11 +2634,20 @@
                                                 }
                                             }
 
-                                            contents.Add(new Microsoft.Extensions.AI.FunctionCallContent(
+                                            var functionCall = new Microsoft.Extensions.AI.FunctionCallContent(
                                                 toolCall.CallId,
                                                 toolCall.ToolName,
                                                 args
-                                            ));
+                                            );
+                                            
+                                            // 🔑 通过 AdditionalProperties 传递批次ID
+                                            if (!string.IsNullOrEmpty(segment.CallBatchId))
+                                            {
+                                                functionCall.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                                                functionCall.AdditionalProperties["CallBatchId"] = segment.CallBatchId;
+                                            }
+                                            
+                                            contents.Add(functionCall);
 
                                             // 🔑 如果工具调用有结果，添加工具结果内容（FunctionResultContent）
                                             if (!string.IsNullOrEmpty(toolCall.Result))

@@ -62,6 +62,13 @@ namespace LY.LlmPool.Web.Models
         public string? Text { get; set; }
         public List<ToolCallRecord>? ToolCalls { get; set; }
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        
+        /// <summary>
+        /// 工具调用批次ID - 用于区分并行调用和串行调用
+        /// 同一批次ID的工具调用应该在界面上并排显示（网格布局）
+        /// 不同批次ID的工具调用应该垂直排列（独立块）
+        /// </summary>
+        public string? CallBatchId { get; set; }
     }
 
     /// <summary>

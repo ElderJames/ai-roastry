@@ -387,14 +387,15 @@ public class ToolProviderService
             }
         }
 
-        // 创建 AIFunction - 构建执行函数
+        // 创建 AIFunction - 构建执行函数（使用流式调用）
         var executeFunc = async (AIFunctionArguments arguments, CancellationToken ct) =>
         {
             using var execScope = _serviceProvider.CreateScope();
             var chatClientService = execScope.ServiceProvider.GetRequiredService<IChatClientService>();
+            var loggerFactory = execScope.ServiceProvider.GetRequiredService<ILoggerFactory>();
 
             _logger.LogInformation(
-                "📞 Executing App Tool '{ToolName}' at depth {Depth}/{MaxDepth}",
+                "📞 Executing App Tool '{ToolName}' at depth {Depth}/{MaxDepth} (Streaming Mode)",
                 app.Name, currentDepth, maxRecursionDepth);
 
             // 🔑 验证必填参数
@@ -444,7 +445,7 @@ public class ToolProviderService
 
             messages.Add(new AIChatMessage(ChatRole.User, userMessage));
 
-            // 🔧 加载 Prompt 关联的工具（支持递归调用）
+            // 🔧 加载 Prompt 关联的工具（支持递归调用和并行执行）
             List<AITool>? nestedTools = null;
             if (toolPrompt != null && toolPrompt.PromptTools != null && toolPrompt.PromptTools.Any())
             {
@@ -494,53 +495,66 @@ public class ToolProviderService
                     nestedTools.Count, toolPrompt.PromptTools.Count, app.Name);
             }
 
-            // 使用 LlmConfig 调用 ChatClientService
-            ChatResponse? response = null;
+            // 使用流式调用收集完整响应
+            var collector = new StreamingResponseCollector(
+                loggerFactory.CreateLogger<StreamingResponseCollector>());
             
-            if (llmConfig != null)
+            try
             {
-                response = await chatClientService.SendMessageAsync(
-                    llmConfig,
-                    messages,
-                    tools: nestedTools, // 🔑 传递嵌套工具
-                    cancellationToken: ct // 🔑 传递取消令牌
-                );
-            }
-            else if (endpoint != null)
-            {
-                // 使用 Endpoint 的第一个可用配置
-                var endpointConfig = endpoint.EndpointConfigs
-                    .OrderBy(c => c.Priority)
-                    .FirstOrDefault();
-                    
-                if (endpointConfig != null)
+                IAsyncEnumerable<ChatStreamingUpdate> streamingUpdates;
+                
+                if (llmConfig != null)
                 {
+                    _logger.LogInformation("Starting streaming call with LlmConfig for App Tool '{ToolName}'", app.Name);
+                    streamingUpdates = chatClientService.SendStreamingMessageWithDetailsAsync(
+                        llmConfig, messages, parameters: null, tools: nestedTools);
+                }
+                else if (endpoint != null)
+                {
+                    var endpointConfig = endpoint.EndpointConfigs.OrderBy(c => c.Priority).FirstOrDefault();
+                    if (endpointConfig == null)
+                        throw new InvalidOperationException($"No endpoint config available for App Tool '{app.Name}'");
+                    
                     var configService = execScope.ServiceProvider.GetRequiredService<ConfigService>();
                     var endpointLlmConfig = await configService.GetConfigByIdAsync(endpointConfig.LlmConfigId);
-                    if (endpointLlmConfig != null)
-                    {
-                        response = await chatClientService.SendMessageAsync(
-                            endpointLlmConfig,
-                            messages,
-                            tools: nestedTools, // 🔑 传递嵌套工具
-                            cancellationToken: ct // 🔑 传递取消令牌
-                        );
-                    }
+                    if (endpointLlmConfig == null)
+                        throw new InvalidOperationException($"Endpoint config not found for App Tool '{app.Name}'");
+                    
+                    _logger.LogInformation("Starting streaming call with Endpoint for App Tool '{ToolName}'", app.Name);
+                    streamingUpdates = chatClientService.SendStreamingMessageWithDetailsAsync(
+                        endpointLlmConfig, messages, parameters: null, tools: nestedTools);
                 }
-            }
+                else
+                {
+                    throw new InvalidOperationException($"No LlmConfig or Endpoint configured for App Tool '{app.Name}'");
+                }
 
-            if (response == null || !string.Equals(response.Status, "success", StringComparison.OrdinalIgnoreCase))
+                // 🔥 使用 ConvertToSegmentsStreamAsync 将流式更新转换为 Segments
+                await foreach (var segments in ChatClientService.ConvertToSegmentsStreamAsync(streamingUpdates).WithCancellation(ct))
+                {
+                    collector.UpdateSegments(segments);
+                }
+
+                // 将收集到的响应格式化为 Markdown
+                var markdownResult = collector.ToMarkdown();
+                
+                _logger.LogInformation(
+                    "✅ App Tool '{ToolName}' executed successfully at depth {Depth}. " +
+                    "Text length: {TextLength}, Tool calls: {ToolCallCount}",
+                    app.Name, currentDepth, collector.GetText().Length, collector.GetToolCalls().Count);
+
+                return markdownResult;
+            }
+            catch (OperationCanceledException)
             {
-                throw new InvalidOperationException(
-                    $"Tool execution failed: {response?.Message ?? "Unknown error"}"
-                );
+                _logger.LogWarning("App Tool '{ToolName}' execution was cancelled", app.Name);
+                throw;
             }
-
-            _logger.LogInformation(
-                "✅ App Tool '{ToolName}' executed successfully at depth {Depth}",
-                app.Name, currentDepth);
-
-            return response.Message ?? string.Empty;
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "App Tool '{ToolName}' execution failed: {Message}", app.Name, ex.Message);
+                throw new InvalidOperationException($"Tool execution failed: {ex.Message}", ex);
+            }
         };
 
         // 创建基础 AIFunction
