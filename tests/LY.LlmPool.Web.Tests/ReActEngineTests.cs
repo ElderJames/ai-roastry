@@ -20,37 +20,37 @@ public class ReActEngineTests
         private readonly Queue<ChatResponse> _responses = new();
         public void Enqueue(ChatResponse r) => _responses.Enqueue(r);
         
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
         {
             if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
             return Task.FromResult(_responses.Dequeue());
         }
 
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
         {
             if (_responses.Count == 0) throw new InvalidOperationException("No stub responses queued");
             return Task.FromResult(_responses.Dequeue());
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await SendMessageAsync(config, messages, tools);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await SendMessageAsync(config, messages, parameters, tools);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;
             yield return string.Empty;
         }
 
-        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await SendMessageAsync(config, messages, parameters, tools);
             yield return new ChatStreamingUpdate 
@@ -59,7 +59,7 @@ public class ReActEngineTests
             };
         }
 
-        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;
             yield return new ChatStreamingUpdate 
@@ -86,7 +86,7 @@ public class ReActEngineTests
         chat.Enqueue(new ChatResponse { Message = "hello", Status = "success", ToolCalls = null });
         var engine = new ReActEngine(chat, new PassThroughExecutor());
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var result = await engine.RunAsync(config, messages);
         Assert.Equal("hello", result);
     }
@@ -119,7 +119,7 @@ public class ReActEngineTests
         var engine = new ReActEngine(chat, exec);
 
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var result = await engine.RunAsync(config, messages, tools);
 
         Assert.Equal("final answer", result);
@@ -140,7 +140,7 @@ public class ReActEngineTests
 
         var engine = new ReActEngine(chat, new PassThroughExecutor());
         var config = new LlmConfig { ApiKey = "k", Model = "m" };
-        var messages = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var messages = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var result = await engine.RunAsync(config, messages, tools: new List<ITool>());
         Assert.Equal("model text", result);
     }

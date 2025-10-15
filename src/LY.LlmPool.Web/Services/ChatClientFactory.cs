@@ -74,10 +74,15 @@ public class ChatClientFactory
         if (enableFunctionInvocation)
         {
             chatClient = new ChatClientBuilder(chatClient)
-                .UseFunctionInvocation()
+                .UseFunctionInvocation(configure: functionClient =>
+                {
+                    // 🔑 启用并行工具调用（提升性能）
+                    functionClient.AllowConcurrentInvocation = true;
+                    
+                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
+                        functionClient.AllowConcurrentInvocation);
+                })
                 .Build();
-            
-            _logger.LogDebug("启用了自动工具调用功能");
         }
 
         return chatClient;
@@ -127,10 +132,15 @@ public class ChatClientFactory
         if (enableFunctionInvocation)
         {
             chatClient = new ChatClientBuilder(chatClient)
-                .UseFunctionInvocation()
+                .UseFunctionInvocation(configure: functionClient =>
+                {
+                    // 🔑 启用并行工具调用（提升性能）
+                    functionClient.AllowConcurrentInvocation = true;
+                    
+                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
+                        functionClient.AllowConcurrentInvocation);
+                })
                 .Build();
-            
-            _logger.LogDebug("启用了自动工具调用功能");
         }
 
         return chatClient;

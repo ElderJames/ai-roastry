@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
@@ -22,7 +23,7 @@ public class AgentOrchestratorTests
     public async Task ExecuteAsync_SequentialStrategy_Returns_LastAgentOutput()
     {
         // 模拟 ChatClientService
-        var chatCalls = new List<(string configId, List<AIChatMessage> messages)>();
+        var chatCalls = new List<(string configId, List<Microsoft.Extensions.AI.ChatMessage> messages)>();
         var chatClient = new MockChatClientService((cfg, msgs) =>
         {
             chatCalls.Add((cfg.Id!, msgs));
@@ -47,7 +48,7 @@ public class AgentOrchestratorTests
             }
         };
 
-        var userMsgs = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var userMsgs = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         var answer = await orchestrator.ExecuteAsync(app, userMsgs);
 
         Assert.Equal("second", answer);
@@ -59,7 +60,7 @@ public class AgentOrchestratorTests
     [Fact]
     public async Task ExecuteAsync_GroupChatStrategy_Returns_SharedHistory()
     {
-        var chatCalls = new List<(string configId, List<AIChatMessage> messages)>();
+        var chatCalls = new List<(string configId, List<Microsoft.Extensions.AI.ChatMessage> messages)>();
         var chatClient = new MockChatClientService((cfg, msgs) =>
         {
             chatCalls.Add((cfg.Id!, msgs));
@@ -85,7 +86,7 @@ public class AgentOrchestratorTests
             }
         };
 
-        var userMsgs = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "task") };
+        var userMsgs = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "task") };
         var answer = await orchestrator.ExecuteAsync(app, userMsgs);
 
         Assert.Equal("done", answer); // FINAL: 被提取
@@ -107,49 +108,49 @@ public class AgentOrchestratorTests
             OrchestrationMode = OrchestrationMode.Sequential
         };
 
-        var userMsgs = new List<AIChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
+        var userMsgs = new List<Microsoft.Extensions.AI.ChatMessage> { new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, "hi") };
         await Assert.ThrowsAsync<ArgumentException>(() => orchestrator.ExecuteAsync(app, userMsgs));
     }
 
     // 辅助类:模拟 IChatClientService
     private class MockChatClientService : IChatClientService
     {
-        private readonly Func<LlmConfig, List<AIChatMessage>, Task<ChatResponse>> _sendFunc;
+        private readonly Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, Task<ChatResponse>> _sendFunc;
 
-        public MockChatClientService(Func<LlmConfig, List<AIChatMessage>, Task<ChatResponse>> sendFunc)
+        public MockChatClientService(Func<LlmConfig, List<Microsoft.Extensions.AI.ChatMessage>, Task<ChatResponse>> sendFunc)
         {
             _sendFunc = sendFunc;
         }
 
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
         {
             return _sendFunc(config, messages);
         }
 
-        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
         {
             return _sendFunc(config, messages);
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await _sendFunc(config, messages);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await _sendFunc(config, messages);
             yield return response.Message ?? string.Empty;
         }
 
-        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<string> SendStreamingMessageAsync(LlmEndpoint endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;
             yield return string.Empty;
         }
 
-        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmConfig config, List<AIChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             var response = await _sendFunc(config, messages);
             yield return new ChatStreamingUpdate 
@@ -158,7 +159,7 @@ public class AgentOrchestratorTests
             };
         }
 
-        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<AIChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;
             yield return new ChatStreamingUpdate 

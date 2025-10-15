@@ -236,8 +236,21 @@ public class ToolProviderService
     /// 为 App Tool 创建 AITool
     /// ToolId 应该是一个 Tool 类型的 LlmApp 的 ID
     /// </summary>
-    private async Task<AITool?> CreateAppToolAsync(string appId)
+    /// <param name="appId">App 的 ID</param>
+    /// <param name="maxRecursionDepth">最大递归深度，防止无限递归</param>
+    /// <param name="currentDepth">当前递归深度</param>
+    private async Task<AITool?> CreateAppToolAsync(string appId, int maxRecursionDepth = 5, int currentDepth = 0)
     {
+        // 防止无限递归
+        if (currentDepth >= maxRecursionDepth)
+        {
+            _logger.LogWarning(
+                "⚠️  Max recursion depth ({MaxDepth}) reached for App Tool {AppId}. " +
+                "Tool chain may be too deep or contain circular references.",
+                maxRecursionDepth, appId);
+            return null;
+        }
+        
         using var scope = _serviceProvider.CreateScope();
         
         _logger.LogInformation("CreateAppToolAsync: Looking for App with ID {AppId}", appId);
@@ -380,6 +393,10 @@ public class ToolProviderService
             using var execScope = _serviceProvider.CreateScope();
             var chatClientService = execScope.ServiceProvider.GetRequiredService<IChatClientService>();
 
+            _logger.LogInformation(
+                "📞 Executing App Tool '{ToolName}' at depth {Depth}/{MaxDepth}",
+                app.Name, currentDepth, maxRecursionDepth);
+
             // 🔑 验证必填参数
             if (toolPrompt != null && !string.IsNullOrWhiteSpace(toolPrompt.Content))
             {
@@ -427,6 +444,56 @@ public class ToolProviderService
 
             messages.Add(new AIChatMessage(ChatRole.User, userMessage));
 
+            // 🔧 加载 Prompt 关联的工具（支持递归调用）
+            List<AITool>? nestedTools = null;
+            if (toolPrompt != null && toolPrompt.PromptTools != null && toolPrompt.PromptTools.Any())
+            {
+                _logger.LogInformation(
+                    "🔗 App Tool '{ToolName}' has {Count} nested tools, loading recursively (depth: {Depth})",
+                    app.Name, toolPrompt.PromptTools.Count, currentDepth + 1);
+
+                nestedTools = new List<AITool>();
+                foreach (var promptTool in toolPrompt.PromptTools)
+                {
+                    try
+                    {
+                        AITool? nestedTool = null;
+                        
+                        if (promptTool.ToolType == ToolType.Internal)
+                        {
+                            // 递归创建 App Tool（传递深度限制）
+                            nestedTool = await CreateAppToolAsync(
+                                promptTool.ToolId, 
+                                maxRecursionDepth, 
+                                currentDepth + 1
+                            );
+                        }
+                        else if (promptTool.ToolType == ToolType.Mcp)
+                        {
+                            // MCP Tool 不需要递归
+                            nestedTool = await CreateMcpToolAsync(promptTool.ToolId);
+                        }
+                        
+                        if (nestedTool != null)
+                        {
+                            nestedTools.Add(nestedTool);
+                            var toolName = nestedTool is AIFunction func ? func.Name : "Unknown";
+                            _logger.LogInformation("  ✓ Loaded nested tool: {ToolName}", toolName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, 
+                            "  ✗ Failed to load nested tool {ToolId} ({ToolType}) for App '{AppName}'",
+                            promptTool.ToolId, promptTool.ToolType, app.Name);
+                    }
+                }
+                
+                _logger.LogInformation(
+                    "✅ Loaded {LoadedCount}/{TotalCount} nested tools for App '{ToolName}'",
+                    nestedTools.Count, toolPrompt.PromptTools.Count, app.Name);
+            }
+
             // 使用 LlmConfig 调用 ChatClientService
             ChatResponse? response = null;
             
@@ -435,7 +502,8 @@ public class ToolProviderService
                 response = await chatClientService.SendMessageAsync(
                     llmConfig,
                     messages,
-                    tools: null // Tool 本身不再嵌套调用其他工具
+                    tools: nestedTools, // 🔑 传递嵌套工具
+                    cancellationToken: ct // 🔑 传递取消令牌
                 );
             }
             else if (endpoint != null)
@@ -454,7 +522,8 @@ public class ToolProviderService
                         response = await chatClientService.SendMessageAsync(
                             endpointLlmConfig,
                             messages,
-                            tools: null
+                            tools: nestedTools, // 🔑 传递嵌套工具
+                            cancellationToken: ct // 🔑 传递取消令牌
                         );
                     }
                 }
@@ -466,6 +535,10 @@ public class ToolProviderService
                     $"Tool execution failed: {response?.Message ?? "Unknown error"}"
                 );
             }
+
+            _logger.LogInformation(
+                "✅ App Tool '{ToolName}' executed successfully at depth {Depth}",
+                app.Name, currentDepth);
 
             return response.Message ?? string.Empty;
         };

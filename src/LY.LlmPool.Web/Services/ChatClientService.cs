@@ -311,7 +311,7 @@ public class ChatClientService : IChatClientService
         ModelParameterHelper.ApplyToExecutionSettings(settings, customParameters);
     }
     
-    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("开始发送消息，配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
@@ -342,7 +342,7 @@ public class ChatClientService : IChatClientService
             }
 
             _logger.LogInformation("开始调用聊天完成服务");
-            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions);
+            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             _logger.LogInformation("聊天完成服务调用成功");
 
             var response = new ChatResponse
@@ -366,7 +366,7 @@ public class ChatClientService : IChatClientService
         }
     }
 
-    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+    public async Task<ChatResponse> SendMessageAsync(LlmConfig config, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("开始发送消息(带参数),配置: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             config.Model, config.BaseUrl, messages.Count);
@@ -412,7 +412,7 @@ public class ChatClientService : IChatClientService
             }
             
             _logger.LogInformation("开始调用聊天完成服务");
-            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions);
+            AIResponse aiResponse = await chatClient.GetResponseAsync(messages, chatOptions, cancellationToken);
             _logger.LogInformation("聊天完成服务调用成功");
 
             var response = new ChatResponse
