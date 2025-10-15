@@ -36,7 +36,10 @@ public class PromptService
     public async Task<LlmPrompt?> GetPromptByIdAsync(string id)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        return await dbContext.Prompts.FindAsync(id);
+        return await dbContext.Prompts
+            .AsNoTracking()
+            .Include(x => x.PromptTools)
+            .FirstOrDefaultAsync(x => x.Id == id);
     }
 
     public async Task<LlmPrompt> CreatePromptAsync(LlmPrompt prompt)
