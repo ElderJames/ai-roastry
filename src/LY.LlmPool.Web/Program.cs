@@ -7,6 +7,8 @@ using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.Aggregation;
+using LY.LlmPool.Web.Middleware;
+using LY.LlmPool.Web.Filters;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -111,6 +113,9 @@ builder.Services.AddScoped<IMcpServerService, McpServerService>();
 // Register MCP inspector service
 builder.Services.AddScoped<IMcpInspectorService, McpInspectorService>();
 
+// 🎯 注册 OpenTelemetry Activity 追踪服务
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.ActivityTraceService>();
+
 // Add HTTP client factory
 builder.Services.AddHttpClient();
 
@@ -130,6 +135,7 @@ builder.Services.AddHttpLogging(options =>
 
 // Named HttpClient for LlmPool API with configurable BaseUrl and HttpContext fallback
 builder.Services.AddTransient<LoggingHttpHandler>();
+builder.Services.AddTransient<ActivityPropagationHandler>();
 builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
 {
     var cfg = sp.GetRequiredService<IConfiguration>();
@@ -166,6 +172,7 @@ builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
         http.DefaultRequestHeaders.Add("Accept-Charset", "utf-8");
     }
 })
+.AddHttpMessageHandler<ActivityPropagationHandler>() // 🔑 传播 Activity Context
 .AddHttpMessageHandler<LoggingHttpHandler>();
 
 // Named HttpClient for upstream LLM calls (tests can override it)
@@ -202,6 +209,10 @@ builder.Services.AddHostedService<McpClientStartupService>();
 
 var app = builder.Build();
 
+// 🎯 立即初始化 ActivityTraceService，确保 ActivityListener 在第一个 Activity 创建前就已注册
+var activityTraceService = app.Services.GetRequiredService<LY.LlmPool.Web.Services.Telemetry.ActivityTraceService>();
+app.Logger.LogInformation("ActivityTraceService 已初始化，ActivityListener 已注册");
+
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
@@ -225,6 +236,10 @@ app.UseAntiforgery();
 
 // Add routing middleware
 app.UseRouting();
+
+// 🎯 AOP: Activity 上下文中间件 - 自动捕获和传播 Activity
+// 必须在路由之后、Controller 之前
+app.UseActivityContext();
 
 // HTTP request/response logging
 app.UseHttpLogging();

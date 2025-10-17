@@ -1,0 +1,275 @@
+@page "/activity-trace"
+@using LY.LlmPool.Web.Services.Telemetry
+@using AntDesign
+@inject ActivityTraceService TraceService
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<PageTitle>Activity 追踪</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <Space>
+            <SpaceItem>
+                <Icon Type="radar-chart" />
+            </SpaceItem>
+            <SpaceItem>
+                <Text Strong>Activity 追踪监控</Text>
+            </SpaceItem>
+        </Space>
+    </TitleTemplate>
+    <Extra>
+        <Space>
+            <SpaceItem>
+                <Button Type="@ButtonType.Primary" Icon="sync" OnClick="RefreshData">
+                    刷新
+                </Button>
+            </SpaceItem>
+            <SpaceItem>
+                <Popconfirm Title="确定要清除所有历史追踪吗？"
+                           OnConfirm="ClearHistory"
+                           OkText="确定"
+                           CancelText="取消">
+                    <Button Danger Icon="delete">
+                        清除历史
+                    </Button>
+                </Popconfirm>
+            </SpaceItem>
+        </Space>
+    </Extra>
+    <ChildContent>
+        <Tabs DefaultActiveKey="statistics">
+            <TabPane Key="statistics" Tab="统计信息">
+                <Row Gutter="16">
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="总追踪数" Value="@_statistics.TotalTraces" Suffix="次" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="成功率" 
+                                  Value="@((_statistics.TotalTraces > 0 ? (_statistics.SuccessCount * 100.0 / _statistics.TotalTraces) : 0).ToString("F1"))" 
+                                  Suffix="%" 
+                                  ValueStyle="color: #52c41a;" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="平均耗时" 
+                                  Value="@(_statistics.AverageDurationMs.ToString("F2"))" 
+                                  Suffix="ms" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="总 Token" 
+                                  Value="@(_statistics.TotalInputTokens + _statistics.TotalOutputTokens)" 
+                                  Suffix="个" />
+                    </AntDesign.Col>
+                </Row>
+                
+                <Divider />
+                
+                <Row Gutter="16">
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="App 调用" Value="@_statistics.AppCallCount" Prefix="📱" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="工具调用" Value="@_statistics.ToolCallCount" Prefix="🔧" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="输入 Token" Value="@_statistics.TotalInputTokens" Prefix="📥" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="输出 Token" Value="@_statistics.TotalOutputTokens" Prefix="📤" />
+                    </AntDesign.Col>
+                </Row>
+
+                @if (_statistics.UniqueModels.Any())
+                {
+                    <Divider>使用的模型</Divider>
+                    <Space Wrap>
+                        @foreach (var model in _statistics.UniqueModels)
+                        {
+                            <SpaceItem>
+                                <Tag Color="@TagColor.Blue">@model</Tag>
+                            </SpaceItem>
+                        }
+                    </Space>
+                }
+
+                @if (_statistics.UniqueTools.Any())
+                {
+                    <Divider>调用的工具</Divider>
+                    <Space Wrap>
+                        @foreach (var tool in _statistics.UniqueTools)
+                        {
+                            <SpaceItem>
+                                <Tag Color="@TagColor.Orange">@tool</Tag>
+                            </SpaceItem>
+                        }
+                    </Space>
+                }
+            </TabPane>
+
+            <TabPane Key="active" Tab="@($"活跃追踪 ({_activeTraces.Count})")">
+                <Table TItem="TraceNode" DataSource="@_activeTraces" Size="@TableSize.Small">
+                    <PropertyColumn Property="c => c.OperationName" Title="操作" />
+                    <Column Title="类型" TData="string">
+                        @if (context.IsAppCall)
+                        {
+                            <Tag Color="@TagColor.Blue">📱 App</Tag>
+                        }
+                        else if (context.IsToolCall)
+                        {
+                            <Tag Color="@TagColor.Orange">🔧 Tool</Tag>
+                        }
+                        else
+                        {
+                            <Tag Color="@TagColor.Default">⚙️ Other</Tag>
+                        }
+                    </Column>
+                    <PropertyColumn Property="c => c.StartTime" Title="开始时间" Format="HH:mm:ss.fff" />
+                    <Column Title="耗时" TData="string">
+                        @((DateTime.UtcNow - context.StartTime).TotalMilliseconds.ToString("F0")) ms
+                    </Column>
+                    <PropertyColumn Property="c => c.ModelId" Title="模型" />
+                    <Column Title="状态" TData="string">
+                        <Tag Color="@TagColor.Processing">⏳ 进行中</Tag>
+                    </Column>
+                </Table>
+            </TabPane>
+
+            <TabPane Key="completed" Tab="@($"已完成 ({_completedTraces.Count})")">
+                <Table TItem="TraceNode" DataSource="@_completedTraces" Size="@TableSize.Small" ExpandIconColumnIndex="0">
+                    <ChildContent>
+                        <PropertyColumn Property="c => c.OperationName" Title="操作" />
+                        <Column Title="类型" TData="string">
+                            @if (context.IsAppCall)
+                            {
+                                <Tag Color="@TagColor.Blue">📱 App</Tag>
+                            }
+                            else if (context.IsToolCall)
+                            {
+                                <Tag Color="@TagColor.Orange">🔧 Tool</Tag>
+                            }
+                            else
+                            {
+                                <Tag Color="@TagColor.Default">⚙️ Other</Tag>
+                            }
+                        </Column>
+                        <PropertyColumn Property="c => c.StartTime" Title="开始时间" Format="HH:mm:ss.fff" />
+                        <Column Title="耗时" TData="string">
+                            @context.Duration.TotalMilliseconds.ToString("F2") ms
+                        </Column>
+                        <PropertyColumn Property="c => c.ModelId" Title="模型" />
+                        <Column Title="Tokens" TData="string">
+                            @if (context.InputTokens > 0 || context.OutputTokens > 0)
+                            {
+                                <Text>@context.InputTokens / @context.OutputTokens</Text>
+                            }
+                        </Column>
+                        <Column Title="状态" TData="string">
+                            @if (context.Status == "Success")
+                            {
+                                <Tag Color="@TagColor.Success">✅ 成功</Tag>
+                            }
+                            else if (context.Status == "Error")
+                            {
+                                <Tag Color="@TagColor.Error">❌ 失败</Tag>
+                            }
+                            else
+                            {
+                                <Tag Color="@TagColor.Default">⏹️ @context.Status</Tag>
+                            }
+                        </Column>
+                    </ChildContent>
+                    <ExpandTemplate Context="expandContext">
+                        <Descriptions Bordered Size="@DescriptionsSize.Small">
+                            <DescriptionsItem Title="TraceId">@expandContext.Data.TraceId</DescriptionsItem>
+                            <DescriptionsItem Title="SpanId">@expandContext.Data.SpanId</DescriptionsItem>
+                            <DescriptionsItem Title="ParentSpanId">@expandContext.Data.ParentSpanId</DescriptionsItem>
+                            
+                            @if (!string.IsNullOrEmpty(expandContext.Data.AppName))
+                            {
+                                <DescriptionsItem Title="App 名称">@expandContext.Data.AppName</DescriptionsItem>
+                            }
+                            
+                            @if (!string.IsNullOrEmpty(expandContext.Data.ToolName))
+                            {
+                                <DescriptionsItem Title="工具名称">@expandContext.Data.ToolName</DescriptionsItem>
+                            }
+                            
+                            @if (!string.IsNullOrEmpty(expandContext.Data.ToolArguments))
+                            {
+                                <DescriptionsItem Title="工具参数" Span="3">
+                                    <pre style="margin: 0;">@expandContext.Data.ToolArguments</pre>
+                                </DescriptionsItem>
+                            }
+                            
+                            @if (!string.IsNullOrEmpty(expandContext.Data.ToolResult))
+                            {
+                                <DescriptionsItem Title="工具结果" Span="3">
+                                    <pre style="margin: 0; max-height: 200px; overflow-y: auto;">@expandContext.Data.ToolResult</pre>
+                                </DescriptionsItem>
+                            }
+                            
+                            @if (!string.IsNullOrEmpty(expandContext.Data.ErrorType))
+                            {
+                                <DescriptionsItem Title="错误类型">@expandContext.Data.ErrorType</DescriptionsItem>
+                                <DescriptionsItem Title="错误描述" Span="2">@expandContext.Data.StatusDescription</DescriptionsItem>
+                            }
+                        </Descriptions>
+                    </ExpandTemplate>
+                </Table>
+            </TabPane>
+        </Tabs>
+    </ChildContent>
+</Card>
+
+@code {
+    private List<TraceNode> _activeTraces = new();
+    private List<TraceNode> _completedTraces = new();
+    private TraceStatistics _statistics = new();
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override void OnInitialized()
+    {
+        RefreshData();
+        
+        // 每 2 秒自动刷新
+        _refreshTimer = new System.Threading.Timer(_ =>
+        {
+            InvokeAsync(() =>
+            {
+                RefreshData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    private void RefreshData()
+    {
+        _activeTraces = TraceService.GetActiveTraces().ToList();
+        _completedTraces = TraceService.GetCompletedTraces(100).ToList();
+        _statistics = TraceService.GetStatistics();
+    }
+
+    private void ClearHistory()
+    {
+        TraceService.ClearHistory();
+        RefreshData();
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+}
+
+<style>
+    .ant-statistic {
+        text-align: center;
+    }
+    
+    pre {
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+</style>

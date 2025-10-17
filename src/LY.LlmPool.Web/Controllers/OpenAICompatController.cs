@@ -5,12 +5,15 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using System.Text.Unicode;
+using System.Diagnostics;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
+using LY.LlmPool.Web.Services.Telemetry;
 using LY.LlmPool.Web.Components.ChatHelpers;
+using LY.LlmPool.Web.Filters;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
@@ -25,6 +28,7 @@ namespace LY.LlmPool.Web.Controllers
 {
     [ApiController]
     [Route("v1")]
+    [ActivityCapture] // 🎯 AOP: 自动捕获和保存 Activity,替代手动 FunctionCall 检测
     public class OpenAICompatController : ControllerBase
     {
         private readonly LlmPoolService _llmPoolService;
@@ -74,6 +78,37 @@ namespace LY.LlmPool.Web.Controllers
 
         private async Task ProcessChatCompletions()
         {
+            // 🎯 从 HTTP Headers 中提取父 Activity Context（如果存在）
+            ActivityContext parentContext = default;
+            if (Request.Headers.TryGetValue("traceparent", out var traceparentValue))
+            {
+                var traceparent = traceparentValue.ToString();
+                if (ActivityContext.TryParse(traceparent, null, out var parsedContext))
+                {
+                    parentContext = parsedContext;
+                    _logger.LogInformation("从 traceparent header 提取父 Activity: TraceId={TraceId}, SpanId={SpanId}", 
+                        parsedContext.TraceId, parsedContext.SpanId);
+                }
+            }
+
+            // 🎯 创建 LlmPool 服务端请求处理 Activity
+            using var requestActivity = ActivityExtensions.StartServerRequestActivity(
+                route: "/v1/chat/completions",
+                appName: null, // 稍后从请求体中解析后设置
+                parentContext: parentContext);
+            
+            if (requestActivity != null)
+            {
+                requestActivity.SetTag("http.method", "POST");
+                
+                _logger.LogInformation("🌐 LlmPool Server Activity 已启动: TraceId={TraceId}, SpanId={SpanId}, ParentSpanId={ParentSpanId}",
+                    requestActivity.TraceId, requestActivity.SpanId, requestActivity.ParentSpanId);
+            }
+            else
+            {
+                _logger.LogWarning("未能创建 Server Request Activity - 可能 ActivitySource 未启用");
+            }
+            
             EndpointCallRecord? callRecord = null;
             var requestStartTime = DateTime.UtcNow;
             object? requestData = null;
@@ -156,10 +191,16 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
 
+                    // 🎯 记录 App 信息到 Activity
+                    requestActivity?.SetTag("app.name", app.Name);
+                    requestActivity?.SetTag("app.type", app.AppType);
+                    requestActivity?.SetTag("app.id", app.Id);
+
                     // AgentGroup 应用走编排分支
                     if (string.Equals(app.AppType, "AgentGroup", StringComparison.OrdinalIgnoreCase))
                     {
                         _logger.LogInformation("App {AppName} 为 AgentGroup 类型，进入编排分支。", app.Name);
+                        requestActivity?.SetTag("routing", "agent_group");
                         await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
                         return;
                     }
@@ -220,10 +261,13 @@ namespace LY.LlmPool.Web.Controllers
                     if (promptTools != null && promptTools.Count > 0)
                     {
                         _logger.LogInformation("成功加载 {Count} 个工具用于 App {AppName}", promptTools.Count, app.Name);
+                        // 🎯 记录工具数量到 Activity
+                        requestActivity?.SetTag("app.tools.count", promptTools.Count);
                     }
                     else
                     {
                         _logger.LogInformation("App {AppName} 没有关联的工具", app.Name);
+                        requestActivity?.SetTag("app.tools.count", 0);
                     }
 
                     if (config == null)
@@ -291,11 +335,25 @@ namespace LY.LlmPool.Web.Controllers
                         await _llmPoolService.UpdateCallRecordAsync(callRecord);
                     }
 
+                    // 🎯 记录错误状态
+                    requestActivity?.SetStatus(ActivityStatusCode.Error, "No available model found");
+                    requestActivity?.SetTag("error.type", "ModelNotFound");
+
                     Response.StatusCode = (int)HttpStatusCode.BadRequest;
                     _logger.LogError("No available model found or invalid API key");
                     var err = new { error = new { message = "未找到可用模型或 API Key 无效。" } };
                     await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
                     return;
+                }
+
+                // 🎯 记录成功获取的模型配置信息
+                requestActivity?.SetTag("gen_ai.request.model", actualModelName ?? config.Model);
+                requestActivity?.SetTag("gen_ai.system", config.BaseUrl);
+                requestActivity?.SetTag("selection.strategy", selectionStrategy);
+                requestActivity?.SetTag("app.name", config.Name); // 🎯 记录 LlmConfig 的名称
+                if (!string.IsNullOrEmpty(actualEndpointId))
+                {
+                    requestActivity?.SetTag("endpoint.id", actualEndpointId);
                 }
 
                 if (callRecord != null)
@@ -326,6 +384,32 @@ namespace LY.LlmPool.Web.Controllers
                 }
 
                 // 使用 Microsoft.Extensions.AI 处理请求
+                // 🎯 创建 App 执行 Activity（如果有 App）
+                using var appActivity = app != null 
+                    ? ActivityExtensions.StartAppExecutionActivity(
+                        appName: app.Name,
+                        appType: app.AppType,
+                        modelId: actualModelName
+                      )
+                    : null;
+                
+                if (appActivity != null)
+                {
+                    appActivity.SetTag("app.id", app!.Id);
+                    appActivity.SetTag("selection.strategy", selectionStrategy);
+                    if (!string.IsNullOrEmpty(actualEndpointId))
+                    {
+                        appActivity.SetTag("endpoint.id", actualEndpointId);
+                    }
+                    if (promptTools != null && promptTools.Count > 0)
+                    {
+                        appActivity.SetTag("app.tools_count", promptTools.Count);
+                    }
+                    
+                    _logger.LogInformation("📱 App Activity 已启动: {AppName}, TraceId={TraceId}, SpanId={SpanId}",
+                        app.Name, appActivity.TraceId, appActivity.SpanId);
+                }
+                
                 try
                 {
                     var convertedMessages = ConvertToAIChatMessages(chatRequest.Messages);
@@ -355,6 +439,13 @@ namespace LY.LlmPool.Web.Controllers
 
                         await WriteChatCompletionResponse(aiResponse, actualModelName);
                     }
+                    
+                    // 🎯 记录 App 执行成功
+                    if (appActivity != null)
+                    {
+                        appActivity.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                        _logger.LogInformation("✅ App 执行成功: {AppName}", app!.Name);
+                    }
 
                     // 更新调用记录为成功
                     if (callRecord != null)
@@ -377,6 +468,15 @@ namespace LY.LlmPool.Web.Controllers
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "使用 Extensions.AI 处理请求时出错");
+                    
+                    // 🎯 记录 App 执行失败
+                    if (appActivity != null)
+                    {
+                        appActivity.SetStatus(System.Diagnostics.ActivityStatusCode.Error, ex.Message);
+                        appActivity.AddTag("error.type", ex.GetType().Name);
+                        appActivity.AddTag("error.message", ex.Message);
+                        _logger.LogError("❌ App 执行失败: {AppName}, Error: {ErrorMessage}", app!.Name, ex.Message);
+                    }
                     
                     if (callRecord != null)
                     {
@@ -405,6 +505,9 @@ namespace LY.LlmPool.Web.Controllers
             catch (IOException ioEx) when (HttpContext.RequestAborted.IsCancellationRequested)
             {
                 _logger.LogInformation(ioEx, "IO canceled due to client disconnect.");
+                // 🎯 记录中断状态
+                requestActivity?.SetStatus(ActivityStatusCode.Error, "Client disconnected");
+                requestActivity?.SetTag("error.type", "IOException");
                 return;
             }
             catch (Exception ex)
@@ -413,11 +516,23 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     await _callRecordService.MarkErrorAsync(callRecord, ex.Message);
                 }
+                
+                // 🎯 记录异常状态
+                requestActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                requestActivity?.SetTag("error.type", ex.GetType().Name);
+                requestActivity?.SetTag("error.message", ex.Message);
+                
                 _logger.LogError(ex, "Error processing request");
                 await WriteAssistantMessageAsync(null, "服务器内部错误。");
             }
             finally
             {
+                // 🎯 如果没有设置状态，默认为成功
+                if (requestActivity != null && requestActivity.Status == ActivityStatusCode.Unset)
+                {
+                    requestActivity.SetStatus(ActivityStatusCode.Ok);
+                }
+                
                 if (Request != null)
                 {
                     // 释放占用的配置
@@ -456,6 +571,15 @@ namespace LY.LlmPool.Web.Controllers
                 _logger.LogWarning("Skip writing assistant message because response has already started: {Message}", message);
                 return;
             }
+            
+            // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
+            var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
+            if (!string.IsNullOrEmpty(conversationId))
+            {
+                Response.Headers.Append("X-Conversation-Id", conversationId);
+                _logger.LogDebug("📤 响应 Header: X-Conversation-Id={ConversationId}", conversationId);
+            }
+            
             Response.StatusCode = (int)HttpStatusCode.OK;
             var payload = new
             {
@@ -491,6 +615,14 @@ namespace LY.LlmPool.Web.Controllers
                 // 若请求需要流式返回（SSE），通过 onProgress 回调写 SSE 数据
                 if (chatRequest.Stream == true)
                 {
+                    // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
+                    var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
+                    if (!string.IsNullOrEmpty(conversationId))
+                    {
+                        Response.Headers.Append("X-Conversation-Id", conversationId);
+                        _logger.LogDebug("📤 响应 Header (Stream): X-Conversation-Id={ConversationId}", conversationId);
+                    }
+                    
                     Response.StatusCode = (int)HttpStatusCode.OK;
                     Response.ContentType = "text/event-stream";
                     Response.Headers.Append("Cache-Control", "no-cache");
@@ -725,8 +857,13 @@ namespace LY.LlmPool.Web.Controllers
             bool stream = false,
             CancellationToken cancellationToken = default)
         {
-            // 创建 IChatClient
-            var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
+            // 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
+            // 这样会自动创建 gen_ai.choice Activity，并支持工具调用
+            var chatClient = _chatClientFactory.CreateClientWithHttpClient(
+                config, 
+                "UpstreamLlm",
+                enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
+            );
 
             // 转换消息
             var aiMessages = messages;
@@ -735,6 +872,17 @@ namespace LY.LlmPool.Web.Controllers
             if (!string.IsNullOrEmpty(systemPrompt))
             {
                 aiMessages.Insert(0, new AIChatMessage(ChatRole.System, systemPrompt));
+            }
+
+            // 🎯 记录输入消息到 Activity (用于追踪)
+            var currentActivity = Activity.Current;
+            if (currentActivity != null && aiMessages.Any())
+            {
+                var inputMessagesJson = JsonSerializer.Serialize(
+                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList()
+                );
+                currentActivity.SetTag("gen_ai.prompt", inputMessagesJson);
+                _logger.LogDebug("📝 记录输入消息到 Activity: {MessageCount} messages", aiMessages.Count);
             }
 
             // 创建选项
@@ -760,8 +908,40 @@ namespace LY.LlmPool.Web.Controllers
                 throw new NotSupportedException("请使用 ProcessChatStreamingWithAI 处理流式响应");
             }
 
-            var response = await chatClient.GetResponseAsync(aiMessages, options, cancellationToken);
-            return response;
+            // 🎯 不再手动创建 llmpool.external_model Activity
+            // Microsoft.Extensions.AI 的 UseOpenTelemetry() 已经创建了 "chat {model}" Activity
+            // 并且会自动创建工具调用的 "execute_tool {toolName}" Activity 作为其子级
+            
+            _logger.LogInformation("📡 开始非流式 AI 调用: Model={Model}", config.Model);
+
+            try
+            {
+                var response = await chatClient.GetResponseAsync(aiMessages, options, cancellationToken);
+                
+                // 🎯 记录输出内容到 Activity (用于追踪)
+                if (currentActivity != null)
+                {
+                    var lastMessage = response.Messages.LastOrDefault();
+                    var outputText = lastMessage?.Text ?? "";
+                    if (!string.IsNullOrEmpty(outputText))
+                    {
+                        currentActivity.SetTag("gen_ai.completion", outputText);
+                        _logger.LogDebug("📝 记录输出内容到 Activity: {Length} chars", outputText.Length);
+                    }
+                }
+                
+                _logger.LogInformation("✅ 非流式 AI 调用完成: Model={ModelId}, Tokens={InputTokens}+{OutputTokens}", 
+                    response.ModelId,
+                    response.Usage?.InputTokenCount ?? 0,
+                    response.Usage?.OutputTokenCount ?? 0);
+                
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 非流式 AI 调用失败");
+                throw;
+            }
         }
 
         /// <summary>
@@ -776,8 +956,13 @@ namespace LY.LlmPool.Web.Controllers
             Dictionary<string, object>? modelParameters = null,
             CancellationToken cancellationToken = default)
         {
-            // 创建 IChatClient
-            var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
+            // 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
+            // 这样会自动创建 gen_ai.choice Activity，并支持工具调用
+            var chatClient = _chatClientFactory.CreateClientWithHttpClient(
+                config, 
+                "UpstreamLlm",
+                enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
+            );
 
             // 转换消息
             var aiMessages = messages;
@@ -786,6 +971,17 @@ namespace LY.LlmPool.Web.Controllers
             if (!string.IsNullOrEmpty(systemPrompt))
             {
                 aiMessages.Insert(0, new AIChatMessage(ChatRole.System, systemPrompt));
+            }
+
+            // 🎯 记录输入消息到 Activity (用于追踪)
+            var currentActivity = Activity.Current;
+            if (currentActivity != null && aiMessages.Any())
+            {
+                var inputMessagesJson = JsonSerializer.Serialize(
+                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList()
+                );
+                currentActivity.SetTag("gen_ai.prompt", inputMessagesJson);
+                _logger.LogDebug("📝 记录输入消息到 Activity (Streaming): {MessageCount} messages", aiMessages.Count);
             }
 
             // 创建选项
@@ -810,21 +1006,40 @@ namespace LY.LlmPool.Web.Controllers
             Response.ContentType = "text/event-stream";
             Response.Headers.Append("Cache-Control", "no-cache");
             Response.Headers.Append("Connection", "keep-alive");
+            
+            // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
+            var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
+            if (!string.IsNullOrEmpty(conversationId))
+            {
+                Response.Headers.Append("X-Conversation-Id", conversationId);
+                _logger.LogDebug("📤 响应 Header (Extensions.AI Stream): X-Conversation-Id={ConversationId}", conversationId);
+            }
+
+            // 🎯 不再手动创建 llmpool.external_model Activity
+            // Microsoft.Extensions.AI 的 UseOpenTelemetry() 已经创建了 "chat {model}" Activity
+            // 并且会自动创建工具调用的 "execute_tool {toolName}" Activity 作为其子级
+            
+            _logger.LogInformation("📡 开始流式 AI 调用: Model={Model}", config.Model);
 
             // 流式调用 AI
             var firstChunk = true;
             var fullContent = new StringBuilder();
             
-            await foreach (var update in chatClient.GetStreamingResponseAsync(aiMessages, options, cancellationToken))
+            // 🎯 AOP 优化: ActivityCaptureAttribute 已在 Action 执行前自动保存 Activity
+            // 无需在 foreach 中手动捕获
+            
+            try
             {
-                if (cancellationToken.IsCancellationRequested)
-                    break;
-
-                // 处理文本内容
-                var text = update.Text ?? string.Empty;
-                if (!string.IsNullOrEmpty(text))
+                await foreach (var update in chatClient.GetStreamingResponseAsync(aiMessages, options, cancellationToken))
                 {
-                    fullContent.Append(text);
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
+
+                    // 处理文本内容
+                    var text = update.Text ?? string.Empty;
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        fullContent.Append(text);
 
                     // 构建 SSE 格式的响应
                     var delta = firstChunk 
@@ -862,6 +1077,9 @@ namespace LY.LlmPool.Web.Controllers
                     {
                         if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
                         {
+                            // 🎯 AOP 优化: ActivityCaptureAttribute 已自动保存 Activity.Current
+                            // 无需手动检测和保存,直接处理 FunctionCall
+                            
                             var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
                             
                             // 序列化工具参数
@@ -980,6 +1198,14 @@ namespace LY.LlmPool.Web.Controllers
                 }
             }
 
+            // 🎯 记录输出内容到 Activity (用于追踪)
+            var fullContentText = fullContent.ToString();
+            if (currentActivity != null && !string.IsNullOrEmpty(fullContentText))
+            {
+                currentActivity.SetTag("gen_ai.completion", fullContentText);
+                _logger.LogDebug("📝 记录输出内容到 Activity (Streaming): {Length} chars", fullContentText.Length);
+            }
+
             // 发送结束标记
             var finalChunk = new
             {
@@ -1002,6 +1228,16 @@ namespace LY.LlmPool.Web.Controllers
             await Response.WriteAsync($"data: {finalJson}\n\n");
             await Response.WriteAsync("data: [DONE]\n\n");
             await Response.Body.FlushAsync(cancellationToken);
+            
+            // ✅ 完成状态
+            // OpenTelemetryChatClient 已经自动记录了所有必要的信息
+            _logger.LogInformation("✅ 流式 AI 调用完成,总字符数: {Length}", fullContent.Length);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ 流式 AI 调用失败");
+                throw;
+            }
         }
 
         /// <summary>

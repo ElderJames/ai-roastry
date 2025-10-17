@@ -1,0 +1,50 @@
+using System.Diagnostics;
+
+namespace LY.LlmPool.Web.Services;
+
+/// <summary>
+/// HTTP Handler 用于传播 Activity Context 到 HTTP Headers
+/// 将当前 Activity 的 TraceId 和 SpanId 通过 traceparent header 传递给下游服务
+/// </summary>
+public class ActivityPropagationHandler : DelegatingHandler
+{
+    private readonly ILogger<ActivityPropagationHandler> _logger;
+
+    public ActivityPropagationHandler(ILogger<ActivityPropagationHandler> logger)
+    {
+        _logger = logger;
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, 
+        CancellationToken cancellationToken)
+    {
+        var currentActivity = Activity.Current;
+        
+        if (currentActivity != null)
+        {
+            // 生成 traceparent header
+            // 格式: version-traceid-spanid-flags
+            // 例如: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+            var traceparent = $"00-{currentActivity.TraceId}-{currentActivity.SpanId}-01";
+            
+            // 添加到请求 Headers
+            request.Headers.TryAddWithoutValidation("traceparent", traceparent);
+            
+            _logger.LogDebug("注入 traceparent header: {Traceparent} (TraceId={TraceId}, SpanId={SpanId})", 
+                traceparent, currentActivity.TraceId, currentActivity.SpanId);
+            
+            // 如果有 tracestate，也传播
+            if (!string.IsNullOrEmpty(currentActivity.TraceStateString))
+            {
+                request.Headers.TryAddWithoutValidation("tracestate", currentActivity.TraceStateString);
+            }
+        }
+        else
+        {
+            _logger.LogDebug("当前没有 Activity，跳过 traceparent 注入");
+        }
+
+        return await base.SendAsync(request, cancellationToken);
+    }
+}

@@ -41,4 +41,17 @@ public interface IChatClientService
         LlmEndpoint config, 
         List<Microsoft.Extensions.AI.ChatMessage> messages, 
         IEnumerable<AITool>? tools = null);
+
+    /// <summary>
+    /// 通过 App Name 调用流式消息（经过 OpenAI Controller 代理）
+    /// 这样可以利用 Controller 层的 Activity 追踪
+    /// </summary>
+    /// <param name="appName">App 名称（用作 model 参数）</param>
+    /// <param name="messages">消息列表</param>
+    /// <param name="tools">可选工具列表</param>
+    /// <returns>流式更新</returns>
+    IAsyncEnumerable<Models.ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(
+        string appName,
+        List<Microsoft.Extensions.AI.ChatMessage> messages,
+        IEnumerable<AITool>? tools = null);
 }

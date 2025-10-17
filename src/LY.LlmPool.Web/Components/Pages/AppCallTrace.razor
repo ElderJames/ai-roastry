@@ -1,0 +1,789 @@
+@page "/app-call-trace"
+@using LY.LlmPool.Web.Services.Telemetry
+@inject ActivityTraceService TraceService
+@implements IDisposable
+
+<PageTitle>App 调用追踪 - 实时监控</PageTitle>
+
+<div style="padding: 24px;">
+    <PageHeader Title="App 调用追踪 - 实时监控" Subtitle="监控 App Tool 调用链路、嵌套调用和并行执行">
+        <PageHeaderExtra>
+            <Space>
+                <SpaceItem>
+                    <Tag Color="@(_autoRefresh ? "green" : "default")">
+                        @(_autoRefresh ? "实时刷新中" : "已暂停")
+                    </Tag>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@(_autoRefresh ? ButtonType.Default : ButtonType.Primary)" 
+                            OnClick="ToggleAutoRefresh">
+                        @(_autoRefresh ? "暂停" : "恢复")
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button OnClick="ClearAll" Danger>清除所有</Button>
+                </SpaceItem>
+            </Space>
+        </PageHeaderExtra>
+    </PageHeader>
+
+    <Row Gutter="16">
+        <!-- 左侧：Conversation 列表 -->
+        <AntDesign.Col Span="5">
+            <Card Title="会话列表" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+                <Extra>
+                    <Badge Count="@_conversations.Count" ShowZero="true" />
+                </Extra>
+                <Body>
+                    @if (_conversations.Any())
+                    {
+                        <!-- 添加"全部"选项 -->
+                        <div class="conversation-item @(string.IsNullOrEmpty(_selectedConversationId) ? "selected" : "")"
+                             @onclick="() => SelectConversation(null)">
+                            <div style="display: flex; align-items: center;">
+                                <Text Strong>📋 全部会话</Text>
+                            </div>
+                            <div style="margin-top: 4px; font-size: 12px; color: #999;">
+                                显示所有调用记录
+                            </div>
+                        </div>
+                        <Divider Style="margin: 8px 0;" />
+                        
+                        @foreach (var conv in _conversations)
+                        {
+                            <div class="conversation-item @(conv.ConversationId == _selectedConversationId ? "selected" : "")"
+                                 @onclick="() => SelectConversation(conv.ConversationId)">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <div>
+                                        @if (conv.IsActive)
+                                        {
+                                            <Badge Status="@BadgeStatus.Processing" />
+                                        }
+                                        <Text Strong Ellipsis Style="max-width: 150px;">
+                                            @(conv.ConversationId.Length > 20 
+                                                ? conv.ConversationId.Substring(0, 20) + "..." 
+                                                : conv.ConversationId)
+                                        </Text>
+                                    </div>
+                                </div>
+                                <div style="margin-top: 4px; font-size: 12px; color: #999;">
+                                    <Space Size="@("small")">
+                                        <SpaceItem>📊 @conv.RequestCount 次</SpaceItem>
+                                        <SpaceItem>🎯 @(conv.TotalInputTokens + conv.TotalOutputTokens) tokens</SpaceItem>
+                                    </Space>
+                                </div>
+                                <div style="margin-top: 2px; font-size: 11px; color: #999;">
+                                    🕐 @conv.LastRequestTime.ToString("HH:mm:ss")
+                                </div>
+                                @if (conv.ErrorCount > 0)
+                                {
+                                    <Tag Color="@TagColor.Error" Style="font-size: 10px; margin-top: 4px;">
+                                        ❌ @conv.ErrorCount 个错误
+                                    </Tag>
+                                }
+                            </div>
+                            <Divider Style="margin: 8px 0;" />
+                        }
+                    }
+                    else
+                    {
+                        <Empty Description="@("暂无会话记录")" Simple />
+                    }
+                </Body>
+            </Card>
+        </AntDesign.Col>
+
+        <!-- 右侧：原有的调用树和详情 -->
+        <AntDesign.Col Span="19">
+            <Tabs DefaultActiveKey="1">
+                <TabPane Key="1" Tab="活跃调用树">
+            <div style="margin-top: 16px;">
+                @if (_activeRoots.Count == 0)
+                {
+                    <Empty Description="@("当前没有活跃的 App 调用")" />
+                }
+                else
+                {
+                    <Row Gutter="16">
+                        <AntDesign.Col Span="12">
+                            <Card Title="调用树" Bordered>
+                                <Body>
+                                    @if (_activeRoots.Any())
+                                    {
+                                        <Tree TItem="TraceNode"
+                                              DataSource="_activeRoots"
+                                              ChildrenExpression="@(node => node.DataItem.Children)"
+                                              TitleExpression="@(node => node.DataItem.DisplayName)"
+                                              KeyExpression="@(node => node.DataItem.ActivityId)"
+                                              DefaultExpandAll="true"
+                                              ShowLine
+                                              ShowIcon
+                                              OnClick="@OnActiveNodeClick">
+                                            <TitleTemplate>
+                                                <span>
+                                                    @GetNodeIcon(context.DataItem) 
+                                                    <strong>@context.DataItem.DisplayName</strong>
+                                                    @if (context.DataItem.IsAppCall || context.DataItem.IsToolCall)
+                                                    {
+                                                        <Tag Color="@(context.DataItem.IsAppCall ? "blue" : "purple")">
+                                                            @(context.DataItem.IsAppCall ? context.DataItem.AppName : context.DataItem.ToolName)
+                                                        </Tag>
+                                                    }
+                                                    <Tag Color="@("processing")">
+                                                        @((DateTime.UtcNow - context.DataItem.StartTime).TotalSeconds.ToString("F1"))s
+                                                    </Tag>
+                                                </span>
+                                            </TitleTemplate>
+                                        </Tree>
+                                    }
+                                    else
+                                    {
+                                        <Empty Description="@("暂无活跃调用")" />
+                                    }
+                                </Body>
+                            </Card>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="12">
+                            <Card Title="详细信息" Bordered>
+                                <Body>
+                                    @if (_selectedActiveNode != null)
+                                    {
+                                        @RenderNodeDetails(_selectedActiveNode, true)
+                                    }
+                                    else
+                                    {
+                                        <Empty Description="@("点击左侧节点查看详情")" Simple />
+                                    }
+                                </Body>
+                            </Card>
+                        </AntDesign.Col>
+                    </Row>
+                }
+            </div>
+        </TabPane>
+
+        <TabPane Key="2" Tab="已完成调用">
+            <div style="margin-top: 16px;">
+                @if (_completedRoots.Count == 0)
+                {
+                    <Empty Description="@("还没有完成的 App 调用记录")" />
+                }
+                else
+                {
+                    <Row Gutter="16">
+                        <AntDesign.Col Span="12">
+                            <Card Title="调用树 (最近20条)" Bordered>
+                                <Body>
+                                    <Tree TItem="TraceNode"
+                                          DataSource="_completedRoots"
+                                          ChildrenExpression="@(node => node.DataItem.Children)"
+                                          TitleExpression="@(node => node.DataItem.DisplayName)"
+                                          KeyExpression="@(node => node.DataItem.ActivityId)"
+                                          DefaultExpandAll="false"
+                                          ShowLine
+                                          ShowIcon
+                                          OnClick="@OnCompletedNodeClick">
+                                        <TitleTemplate>
+                                            @{
+                                                var statusIcon = context.DataItem.Status == "Success" ? "✅" : 
+                                                               context.DataItem.Status == "Error" ? "❌" : "⏹️";
+                                            }
+                                            <span>
+                                                @statusIcon @GetNodeIcon(context.DataItem) 
+                                                <strong>@context.DataItem.DisplayName</strong>
+                                                @if (context.DataItem.IsAppCall || context.DataItem.IsToolCall)
+                                                {
+                                                    <Tag Color="@(context.DataItem.IsAppCall ? "blue" : "purple")">
+                                                        @(context.DataItem.IsAppCall ? context.DataItem.AppName : context.DataItem.ToolName)
+                                                    </Tag>
+                                                }
+                                                <Tag>@context.DataItem.Duration.TotalSeconds.ToString("F2")s</Tag>
+                                            </span>
+                                        </TitleTemplate>
+                                    </Tree>
+                                </Body>
+                            </Card>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="12">
+                            <Card Title="详细信息" Bordered>
+                                <Body>
+                                    @if (_selectedCompletedNode != null)
+                                    {
+                                        @RenderNodeDetails(_selectedCompletedNode, false)
+                                    }
+                                    else
+                                    {
+                                        <Empty Description="@("点击左侧节点查看详情")" Simple />
+                                    }
+                                </Body>
+                            </Card>
+                        </AntDesign.Col>
+                    </Row>
+                }
+            </div>
+        </TabPane>
+
+        <TabPane Key="3" Tab="调用统计">
+            <div style="margin-top: 16px;">
+                <Row Gutter="16">
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="活跃调用" Value="@_activeRoots.Count" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="已完成" Value="@_completedRoots.Count" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="平均耗时" 
+                                  Value="@(_completedRoots.Any() ? _completedRoots.Average(r => r.Duration.TotalSeconds).ToString("F2") : "0")" 
+                                  Suffix="s" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="6">
+                        <Statistic Title="总 Token 消耗" 
+                                  Value="@_completedRoots.Sum(r => r.InputTokens + r.OutputTokens)" />
+                    </AntDesign.Col>
+                </Row>
+            </div>
+        </TabPane>
+    </Tabs>
+        </AntDesign.Col>
+    </Row>
+</div>
+
+@code {
+    private bool _autoRefresh = true;
+    private System.Threading.Timer? _timer;
+    private List<TraceNode> _activeRoots = new();
+    private List<TraceNode> _completedRoots = new();
+    private List<ConversationInfo> _conversations = new();
+    private string? _selectedConversationId;
+    
+    // 选中的节点
+    private TraceNode? _selectedActiveNode;
+    private TraceNode? _selectedCompletedNode;
+
+    protected override void OnInitialized()
+    {
+        // 订阅事件
+        TraceService.ActivityStarted += OnActivityStarted;
+        TraceService.ActivityStopped += OnActivityStopped;
+
+        // 初始加载数据
+        RefreshData();
+
+        // 启动定时器（每秒刷新）
+        _timer = new System.Threading.Timer(_ =>
+        {
+            if (_autoRefresh)
+            {
+                InvokeAsync(() =>
+                {
+                    RefreshData();
+                    StateHasChanged();
+                });
+            }
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void OnActivityStarted(object? sender, TraceNode node)
+    {
+        InvokeAsync(() =>
+        {
+            RefreshData();
+            StateHasChanged();
+        });
+    }
+
+    private void OnActivityStopped(object? sender, TraceNode node)
+    {
+        InvokeAsync(() =>
+        {
+            RefreshData();
+            StateHasChanged();
+        });
+    }
+
+    private void RefreshData()
+    {
+        // 获取会话列表
+        _conversations = TraceService.GetConversationList();
+        
+        // 如果有选中的会话,只显示该会话的traces
+        IEnumerable<TraceNode> activeTraces;
+        IEnumerable<TraceNode> completedTraces;
+        
+        if (!string.IsNullOrEmpty(_selectedConversationId))
+        {
+            // 如果是临时生成的 trace- ID，需要特殊处理
+            if (_selectedConversationId.StartsWith("trace-"))
+            {
+                var traceIdPrefix = _selectedConversationId.Substring(6); // 去掉 "trace-" 前缀
+                activeTraces = TraceService.GetActiveTraces()
+                    .Where(t => t.TraceId.StartsWith(traceIdPrefix));
+                completedTraces = TraceService.GetCompletedTraces(100)
+                    .Where(t => t.TraceId.StartsWith(traceIdPrefix));
+            }
+            else
+            {
+                // 正常的 ConversationId 匹配
+                activeTraces = TraceService.GetActiveTraces()
+                    .Where(t => t.ConversationId == _selectedConversationId);
+                completedTraces = TraceService.GetCompletedTraces(100)
+                    .Where(t => t.ConversationId == _selectedConversationId);
+            }
+        }
+        else
+        {
+            activeTraces = TraceService.GetActiveTraces();
+            completedTraces = TraceService.GetCompletedTraces(100);
+        }
+        
+        // 获取活跃的根节点（没有父节点或父节点为空）
+        _activeRoots = BuildTraceTree(activeTraces.ToList())
+            .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
+            .ToList();
+
+        // 获取已完成的根节点
+        _completedRoots = BuildTraceTree(completedTraces.ToList())
+            .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
+            .ToList();
+    }
+    
+    private void SelectConversation(string? conversationId)
+    {
+        Console.WriteLine($"🎯 SelectConversation called: {conversationId}");
+        _selectedConversationId = conversationId;
+        _selectedActiveNode = null;      // 清除之前选中的节点
+        _selectedCompletedNode = null;   // 清除之前选中的节点
+        
+        Console.WriteLine($"📊 Before RefreshData - Active: {_activeRoots.Count}, Completed: {_completedRoots.Count}");
+        RefreshData();
+        Console.WriteLine($"📊 After RefreshData - Active: {_activeRoots.Count}, Completed: {_completedRoots.Count}");
+        
+        StateHasChanged();  // 强制 UI 更新
+    }
+
+    private List<TraceNode> BuildTraceTree(List<TraceNode> nodes)
+    {
+        if (!nodes.Any()) return new List<TraceNode>();
+
+        // 按 TraceId 分组
+        var groups = nodes.GroupBy(n => n.TraceId);
+        var roots = new List<TraceNode>();
+
+        foreach (var group in groups)
+        {
+            var nodeList = group.ToList();
+            
+            // 使用 ActivityId 作为 key（更唯一）或 SpanId
+            var nodeDict = nodeList.ToDictionary(n => n.SpanId);
+
+            // 清空所有节点的 Children，避免重复
+            foreach (var node in nodeList)
+            {
+                node.Children.Clear();
+            }
+
+            // 找到根节点
+            var rootNodes = nodeList.Where(n => 
+                n.ParentSpanId == "0000000000000000" || 
+                string.IsNullOrEmpty(n.ParentSpanId) ||
+                !nodeDict.ContainsKey(n.ParentSpanId) // 父节点不在列表中，也视为根
+            ).ToList();
+
+            // 构建树形结构
+            foreach (var node in nodeList)
+            {
+                if (!rootNodes.Contains(node) && nodeDict.ContainsKey(node.ParentSpanId))
+                {
+                    var parent = nodeDict[node.ParentSpanId];
+                    if (!parent.Children.Contains(node)) // 避免重复添加
+                    {
+                        parent.Children.Add(node);
+                    }
+                }
+            }
+
+            // 递归排序所有子节点
+            foreach (var root in rootNodes)
+            {
+                SortChildren(root);
+                roots.Add(root);
+            }
+        }
+
+        return roots;
+    }
+
+    private void SortChildren(TraceNode node)
+    {
+        if (node.Children.Any())
+        {
+            node.Children = node.Children.OrderBy(c => c.StartTime).ToList();
+            foreach (var child in node.Children)
+            {
+                SortChildren(child);
+            }
+        }
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        _autoRefresh = !_autoRefresh;
+    }
+
+    private void ClearAll()
+    {
+        _activeRoots.Clear();
+        _completedRoots.Clear();
+        StateHasChanged();
+    }
+
+    // 递归渲染追踪节点
+    private RenderFragment RenderTraceNode(TraceNode node, bool isActive) => __builder =>
+    {
+        var hasChildren = node.Children.Any();
+        var indentStyle = "margin-left: 24px; border-left: 2px solid #d9d9d9; padding-left: 12px;";
+
+        <div style="margin-bottom: 8px;">
+            @* 节点信息 *@
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span>@(hasChildren ? "📦" : "📄")</span>
+
+                <strong>@node.DisplayName</strong>
+
+                @if (node.IsAppCall)
+                {
+                    <Tag Color="@("blue")">App: @node.AppName</Tag>
+                }
+
+                @if (node.IsToolCall)
+                {
+                    <Tag Color="@("purple")">Tool: @node.ToolName</Tag>
+                }
+
+                @if (!string.IsNullOrEmpty(node.ModelId))
+                {
+                    <Tag>@node.ModelId</Tag>
+                }
+
+                @if (isActive)
+                {
+                    <Tag Color="@("processing")">执行中...</Tag>
+                    <span style="color: #999;">
+                        @((DateTime.UtcNow - node.StartTime).TotalSeconds.ToString("F1"))s
+                    </span>
+                }
+                else
+                {
+                    var statusColor = node.Status == "Success" ? "success" : 
+                                    node.Status == "Error" ? "error" : "default";
+                    <Tag Color="@statusColor">@node.Status</Tag>
+                    <span style="color: #999;">@node.Duration.TotalSeconds.ToString("F2")s</span>
+                }
+
+                @if (node.InputTokens > 0 || node.OutputTokens > 0)
+                {
+                    <Tag Color="@("cyan")">
+                        ↑@node.InputTokens ↓@node.OutputTokens
+                    </Tag>
+                }
+            </div>
+
+            @* 详细信息 *@
+            @if (!string.IsNullOrEmpty(node.ToolArguments) || !string.IsNullOrEmpty(node.ToolResult))
+            {
+                <div style="margin-top: 4px; margin-left: 32px; color: #999;">
+                    @if (!string.IsNullOrEmpty(node.ToolArguments))
+                    {
+                        <div>
+                            📝 Args: @(node.ToolArguments.Length > 100 ? node.ToolArguments.Substring(0, 100) + "..." : node.ToolArguments)
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(node.ToolResult))
+                    {
+                        <div>
+                            ✅ Result: @(node.ToolResult.Length > 100 ? node.ToolResult.Substring(0, 100) + "..." : node.ToolResult)
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (!string.IsNullOrEmpty(node.ErrorType))
+            {
+                <div style="margin-top: 4px; margin-left: 32px; color: #ff4d4f;">
+                    ❌ Error: @node.ErrorType - @node.StatusDescription
+                </div>
+            }
+
+            @* 子节点 *@
+            @if (hasChildren)
+            {
+                <div style="@indentStyle; margin-top: 8px;">
+                    @foreach (var child in node.Children)
+                    {
+                        @RenderTraceNode(child, isActive)
+                    }
+                </div>
+            }
+        </div>
+    };
+
+    // 节点点击事件处理
+    private void OnActiveNodeClick(TreeEventArgs<TraceNode> args)
+    {
+        _selectedActiveNode = args.Node.DataItem;
+        StateHasChanged();
+    }
+
+    private void OnCompletedNodeClick(TreeEventArgs<TraceNode> args)
+    {
+        _selectedCompletedNode = args.Node.DataItem;
+        StateHasChanged();
+    }
+
+    // 获取节点图标
+    private string GetNodeIcon(TraceNode node)
+    {
+        if (node.OperationName.StartsWith("http.request"))
+            return "🌐";
+        if (node.OperationName.StartsWith("gen_ai."))
+            return "🤖";
+        if (node.IsAppCall)
+            return "📱";
+        if (node.IsToolCall)
+            return "🔧";
+        return "📄";
+    }
+
+    // 渲染节点详情
+    private RenderFragment RenderNodeDetails(TraceNode node, bool isActive) => __builder =>
+    {
+        <Descriptions Bordered Column="1" Size="@DescriptionsSize.Small">
+            <DescriptionsItem Title="操作名称">@node.OperationName</DescriptionsItem>
+            <DescriptionsItem Title="TraceId">
+                <Text Code Copyable>@node.TraceId</Text>
+            </DescriptionsItem>
+            <DescriptionsItem Title="SpanId">
+                <Text Code Copyable>@node.SpanId</Text>
+            </DescriptionsItem>
+            @if (!string.IsNullOrEmpty(node.ParentSpanId))
+            {
+                <DescriptionsItem Title="ParentSpanId">
+                    <Text Code Copyable>@node.ParentSpanId</Text>
+                </DescriptionsItem>
+            }
+            <DescriptionsItem Title="开始时间">@node.StartTime.ToString("yyyy-MM-dd HH:mm:ss.fff")</DescriptionsItem>
+            @if (!isActive && node.EndTime.HasValue)
+            {
+                <DescriptionsItem Title="结束时间">@node.EndTime.Value.ToString("yyyy-MM-dd HH:mm:ss.fff")</DescriptionsItem>
+                <DescriptionsItem Title="耗时">@node.Duration.TotalSeconds.ToString("F3")s</DescriptionsItem>
+            }
+            else
+            {
+                <DescriptionsItem Title="已运行">@((DateTime.UtcNow - node.StartTime).TotalSeconds.ToString("F1"))s</DescriptionsItem>
+            }
+            @if (!string.IsNullOrEmpty(node.Status))
+            {
+                <DescriptionsItem Title="状态">
+                    <Tag Color="@(node.Status == "Ok" || node.Status == "Success" ? "success" : "error")">
+                        @node.Status
+                    </Tag>
+                </DescriptionsItem>
+            }
+        </Descriptions>
+
+        @* App 调用信息 *@
+        @if (node.IsAppCall && !string.IsNullOrEmpty(node.AppName))
+        {
+            <Card Title="App 调用信息" Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Descriptions Bordered Column="1" Size="@DescriptionsSize.Small">
+                    <DescriptionsItem Title="App 名称">@node.AppName</DescriptionsItem>
+                    @if (!string.IsNullOrEmpty(node.ModelId))
+                    {
+                        <DescriptionsItem Title="Model">@node.ModelId</DescriptionsItem>
+                    }
+                    @if (node.Temperature.HasValue)
+                    {
+                        <DescriptionsItem Title="Temperature">@node.Temperature.Value</DescriptionsItem>
+                    }
+                    @if (node.MaxTokens.HasValue)
+                    {
+                        <DescriptionsItem Title="Max Tokens">@node.MaxTokens.Value</DescriptionsItem>
+                    }
+                </Descriptions>
+            </Card>
+        }
+
+        @* Tool 调用信息 *@
+        @if (node.IsToolCall && !string.IsNullOrEmpty(node.ToolName))
+        {
+            <Card Title="Tool 调用信息" Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Descriptions Bordered Column="1" Size="@DescriptionsSize.Small">
+                    <DescriptionsItem Title="Tool 名称">@node.ToolName</DescriptionsItem>
+                    @if (!string.IsNullOrEmpty(node.ToolArguments))
+                    {
+                        <DescriptionsItem Title="参数">
+                            <pre style="margin: 0;">@node.ToolArguments</pre>
+                        </DescriptionsItem>
+                    }
+                    @if (!string.IsNullOrEmpty(node.ToolResult))
+                    {
+                        <DescriptionsItem Title="结果">
+                            <pre style="margin: 0; max-height: 300px; overflow-y: auto;">@node.ToolResult</pre>
+                        </DescriptionsItem>
+                    }
+                </Descriptions>
+            </Card>
+        }
+
+        @* Chat 消息内容 *@
+        @if (node.InputMessages.Any() || !string.IsNullOrEmpty(node.OutputContent))
+        {
+            <Card Title="对话内容" Size="@CardSize.Small" Style="margin-top: 16px;">
+                @if (node.InputMessages.Any())
+                {
+                    <div style="margin-bottom: 16px;">
+                        <Text Strong>📥 输入消息:</Text>
+                        @foreach (var msg in node.InputMessages)
+                        {
+                            <div style="margin-top: 8px; padding: 12px; background-color: #f5f5f5; border-radius: 4px; border-left: 3px solid #1890ff;">
+                                <div style="margin-bottom: 4px;">
+                                    <Tag Color="@(msg.Role == "system" ? "purple" : msg.Role == "user" ? "blue" : "green")">
+                                        @msg.Role
+                                    </Tag>
+                                </div>
+                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background: transparent;">@msg.Content</pre>
+                            </div>
+                        }
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(node.OutputContent))
+                {
+                    <div>
+                        <Text Strong>📤 输出内容:</Text>
+                        <div style="margin-top: 8px; padding: 12px; background-color: #f0f9ff; border-radius: 4px; border-left: 3px solid #52c41a;">
+                            <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background: transparent;">@node.OutputContent</pre>
+                        </div>
+                    </div>
+                }
+            </Card>
+        }
+
+        @* Token 使用信息 *@
+        @if (node.InputTokens > 0 || node.OutputTokens > 0)
+        {
+            <Card Title="Token 使用" Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Row Gutter="16">
+                    <AntDesign.Col Span="8">
+                        <Statistic Title="输入 Token" Value="@node.InputTokens" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="8">
+                        <Statistic Title="输出 Token" Value="@node.OutputTokens" />
+                    </AntDesign.Col>
+                    <AntDesign.Col Span="8">
+                        <Statistic Title="总计" Value="@(node.InputTokens + node.OutputTokens)" />
+                    </AntDesign.Col>
+                </Row>
+            </Card>
+        }
+
+        @* Activity Events 展示 *@
+        @if (node.Events != null && node.Events.Count > 0)
+        {
+            <Card Title="Activity Events" Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Table TItem="LY.LlmPool.Web.Services.Telemetry.ActivityEventInfo" 
+                       DataSource="@node.Events" 
+                       Size="@TableSize.Small"
+                       Bordered>
+                    <Column Title="事件名称" TData="string">
+                        @if (context.Name.StartsWith("tool_call:"))
+                        {
+                            <Tag Color="@("purple")">🔧 @context.Name</Tag>
+                        }
+                        else if (context.Name.StartsWith("tool_result:"))
+                        {
+                            <Tag Color="@("green")">✅ @context.Name</Tag>
+                        }
+                        else
+                        {
+                            <Tag>@context.Name</Tag>
+                        }
+                    </Column>
+                    <Column Title="时间戳" TData="string">
+                        @context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                    </Column>
+                    <Column Title="Tags" TData="string">
+                        @if (context.Tags.Count > 0)
+                        {
+                            <div style="max-height: 200px; overflow-y: auto;">
+                                @foreach (var tag in context.Tags)
+                                {
+                                    <div style="margin-bottom: 4px;">
+                                        <Tag Color="@("blue")">@tag.Key</Tag>
+                                        <Text Code>@tag.Value</Text>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <span style="color: #999;">无</span>
+                        }
+                    </Column>
+                </Table>
+            </Card>
+        }
+
+        @* 错误信息 *@
+        @if (!string.IsNullOrEmpty(node.ErrorType))
+        {
+            <Alert Type="@AlertType.Error" Message="错误信息" Style="margin-top: 16px;">
+                <MessageTemplate>
+                    <p><strong>类型:</strong> @node.ErrorType</p>
+                    <p><strong>描述:</strong> @node.StatusDescription</p>
+                </MessageTemplate>
+            </Alert>
+        }
+
+        @* 所有 Tags *@
+        @if (node.Tags != null && node.Tags.Count > 0)
+        {
+            <Card Title="所有 Tags" Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Table TItem="KeyValuePair<string, string>" 
+                       DataSource="@node.Tags.ToList()" 
+                       Size="@TableSize.Small"
+                       Bordered>
+                    <PropertyColumn Property="c => c.Key" Title="Key" />
+                    <PropertyColumn Property="c => c.Value" Title="Value" />
+                </Table>
+            </Card>
+        }
+    };
+
+    public void Dispose()
+    {
+        TraceService.ActivityStarted -= OnActivityStarted;
+        TraceService.ActivityStopped -= OnActivityStopped;
+        _timer?.Dispose();
+    }
+}
+
+<style>
+    .conversation-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+        border: 1px solid transparent;
+        margin-bottom: 4px;
+    }
+
+    .conversation-item:hover {
+        background-color: #f5f5f5;
+    }
+
+    .conversation-item.selected {
+        background-color: #e6f7ff;
+        border-color: #1890ff;
+    }
+</style>

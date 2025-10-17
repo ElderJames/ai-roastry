@@ -37,7 +37,8 @@ public class ParameterInjectionTests
             ["custom_param"] = "custom_value"
         };
 
-        var handler = (DelegatingHandler)Activator.CreateInstance(handlerType, parameters)!;
+        // 🎯 修复: 构造函数现在需要两个参数 (parameters, onConversationIdReceived)
+        var handler = (DelegatingHandler)Activator.CreateInstance(handlerType, parameters, null)!;
         
         // 设置内部 handler 来捕获请求
         string? capturedContent = null;

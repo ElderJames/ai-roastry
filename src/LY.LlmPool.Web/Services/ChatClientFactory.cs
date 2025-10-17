@@ -13,17 +13,20 @@ public class ChatClientFactory
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ChatClientFactory> _logger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<LoggingHttpHandler>? _loggingLogger;
     private readonly ILogger<ParameterInjectingHandler>? _parameterLogger;
 
     public ChatClientFactory(
         IHttpClientFactory httpClientFactory,
         ILogger<ChatClientFactory> logger,
+        ILoggerFactory loggerFactory,
         ILogger<LoggingHttpHandler>? loggingLogger = null,
         ILogger<ParameterInjectingHandler>? parameterLogger = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _loggerFactory = loggerFactory;
         _loggingLogger = loggingLogger;
         _parameterLogger = parameterLogger;
     }
@@ -74,6 +77,7 @@ public class ChatClientFactory
         if (enableFunctionInvocation)
         {
             chatClient = new ChatClientBuilder(chatClient)
+                .UseOpenTelemetry() // 🎯 启用 OpenTelemetry 自动追踪
                 .UseFunctionInvocation(configure: functionClient =>
                 {
                     // 🔑 启用并行工具调用（提升性能）
@@ -82,6 +86,9 @@ public class ChatClientFactory
                     _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
                         functionClient.AllowConcurrentInvocation);
                 })
+                .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
+                    innerClient, 
+                    _loggerFactory.CreateLogger<Telemetry.ToolCallEventRecordingChatClient>()))
                 .Build();
         }
 
@@ -104,7 +111,6 @@ public class ChatClientFactory
         bool enableLogging = false)
     {
         ArgumentNullException.ThrowIfNull(config);
-        ArgumentException.ThrowIfNullOrWhiteSpace(config.BaseUrl, nameof(config.BaseUrl));
         ArgumentException.ThrowIfNullOrWhiteSpace(config.ApiKey, nameof(config.ApiKey));
 
         var httpClient = _httpClientFactory.CreateClient(httpClientName);
@@ -118,11 +124,28 @@ public class ChatClientFactory
             httpClient = WrapHttpClientWithHandlers(httpClient, parameters, enableLogging);
         }
 
+        // 🔑 优先使用 HttpClient 的 BaseAddress，如果没有则使用 config.BaseUrl
+        Uri endpoint;
+        if (httpClient.BaseAddress != null)
+        {
+            endpoint = httpClient.BaseAddress;
+            _logger.LogDebug("使用 HttpClient BaseAddress: {BaseAddress}", endpoint);
+        }
+        else if (!string.IsNullOrWhiteSpace(config.BaseUrl))
+        {
+            endpoint = new Uri(config.BaseUrl);
+            _logger.LogDebug("使用 Config BaseUrl: {BaseUrl}", endpoint);
+        }
+        else
+        {
+            throw new ArgumentException("HttpClient.BaseAddress 和 Config.BaseUrl 都未设置");
+        }
+
         // 使用自定义 HttpClient 创建 OpenAI 客户端
         var credential = new ApiKeyCredential(config.ApiKey);
         var openAiClient = new OpenAIClient(credential, new OpenAIClientOptions
         {
-            Endpoint = new Uri(config.BaseUrl),
+            Endpoint = endpoint,
             Transport = new HttpClientPipelineTransport(httpClient)
         });
 
@@ -132,6 +155,7 @@ public class ChatClientFactory
         if (enableFunctionInvocation)
         {
             chatClient = new ChatClientBuilder(chatClient)
+                .UseOpenTelemetry() // 🎯 启用 OpenTelemetry 自动追踪
                 .UseFunctionInvocation(configure: functionClient =>
                 {
                     // 🔑 启用并行工具调用（提升性能）
@@ -140,6 +164,9 @@ public class ChatClientFactory
                     _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
                         functionClient.AllowConcurrentInvocation);
                 })
+                .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
+                    innerClient, 
+                    _loggerFactory.CreateLogger<Telemetry.ToolCallEventRecordingChatClient>()))
                 .Build();
         }
 

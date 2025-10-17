@@ -10,15 +10,17 @@ using Microsoft.Extensions.Logging;
 namespace LY.LlmPool.Client;
 
 /// <summary>
-/// HTTP message handler to inject parameters into the request body.
+/// HTTP message handler to inject parameters into the request body and extract ConversationId from response.
 /// </summary>
 internal class ParameterInjectionHandler : DelegatingHandler
 {
     private readonly Dictionary<string, object>? _parameters;
+    private readonly Action<string>? _onConversationIdReceived;
 
-    public ParameterInjectionHandler(Dictionary<string, object>? parameters)
+    public ParameterInjectionHandler(Dictionary<string, object>? parameters, Action<string>? onConversationIdReceived = null)
     {
         _parameters = parameters;
+        _onConversationIdReceived = onConversationIdReceived;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -57,7 +59,19 @@ internal class ParameterInjectionHandler : DelegatingHandler
         }
 
         // 调用下一个处理器或发送请求
-        return await base.SendAsync(request, cancellationToken);
+        var response = await base.SendAsync(request, cancellationToken);
+        
+        // 🎯 从响应头中提取 ConversationId
+        if (response.Headers.TryGetValues("X-Conversation-Id", out var conversationIdValues))
+        {
+            var conversationId = conversationIdValues.FirstOrDefault();
+            if (!string.IsNullOrEmpty(conversationId))
+            {
+                _onConversationIdReceived?.Invoke(conversationId);
+            }
+        }
+        
+        return response;
     }
 
     private static JsonNode? ToJsonValue(object value)
@@ -84,18 +98,57 @@ internal class ParameterInjectionHandler : DelegatingHandler
 public class LlmPoolClient
 {
     private readonly HttpClient _httpClient;
+    private readonly HttpMessageHandler? _customHandler; // 🎯 保存自定义 handler（用于测试 Mock）
     private readonly string _apiKey;
-
-    public LlmPoolClient(string baseUrl, string apiKey)
-    {
-        _httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
-        _apiKey = apiKey;
+    private string? _conversationId;
+    
+    /// <summary>
+    /// 当前会话的 ConversationId（从服务端响应中获取或设置）
+    /// </summary>
+    public string? ConversationId 
+    { 
+        get => _conversationId;
+        set
+        {
+            _conversationId = value;
+            // 更新 HttpClient 的默认请求头
+            _httpClient.DefaultRequestHeaders.Remove("X-Conversation-Id");
+            if (!string.IsNullOrEmpty(_conversationId))
+            {
+                _httpClient.DefaultRequestHeaders.Add("X-Conversation-Id", _conversationId);
+            }
+        }
     }
 
-    public LlmPoolClient(HttpClient httpClient, string apiKey)
+    public LlmPoolClient(string baseUrl, string apiKey, string? conversationId = null)
+    {
+        _httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
+        _customHandler = null; // 没有自定义 handler
+        _apiKey = apiKey;
+        ConversationId = conversationId; // 使用属性设置器
+    }
+
+    /// <summary>
+    /// 构造函数：使用已有的 HttpClient
+    /// </summary>
+    public LlmPoolClient(HttpClient httpClient, string apiKey, string? conversationId = null)
+        : this(httpClient, apiKey, conversationId, customHandler: null)
+    {
+    }
+
+    /// <summary>
+    /// 构造函数：使用 HttpClient 和自定义 HttpMessageHandler（用于测试 Mock）
+    /// </summary>
+    /// <param name="httpClient">HttpClient 实例</param>
+    /// <param name="apiKey">API 密钥</param>
+    /// <param name="conversationId">会话 ID</param>
+    /// <param name="customHandler">自定义 handler（如测试的 Mock handler），会被包装在 ParameterInjectionHandler 中</param>
+    public LlmPoolClient(HttpClient httpClient, string apiKey, string? conversationId, HttpMessageHandler? customHandler)
     {
         _httpClient = httpClient;
+        _customHandler = customHandler; // 🎯 保存自定义 handler
         _apiKey = apiKey;
+        ConversationId = conversationId; // 使用属性设置器
     }
 
     private (IChatClient, Microsoft.Extensions.AI.ChatOptions) CreateChatClientAndOptions(
@@ -106,12 +159,25 @@ public class LlmPoolClient
     {
         HttpClient httpClient;
 
-        // 如果有参数需要注入,创建带参数注入的新 HttpClient
-        if (parameters != null && parameters.Count > 0)
+        // 🎯 只在真正需要参数注入或 ConversationId 提取时才创建新的 handler 链
+        bool needsParameterInjection = parameters?.Count > 0;
+        bool needsConversationIdExtraction = string.IsNullOrEmpty(this.ConversationId);
+        
+        if (needsParameterInjection || needsConversationIdExtraction)
         {
-            // 创建 handler 链: ParameterInjectionHandler -> HttpClientHandler
-            HttpMessageHandler innerHandler = new HttpClientHandler();
-            var paramHandler = new ParameterInjectionHandler(parameters)
+            // 🎯 使用依赖注入的 customHandler（如果有），否则创建新的 HttpClientHandler
+            HttpMessageHandler innerHandler = _customHandler ?? new HttpClientHandler();
+            
+            var paramHandler = new ParameterInjectionHandler(
+                parameters, 
+                onConversationIdReceived: (convId) => 
+                {
+                    // 🎯 从响应中接收到 ConversationId 后，更新客户端的 ConversationId
+                    if (string.IsNullOrEmpty(this.ConversationId))
+                    {
+                        this.ConversationId = convId;
+                    }
+                })
             {
                 InnerHandler = innerHandler
             };
@@ -130,7 +196,7 @@ public class LlmPoolClient
         }
         else
         {
-            // 直接使用传入的 HttpClient
+            // 🎯 不需要参数注入也不需要 ConversationId 提取，直接重用 _httpClient
             httpClient = _httpClient;
         }
 

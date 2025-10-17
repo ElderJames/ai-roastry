@@ -314,6 +314,9 @@
     private Dictionary<int, List<ToolCallUtils.ToolCallView>> _messageToolEvents = new();
     private HashSet<int> _expandedTools = new();
     private Dictionary<string, ToolCallUtils.ToolCallView> _toolCallIdToEvent = new();
+    
+    // 🎯 会话级别的 ConversationId（从服务端响应中获取并缓存）
+    private string? _conversationId = null;
 
     // 使用 ToolCallUtils.ToolCallView
 
@@ -522,7 +525,9 @@
         if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
 
         var http = HttpClientFactory.CreateClient("LlmPoolApi");
-        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk");
+        
+        // 🎯 创建 client 时传递当前的 ConversationId（如果有）
+        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk", _conversationId);
         var msgs = BuildClientMessages();
         var parms = ParameterUtils.GetValidParameters(_appParameters);
         var chatOptions = new LY.LlmPool.Client.ChatOptions
@@ -533,6 +538,14 @@
             };
 
         var text = await client.ChatAsync(model!, msgs, parms, toolObjects, chatOptions);
+        
+        // 🎯 尝试从 client 中获取服务端返回的 ConversationId（如果之前没有）
+        if (string.IsNullOrEmpty(_conversationId) && !string.IsNullOrEmpty(client.ConversationId))
+        {
+            _conversationId = client.ConversationId;
+            Console.WriteLine($"📥 从服务端获取 ConversationId: {_conversationId}");
+        }
+        
         AddAssistantMessage(text);
     }
 
@@ -560,7 +573,9 @@
             if (string.IsNullOrEmpty(model)) throw new Exception("未选择模型、终端点或应用");
 
             var http = HttpClientFactory.CreateClient("LlmPoolApi");
-            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx");
+            
+            // 🎯 通过构造函数传递 ConversationId
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx", _conversationId);
 
             var chatOptions = new LY.LlmPool.Client.ChatOptions
             {

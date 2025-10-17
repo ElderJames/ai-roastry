@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel.Connectors.OpenAI;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Services.Agents;
+using LY.LlmPool.Web.Services.Telemetry;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.ClientModel;
@@ -1006,6 +1007,9 @@ public class ChatClientService : IChatClientService
                         currentToolCallBatch[callId] = toolCallInfo;
                         _logger.LogInformation("流式响应中发现工具调用: {ToolName}, CallId: {CallId}, Args: {Args}", 
                             functionCall.Name, callId, argumentsJson);
+                        
+                        // 🎯 记录工具调用到当前 Activity Events
+                        System.Diagnostics.Activity.Current?.RecordToolCalls(new[] { functionCall });
                     }
                     // 提取工具结果
                     else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
@@ -1030,6 +1034,9 @@ public class ChatClientService : IChatClientService
                             
                             _logger.LogInformation("流式响应中发现工具结果: CallId: {CallId}, Success: {Success}, Result: {Result}", 
                                 callId, toolCallInfo.IsSuccess, toolCallInfo.Result);
+                            
+                            // 🎯 记录工具结果到当前 Activity Events
+                            System.Diagnostics.Activity.Current?.RecordToolResults(new[] { functionResult });
                             
                             // 🔑 立即yield结果更新，让前端能实时看到Result
                             // 🔑 工具结果更新使用与原调用相同的 batchId（从工具调用信息中获取）
@@ -1257,6 +1264,152 @@ public class ChatClientService : IChatClientService
         
         // 🔑 流结束时最后 yield 一次（确保最终状态被返回）
         yield return segments;
+    }
+
+    /// <summary>
+    /// 通过 App Name 调用流式消息（经过 OpenAI Controller 代理）
+    /// 使用 App Name 作为 model 参数，通过 /v1/chat/completions 端点调用
+    /// 这样可以利用 Controller 层的 Activity 追踪，形成完整的调用链
+    /// </summary>
+    public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(
+        string appName,
+        List<Microsoft.Extensions.AI.ChatMessage> messages,
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+    {
+        _logger.LogInformation("通过 Controller 发送流式消息，App: {AppName}, 消息数量: {MessageCount}", 
+            appName, messages.Count);
+
+        // 🔑 使用已注册的 LlmPoolApi HttpClient，它已经配置了正确的 BaseAddress
+        // CreateClientWithHttpClient 会优先使用 HttpClient.BaseAddress
+        var localConfig = new LlmConfig
+        {
+            ApiKey = "local-app-tool-call", // 占位符
+            BaseUrl = string.Empty, // 使用 HttpClient.BaseAddress
+            Model = appName // 使用 App Name 作为 model
+        };
+
+        // 使用 ChatClientFactory 创建 IChatClient，指定使用 LlmPoolApi HttpClient
+        // 这样会使用 Program.cs 中配置的本地地址
+        var chatClient = _chatClientFactory.CreateClientWithHttpClient(
+            localConfig, 
+            httpClientName: "LlmPoolApi", 
+            enableFunctionInvocation: true
+        );
+
+        var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
+        
+        // 添加工具
+        if (tools != null && tools.Any())
+        {
+            _logger.LogInformation("检测到 {ToolCount} 个工具，启用自动调用", tools.Count());
+            chatOptions.Tools = new List<Microsoft.Extensions.AI.AITool>(tools);
+        }
+
+        _logger.LogInformation("开始调用流式聊天完成服务（通过 Controller）");
+
+        // 用于临时收集当前批次的工具调用信息
+        var currentToolCallBatch = new Dictionary<string, ToolCallInfo>();
+        var yieldedCallIds = new HashSet<string>();
+
+        // 流式接收响应
+        await foreach (var update in chatClient.GetStreamingResponseAsync(messages, chatOptions))
+        {
+            // 返回文本更新
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return new ChatStreamingUpdate
+                {
+                    Text = update.Text
+                };
+            }
+
+            // 检查流式更新中的工具调用内容
+            if (update.Contents != null)
+            {
+                foreach (var content in update.Contents)
+                {
+                    // 提取工具调用
+                    if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
+                    {
+                        var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
+                        
+                        string argumentsJson;
+                        if (functionCall.Arguments != null)
+                        {
+                            argumentsJson = JsonSerializer.Serialize(
+                                functionCall.Arguments,
+                                new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+                        }
+                        else
+                        {
+                            argumentsJson = "{}";
+                        }
+                        
+                        var toolCallInfo = new ToolCallInfo
+                        {
+                            CallId = callId,
+                            ToolName = functionCall.Name,
+                            ToolType = "function",
+                            Arguments = argumentsJson
+                        };
+
+                        currentToolCallBatch[callId] = toolCallInfo;
+                        
+                        _logger.LogInformation("检测到工具调用: {ToolName}, CallId: {CallId}", 
+                            functionCall.Name, callId);
+                        
+                        // 🎯 记录工具调用到当前 Activity Events
+                        System.Diagnostics.Activity.Current?.RecordToolCalls(new[] { functionCall });
+                    }
+                    
+                    // 提取工具调用结果
+                    if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
+                    {
+                        var callId = functionResult.CallId ?? string.Empty;
+                        
+                        if (currentToolCallBatch.TryGetValue(callId, out var toolCall))
+                        {
+                            // 序列化结果为字符串
+                            var resultString = functionResult.Result?.ToString() ?? string.Empty;
+                            toolCall.Result = resultString;
+                            
+                            _logger.LogInformation("工具调用结果: {ToolName}, CallId: {CallId}, Result length: {Length}", 
+                                toolCall.ToolName, callId, resultString.Length);
+                            
+                            // 🎯 记录工具结果到当前 Activity Events
+                            System.Diagnostics.Activity.Current?.RecordToolResults(new[] { functionResult });
+                            
+                            // 如果还没有 yield 过这个工具调用，现在 yield
+                            if (!yieldedCallIds.Contains(callId))
+                            {
+                                yield return new ChatStreamingUpdate
+                                {
+                                    ToolCalls = new List<ToolCallInfo> { toolCall }
+                                };
+                                yieldedCallIds.Add(callId);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 流结束后，yield 任何未返回的工具调用
+        foreach (var (callId, toolCall) in currentToolCallBatch)
+        {
+            if (!yieldedCallIds.Contains(callId))
+            {
+                _logger.LogInformation("流结束时 yield 工具调用: {ToolName}, CallId: {CallId}", 
+                    toolCall.ToolName, callId);
+                
+                yield return new ChatStreamingUpdate
+                {
+                    ToolCalls = new List<ToolCallInfo> { toolCall }
+                };
+            }
+        }
+
+        _logger.LogInformation("流式消息完成（通过 Controller）");
     }
 }
 

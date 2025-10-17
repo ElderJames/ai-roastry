@@ -3,11 +3,14 @@ using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Models.Tools;
 using System.Text.Json;
+using System.Diagnostics;
 using Microsoft.SemanticKernel;
 using LY.LlmPool.Web.Services.Tools;
+using LY.LlmPool.Web.Services.Decorators;
 using Microsoft.Extensions.AI;
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using LY.LlmPool.Web.Services.Aggregation;
+using LY.LlmPool.Web.Services.Telemetry;
 
 namespace LY.LlmPool.Web.Services;
 
@@ -317,49 +320,10 @@ public class ToolProviderService
             return null;
         }
 
-        // 获取 LlmConfig 或 Endpoint
-        // 优先使用 App 直接绑定的配置，否则使用 AgentMember
-        LlmConfig? llmConfig = null;
-        LlmEndpoint? endpoint = null;
-        
-        if (!string.IsNullOrEmpty(app.LlmConfigId))
-        {
-            var configService = scope.ServiceProvider.GetRequiredService<ConfigService>();
-            llmConfig = await configService.GetConfigByIdAsync(app.LlmConfigId);
-            _logger.LogInformation("Tool App {AppName} using direct LlmConfig: {ConfigName}", 
-                app.Name, llmConfig?.Name);
-        }
-        else if (!string.IsNullOrEmpty(app.EndpointId))
-        {
-            var llmPoolService = scope.ServiceProvider.GetRequiredService<LlmPoolService>();
-            endpoint = await llmPoolService.GetEndpointByIdAsync(app.EndpointId);
-            _logger.LogInformation("Tool App {AppName} using direct Endpoint: {EndpointName}", 
-                app.Name, endpoint?.Name);
-        }
-        else
-        {
-            // 尝试从 AgentMember 获取配置
-            var members = await appService.GetAgentMembersByAppIdAsync(app.Id!);
-            var member = members.FirstOrDefault();
-            
-            if (member != null && member.LlmConfig != null)
-            {
-                llmConfig = member.LlmConfig;
-                _logger.LogInformation("Tool App {AppName} using AgentMember LlmConfig: {ConfigName}", 
-                    app.Name, llmConfig.Name);
-            }
-            else
-            {
-                _logger.LogError(
-                    "Tool App {AppName} has no LlmConfig, Endpoint, or valid AgentMember. " +
-                    "Please configure at least one of: " +
-                    "1) Set LlmConfigId on the App; " +
-                    "2) Set EndpointId on the App; " +
-                    "3) Create an AgentMember with LlmConfig",
-                    app.Name);
-                return null;
-            }
-        }
+        // 🔑 注意：不再需要在这里获取 LlmConfig 或 Endpoint
+        // 因为调用会通过 OpenAI Controller，Controller 会根据 App Name 查找配置
+        _logger.LogInformation("Tool App {AppName} will use Controller to resolve config via App Name", 
+            app.Name);
 
         _logger.LogInformation("Tool App {AppName} using Prompt: {PromptName}", 
             app.Name, toolPrompt.Name);
@@ -499,35 +463,34 @@ public class ToolProviderService
             var collector = new StreamingResponseCollector(
                 loggerFactory.CreateLogger<StreamingResponseCollector>());
             
+            // 🎯 AOP: 使用 ActivityScopeManager 管理 Activity 生命周期
+            using var scope = ActivityScopeManager.CreateToolScope(
+                toolName: app.Name,
+                modelId: app.Name,
+                parameters: new Dictionary<string, object?>
+                {
+                    ["depth"] = currentDepth,
+                    ["hasNestedTools"] = nestedTools?.Count > 0,
+                    ["nestedToolsCount"] = nestedTools?.Count ?? 0
+                },
+                serviceProvider: _serviceProvider
+            );
+            
             try
             {
-                IAsyncEnumerable<ChatStreamingUpdate> streamingUpdates;
+                _logger.LogInformation("通过 Controller 调用 App Tool: {AppName}", app.Name);
                 
-                if (llmConfig != null)
-                {
-                    _logger.LogInformation("Starting streaming call with LlmConfig for App Tool '{ToolName}'", app.Name);
-                    streamingUpdates = chatClientService.SendStreamingMessageWithDetailsAsync(
-                        llmConfig, messages, parameters: null, tools: nestedTools);
-                }
-                else if (endpoint != null)
-                {
-                    var endpointConfig = endpoint.EndpointConfigs.OrderBy(c => c.Priority).FirstOrDefault();
-                    if (endpointConfig == null)
-                        throw new InvalidOperationException($"No endpoint config available for App Tool '{app.Name}'");
-                    
-                    var configService = execScope.ServiceProvider.GetRequiredService<ConfigService>();
-                    var endpointLlmConfig = await configService.GetConfigByIdAsync(endpointConfig.LlmConfigId);
-                    if (endpointLlmConfig == null)
-                        throw new InvalidOperationException($"Endpoint config not found for App Tool '{app.Name}'");
-                    
-                    _logger.LogInformation("Starting streaming call with Endpoint for App Tool '{ToolName}'", app.Name);
-                    streamingUpdates = chatClientService.SendStreamingMessageWithDetailsAsync(
-                        endpointLlmConfig, messages, parameters: null, tools: nestedTools);
-                }
-                else
-                {
-                    throw new InvalidOperationException($"No LlmConfig or Endpoint configured for App Tool '{app.Name}'");
-                }
+                // 🎯 注意: 不需要设置 Activity.Current = activity
+                // StartAppToolActivity 已经自动将其设置为当前 Activity
+                // 并且它会正确继承 FunctionInvokingChatClient 的 execute_tool Activity 作为 parent
+                
+                // 🔥 使用新的 SendStreamingMessageViaControllerAsync 方法
+                // 这样会经过 OpenAI Controller，利用 Controller 层的 Activity 追踪
+                var streamingUpdates = chatClientService.SendStreamingMessageViaControllerAsync(
+                    app.Name, // 使用 App Name 作为 model 参数
+                    messages,
+                    tools: nestedTools
+                );
 
                 // 🔥 使用 ConvertToSegmentsStreamAsync 将流式更新转换为 Segments
                 await foreach (var segments in ChatClientService.ConvertToSegmentsStreamAsync(streamingUpdates).WithCancellation(ct))
@@ -538,20 +501,32 @@ public class ToolProviderService
                 // 将收集到的响应格式化为 Markdown
                 var markdownResult = collector.ToMarkdown();
                 
+                // 🎯 AOP: 使用 scope.RecordSuccess 记录成功
+                var text = collector.GetText();
+                var toolCalls = collector.GetToolCalls();
+                scope.RecordSuccess(tags: new Dictionary<string, object?>
+                {
+                    ["app.result.text_length"] = text.Length,
+                    ["app.result.tool_calls_count"] = toolCalls.Count,
+                    ["tool.result"] = markdownResult // 🎯 记录工具执行结果
+                });
+                
                 _logger.LogInformation(
                     "✅ App Tool '{ToolName}' executed successfully at depth {Depth}. " +
                     "Text length: {TextLength}, Tool calls: {ToolCallCount}",
-                    app.Name, currentDepth, collector.GetText().Length, collector.GetToolCalls().Count);
+                    app.Name, currentDepth, text.Length, toolCalls.Count);
 
                 return markdownResult;
             }
             catch (OperationCanceledException)
             {
+                scope.RecordError(new OperationCanceledException($"App tool '{app.Name}' cancelled"));
                 _logger.LogWarning("App Tool '{ToolName}' execution was cancelled", app.Name);
                 throw;
             }
             catch (Exception ex)
             {
+                scope.RecordError(ex);
                 _logger.LogError(ex, "App Tool '{ToolName}' execution failed: {Message}", app.Name, ex.Message);
                 throw new InvalidOperationException($"Tool execution failed: {ex.Message}", ex);
             }
