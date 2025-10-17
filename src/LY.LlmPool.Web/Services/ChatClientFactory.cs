@@ -1,4 +1,5 @@
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Services.Monitoring;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using System.ClientModel;
@@ -16,19 +17,25 @@ public class ChatClientFactory
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<LoggingHttpHandler>? _loggingLogger;
     private readonly ILogger<ParameterInjectingHandler>? _parameterLogger;
+    private readonly ILogger<MonitoringDelegatingChatClient>? _monitoringLogger;
+    private readonly ChatExecutionPersistenceService? _persistenceService;
 
     public ChatClientFactory(
         IHttpClientFactory httpClientFactory,
         ILogger<ChatClientFactory> logger,
         ILoggerFactory loggerFactory,
         ILogger<LoggingHttpHandler>? loggingLogger = null,
-        ILogger<ParameterInjectingHandler>? parameterLogger = null)
+        ILogger<ParameterInjectingHandler>? parameterLogger = null,
+        ILogger<MonitoringDelegatingChatClient>? monitoringLogger = null,
+        ChatExecutionPersistenceService? persistenceService = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _loggerFactory = loggerFactory;
         _loggingLogger = loggingLogger;
         _parameterLogger = parameterLogger;
+        _monitoringLogger = monitoringLogger;
+        _persistenceService = persistenceService;
     }
 
     /// <summary>
@@ -39,7 +46,7 @@ public class ChatClientFactory
     /// <param name="parameters">要注入到请求中的额外参数（如 temperature, max_tokens）</param>
     /// <param name="enableLogging">是否启用 HTTP 请求/响应日志（默认 false）</param>
     public IChatClient CreateClient(
-        LlmConfig config, 
+        LlmConfig config,
         bool enableFunctionInvocation = true,
         Dictionary<string, object>? parameters = null,
         bool enableLogging = false)
@@ -82,8 +89,8 @@ public class ChatClientFactory
                 {
                     // 🔑 启用并行工具调用（提升性能）
                     functionClient.AllowConcurrentInvocation = true;
-                    
-                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
+
+                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）",
                         functionClient.AllowConcurrentInvocation);
                 })
                 .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
@@ -104,8 +111,8 @@ public class ChatClientFactory
     /// <param name="parameters">要注入到请求中的额外参数（如 temperature, max_tokens）</param>
     /// <param name="enableLogging">是否启用 HTTP 请求/响应日志（默认 false）</param>
     public IChatClient CreateClientWithHttpClient(
-        LlmConfig config, 
-        string httpClientName = "UpstreamLlm", 
+        LlmConfig config,
+        string httpClientName = "UpstreamLlm",
         bool enableFunctionInvocation = true,
         Dictionary<string, object>? parameters = null,
         bool enableLogging = false)
@@ -160,8 +167,8 @@ public class ChatClientFactory
                 {
                     // 🔑 启用并行工具调用（提升性能）
                     functionClient.AllowConcurrentInvocation = true;
-                    
-                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）", 
+
+                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）",
                         functionClient.AllowConcurrentInvocation);
                 })
                 .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
@@ -250,5 +257,56 @@ public class ChatClientFactory
         }
 
         return newClient;
+    }
+
+    /// <summary>
+    /// 创建带有监控功能的 IChatClient
+    /// </summary>
+    /// <param name="config">LLM 配置</param>
+    /// <param name="monitor">执行监控器</param>
+    /// <param name="httpClientName">HttpClient 名称</param>
+    /// <param name="enableFunctionInvocation">是否启用自动工具调用（默认 true）</param>
+    /// <param name="parameters">要注入到请求中的额外参数</param>
+    /// <param name="enableLogging">是否启用 HTTP 请求/响应日志（默认 false）</param>
+    public IChatClient CreateClientWithMonitoring(
+        LlmConfig config,
+        ChatExecutionMonitor monitor,
+        string httpClientName = "UpstreamLlm",
+        bool enableFunctionInvocation = true,
+        Dictionary<string, object>? parameters = null,
+        bool enableLogging = false)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(monitor);
+
+        // 设置监控器的模型名称
+        monitor.ModelName = config.Model ?? config.Name;
+
+        // 创建基础客户端
+        var baseClient = CreateClientWithHttpClient(
+            config,
+            httpClientName,
+            enableFunctionInvocation,
+            parameters,
+            enableLogging);
+
+        // 如果没有监控日志记录器，直接返回基础客户端
+        if (_monitoringLogger == null)
+        {
+            _logger.LogWarning("未配置监控日志记录器，跳过监控包装");
+            return baseClient;
+        }
+
+        // 使用 MonitoringDelegatingChatClient 包装，并传入持久化服务
+        var monitoringClient = new MonitoringDelegatingChatClient(
+            baseClient,
+            monitor,
+            _monitoringLogger,
+            _persistenceService);
+
+        _logger.LogDebug("为配置 {ConfigName} 创建带监控的 ChatClient，RequestId: {RequestId}，持久化: {PersistenceEnabled}",
+            config.Name, monitor.RequestId, _persistenceService != null);
+
+        return monitoringClient;
     }
 }

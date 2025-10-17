@@ -23,6 +23,9 @@ public class LlmDbContext : DbContext
     public DbSet<McpServerConfig> McpServerConfigs { get; set; } = null!;
     public DbSet<PromptTool> PromptTools { get; set; } = null!;
 
+    public DbSet<ChatExecutionRecord> ChatExecutionRecords { get; set; } = null!;
+    public DbSet<ChatExecutionTimelineNode> ChatExecutionTimelineNodes { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -161,6 +164,29 @@ public class LlmDbContext : DbContext
                 .HasForeignKey(e => e.PromptId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.ToolType).HasConversion<string>();
+        });
+
+        modelBuilder.Entity<ChatExecutionRecord>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.RequestId).IsUnique();
+            entity.HasIndex(e => e.StartTime);
+            entity.HasIndex(e => e.ModelName);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<ChatExecutionTimelineNode>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ExecutionRecordId);
+            entity.HasIndex(e => new { e.ExecutionRecordId, e.Sequence });
+            entity.Property(e => e.NodeType).HasConversion<string>();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.HasOne(e => e.ExecutionRecord)
+                .WithMany(e => e.TimelineNodes)
+                .HasForeignKey(e => e.ExecutionRecordId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

@@ -12,6 +12,7 @@ using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.Telemetry;
+using LY.LlmPool.Web.Services.Monitoring;
 using LY.LlmPool.Web.Components.ChatHelpers;
 using LY.LlmPool.Web.Filters;
 using Microsoft.AspNetCore.Mvc;
@@ -40,6 +41,7 @@ namespace LY.LlmPool.Web.Controllers
         private readonly ILogger<LoggingHttpHandler> _httpLogger;
         private readonly AgentOrchestratorServiceAlias _agentOrchestrator;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ChatExecutionPersistenceService _persistenceService;
 
         private static readonly JsonSerializerOptions _jsonSerializerOptions = new()
         {
@@ -57,7 +59,8 @@ namespace LY.LlmPool.Web.Controllers
             ILogger<OpenAICompatController> logger,
             ILogger<LoggingHttpHandler> httpLogger,
             AgentOrchestratorServiceAlias agentOrchestrator,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            ChatExecutionPersistenceService persistenceService)
         {
             _llmPoolService = llmPoolService;
             _callRecordService = callRecordService;
@@ -68,6 +71,7 @@ namespace LY.LlmPool.Web.Controllers
             _httpLogger = httpLogger;
             _agentOrchestrator = agentOrchestrator;
             _httpClientFactory = httpClientFactory;
+            _persistenceService = persistenceService;
         }
 
         [HttpPost("chat/completions")]
@@ -168,7 +172,24 @@ namespace LY.LlmPool.Web.Controllers
                     return;
                 }
 
-                _logger.LogInformation("解析的聊天请求 - 模型: {Model}, 消息数量: {MessageCount}", chatRequest.Model, chatRequest.Messages.Count);
+                // 立即创建执行记录（记录请求开始）
+                ChatExecutionRecord? executionRecord = null;
+                var requestId = $"req_{Guid.NewGuid():N}";
+                try
+                {
+                    executionRecord = await _persistenceService.CreateExecutionRecordAsync(
+                        requestId: requestId,
+                        requestModel: chatRequest.Model,
+                        messageCount: chatRequest.Messages.Count,
+                        startTime: requestStartTime);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "创建执行记录失败，继续处理请求");
+                }
+
+                _logger.LogInformation("解析的聊天请求 - RequestId: {RequestId}, 模型: {Model}, 消息数量: {MessageCount}",
+                    requestId, chatRequest.Model, chatRequest.Messages.Count);
 
                 var modelAcquireStartTime = DateTime.UtcNow;
                 LlmConfig? config = null;
@@ -328,6 +349,13 @@ namespace LY.LlmPool.Web.Controllers
 
                 if (config == null)
                 {
+                    if (executionRecord != null)
+                    {
+                        await _persistenceService.UpdateExecutionRecordErrorAsync(
+                            executionRecord.Id,
+                            "No available model found or invalid API key");
+                    }
+
                     if (callRecord != null)
                     {
                         callRecord.IsSuccessful = false;
@@ -368,10 +396,19 @@ namespace LY.LlmPool.Web.Controllers
                     var missingParams = _promptParameterService.ValidateParameters(promptContent, chatRequest.Parameters);
                     if (missingParams.Count > 0)
                     {
+                        var errorMsg = $"Missing required parameters: {string.Join(", ", missingParams)}";
+
+                        if (executionRecord != null)
+                        {
+                            await _persistenceService.UpdateExecutionRecordErrorAsync(
+                                executionRecord.Id,
+                                errorMsg);
+                        }
+
                         if (callRecord != null)
                         {
                             callRecord.IsSuccessful = false;
-                            callRecord.ErrorMessage = $"Missing required parameters: {string.Join(", ", missingParams)}";
+                            callRecord.ErrorMessage = errorMsg;
                             await _llmPoolService.UpdateCallRecordAsync(callRecord);
                         }
                         await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
@@ -424,6 +461,7 @@ namespace LY.LlmPool.Web.Controllers
                             tools: promptTools,
                             modelName: actualModelName,
                             modelParameters: modelParameters,
+                            executionRecord: executionRecord,
                             cancellationToken: HttpContext.RequestAborted);
                     }
                     else
@@ -435,6 +473,7 @@ namespace LY.LlmPool.Web.Controllers
                             systemPrompt: promptContent,
                             tools: promptTools,
                             modelParameters: modelParameters,
+                            executionRecord: executionRecord,
                             cancellationToken: HttpContext.RequestAborted);
 
                         await WriteChatCompletionResponse(aiResponse, actualModelName);
@@ -478,6 +517,14 @@ namespace LY.LlmPool.Web.Controllers
                         _logger.LogError("❌ App 执行失败: {AppName}, Error: {ErrorMessage}", app!.Name, ex.Message);
                     }
                     
+
+                    if (executionRecord != null)
+                    {
+                        await _persistenceService.UpdateExecutionRecordErrorAsync(
+                            executionRecord.Id,
+                            ex.Message);
+                    }
+
                     if (callRecord != null)
                     {
                         callRecord.IsSuccessful = false;
@@ -854,16 +901,27 @@ namespace LY.LlmPool.Web.Controllers
             string? systemPrompt = null,
             List<AITool>? tools = null,
             Dictionary<string, object>? modelParameters = null,
+            ChatExecutionRecord? executionRecord = null,
             bool stream = false,
             CancellationToken cancellationToken = default)
         {
-            // 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
-            // 这样会自动创建 gen_ai.choice Activity，并支持工具调用
-            var chatClient = _chatClientFactory.CreateClientWithHttpClient(
-                config, 
-                "UpstreamLlm",
-                enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
-            );
+            // 创建执行监控器
+            var requestId = executionRecord?.RequestId ?? $"req_{Guid.NewGuid():N}";
+            var monitor = new ChatExecutionMonitor(requestId);
+            monitor.ExecutionRecordId = executionRecord?.Id;
+
+            // 创建带监控的 IChatClient
+            var chatClient = _chatClientFactory.CreateClientWithMonitoring(
+                config,
+                monitor,
+                "UpstreamLlm");
+            //// 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
+            //// 这样会自动创建 gen_ai.choice Activity，并支持工具调用
+            //var chatClient = _chatClientFactory.CreateClientWithHttpClient(
+            //    config, 
+            //    "UpstreamLlm",
+            //    enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
+            //);
 
             // 转换消息
             var aiMessages = messages;
@@ -954,15 +1012,28 @@ namespace LY.LlmPool.Web.Controllers
             List<AITool>? tools = null,
             string? modelName = null,
             Dictionary<string, object>? modelParameters = null,
+            ChatExecutionRecord? executionRecord = null,
             CancellationToken cancellationToken = default)
         {
-            // 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
-            // 这样会自动创建 gen_ai.choice Activity，并支持工具调用
-            var chatClient = _chatClientFactory.CreateClientWithHttpClient(
-                config, 
-                "UpstreamLlm",
-                enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
-            );
+            // 创建执行监控器
+            var requestId = executionRecord?.RequestId ?? $"req_{Guid.NewGuid():N}";
+            var monitor = new ChatExecutionMonitor(requestId);
+            monitor.ExecutionRecordId = executionRecord?.Id;
+
+            // 创建带监控的 IChatClient
+            var chatClient = _chatClientFactory.CreateClientWithMonitoring(
+                config,
+                monitor,
+                "UpstreamLlm");
+            // 创建 IChatClient
+            //var chatClient = _chatClientFactory.CreateClientWithHttpClient(config, "UpstreamLlm");
+            //// 🎯 创建启用了 OpenTelemetry 和 FunctionInvocation 的 IChatClient
+            //// 这样会自动创建 gen_ai.choice Activity，并支持工具调用
+            //var chatClient = _chatClientFactory.CreateClientWithHttpClient(
+            //    config, 
+            //    "UpstreamLlm",
+            //    enableFunctionInvocation: true  // 🔑 启用以触发 UseOpenTelemetry()
+            //);
 
             // 转换消息
             var aiMessages = messages;

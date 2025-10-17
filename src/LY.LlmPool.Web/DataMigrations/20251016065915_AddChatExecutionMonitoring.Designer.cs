@@ -3,17 +3,20 @@ using System;
 using LY.LlmPool.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace LY.LlmPool.Web.Data.Migrations
+namespace LY.LlmPool.Web.DataMigrations
 {
     [DbContext(typeof(LlmDbContext))]
-    partial class LlmDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251016065915_AddChatExecutionMonitoring")]
+    partial class AddChatExecutionMonitoring
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -116,11 +119,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("request_id");
-
-                    b.Property<string>("RequestModel")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("request_model");
 
                     b.Property<DateTime>("StartTime")
                         .HasColumnType("timestamp with time zone")

@@ -69,6 +69,9 @@ builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状�
 builder.Services.AddScoped<CallRecordService>();
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
 builder.Services.AddScoped<McpServerConfigService>();
+
+// Add monitoring and persistence services
+builder.Services.AddScoped<LY.LlmPool.Web.Services.Monitoring.ChatExecutionPersistenceService>();
 // Using ModelContextProtocol SDK for MCP discovery (no custom SSE client registered)
 
 // Add Tool Metadata Services

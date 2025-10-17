@@ -75,6 +75,9 @@
                         <Button Type="@ButtonType.Default" OnClick="() => TestApp(context)"><Icon Type="play-circle" /> Test</Button>
                     </SpaceItem>
                     <SpaceItem>
+                        <Button Type="@ButtonType.Default" OnClick="() => ViewCallLogs(context)"><Icon Type="history" /> 查看记录</Button>
+                    </SpaceItem>
+                    <SpaceItem>
                         <Popconfirm Title="Are you sure to delete this app?" OkText="Yes" CancelText="No" OnConfirm="() => DeleteApp(context)">
                             <Button Danger><Icon Type="delete" /></Button>
                         </Popconfirm>
@@ -256,6 +259,8 @@
     }
 
     private void TestApp(LlmApp app) => NavigationManager.NavigateTo($"/chat-test?app={app.Name}");
+
+    private void ViewCallLogs(LlmApp app) => NavigationManager.NavigateTo($"/call-logs?appName={Uri.EscapeDataString(app.Name)}");
 
     private async Task DeleteApp(LlmApp app)
     {

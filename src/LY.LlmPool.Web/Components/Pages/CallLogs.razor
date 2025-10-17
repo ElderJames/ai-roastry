@@ -1,0 +1,771 @@
+@page "/call-logs"
+@using LY.LlmPool.Web.Data.Entities
+@using LY.LlmPool.Web.Services.Monitoring
+@using System.Text.Json
+@inject ChatExecutionPersistenceService PersistenceService
+@inject NavigationManager NavigationManager
+@inject MessageService _message
+
+<PageTitle>调用记录</PageTitle>
+
+<div style="padding: 24px;">
+    <PageHeader Title="调用记录" Subtitle="@_pageSubtitle">
+        <PageHeaderExtra>
+            <Button OnClick="GoBack"><Icon Type="arrow-left" /> 返回</Button>
+        </PageHeaderExtra>
+    </PageHeader>
+
+    <Row Gutter="16" Style="margin-top: 16px;">
+        <!-- 左侧：执行记录列表 (2栏) -->
+        <AntDesign.Col Span="6">
+            <Card Title="会话列表" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+                <Extra>
+                    <Badge Count="@_records.Count" ShowZero="true" />
+                </Extra>
+                <Body>
+                    @if (_loading)
+                    {
+                        <div style="text-align: center; padding: 20px;">
+                            <Spin />
+                        </div>
+                    }
+                    else if (_records.Any())
+                    {
+                        @foreach (var record in _records)
+                        {
+                            <div class="record-item @(record.Id == _selectedRecordId ? "selected" : "")"
+                                 @onclick="() => SelectRecord(record.Id)">
+                                <div style="display: flex; justify-content: between; align-items: center;">
+                                    <div>
+                                        @if (!record.IsSuccessful)
+                                        {
+                                            <Badge Status="@BadgeStatus.Error" />
+                                        }
+                                        else
+                                        {
+                                            <Badge Status="@BadgeStatus.Success" />
+                                        }
+                                        <Text Strong Ellipsis Style="max-width: 150px;">
+                                            @(record.RequestId.Length > 15
+                                                ? record.RequestId.Substring(4, 15) + "..."
+                                                : record.RequestId)
+                                        </Text>
+                                    </div>
+                                </div>
+                                <div style="margin-top: 4px; font-size: 12px; color: #999;">
+                                    <Space Size="@("small")">
+                                        <SpaceItem>🤖 @record.ModelName</SpaceItem>
+                                        @if (record.ToolCallCount > 0)
+                                        {
+                                            <SpaceItem>🔧 @record.ToolCallCount 次</SpaceItem>
+                                        }
+                                    </Space>
+                                </div>
+                                <div style="margin-top: 2px; font-size: 11px; color: #999;">
+                                    🕐 @record.StartTime.ToLocalTime().ToString("MM-dd HH:mm:ss")
+                                </div>
+                                @if (record.TotalDurationMs.HasValue)
+                                {
+                                    <div style="margin-top: 2px; font-size: 11px; color: #999;">
+                                        ⏱️ @record.TotalDurationMs.Value.ToString("F0")ms
+                                    </div>
+                                }
+                            </div>
+                            <Divider Style="margin: 8px 0;" />
+                        }
+                    }
+                    else
+                    {
+                        <Empty Description="@("暂无调用记录")" Simple />
+                    }
+                </Body>
+            </Card>
+        </AntDesign.Col>
+
+        <!-- 右侧：时间线节点和详情 (18栏) -->
+        <AntDesign.Col Span="18">
+            @if (!string.IsNullOrEmpty(_selectedRecordId))
+            {
+                <Row Gutter="16">
+                    <!-- 时间线节点列表 (左侧) -->
+                    <AntDesign.Col Span="10">
+                        <Card Title="调用树" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+                            <Extra>
+                                <Badge Count="@_displayNodes.Count" ShowZero="true" />
+                            </Extra>
+                            <Body>
+                                @if (_loadingNodes)
+                                {
+                                    <div style="text-align: center; padding: 20px;">
+                                        <Spin />
+                                    </div>
+                                }
+                                else if (_displayNodes.Any())
+                                {
+                                    <Table TItem="TimelineNodeDisplay"
+                                           DataSource="@_displayNodes"
+                                           Size="@TableSize.Small"
+                                           OnRow="@(record => new Dictionary<string, object> { ["onclick"] = EventCallback.Factory.Create<MouseEventArgs>(this, () => OnDisplayNodeClick(record)) })"
+                                           Bordered> 
+                                        <Column Title="节点类型" TData="string">
+                                            @{
+                                                var (icon, color) = GetNodeTypeInfo(context.NodeType);
+                                            }
+                                            <Tag Color="@color">
+                                                @context.DisplayName
+                                                @if (context.IsMergedToolCall)
+                                                {
+                                                    <span style="margin-left: 4px; font-size: 11px;">
+                                                        @{
+                                                            var isSuccess = false;
+                                                            try
+                                                            {
+                                                                if (context.ToolResultNode != null)
+                                                                {
+                                                                    var resultData = JsonDocument.Parse(context.ToolResultNode.Data);
+                                                                    if (resultData.RootElement.TryGetProperty("isSuccess", out var successElement))
+                                                                    {
+                                                                        isSuccess = successElement.GetBoolean();
+                                                                    }
+                                                                }
+                                                            }
+                                                            catch { }
+                                                        }
+                                                        @(isSuccess ? "✅" : "❌")
+                                                    </span>
+                                                }
+                                            </Tag>
+                                        </Column>
+                                        <Column Title="时间戳" TData="string">
+                                            @context.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")
+                                        </Column>
+                                        <Column Title="耗时" TData="string">
+                                            @{
+                                                var totalTime = context.DeltaMs;
+                                                if (context.IsMergedToolCall && context.ToolResultNode != null)
+                                                {
+                                                    // 计算从 ToolCall 到 ToolResult 的总耗时
+                                                    totalTime = context.ToolResultNode.ElapsedMs - context.ToolCallNode!.ElapsedMs;
+                                                }
+                                            }
+                                            @totalTime.ToString("F0")ms
+                                        </Column>
+                                    </Table>
+                                }
+                                else
+                                {
+                                    <Empty Description="@("暂无时间线节点")" Simple />
+                                }
+                            </Body>
+                        </Card>
+                    </AntDesign.Col>
+
+                    <!-- 详细信息展示 (右侧) -->
+                    <AntDesign.Col Span="14">
+                        <Card Title="详细信息" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+                            <Body>
+                                @if (_selectedToolCallData != null)
+                                {
+                                    <!-- ToolCall 节点：显示优化后的工具调用信息 -->
+                                    <div>
+                                        <!-- 工具名称和状态 -->
+                                        <div style="margin-bottom: 16px; padding: 12px; background-color: @(_selectedToolCallData.IsSuccess ? "#f6ffed" : "#fff2f0"); border: 1px solid @(_selectedToolCallData.IsSuccess ? "#b7eb8f" : "#ffccc7"); border-radius: 4px;">
+                                            <Space>
+                                                <SpaceItem>
+                                                    <Tag Icon="tool" Color="@(_selectedToolCallData.IsSuccess ? "success" : "error")">
+                                                        🔧 @_selectedToolCallData.ToolName
+                                                    </Tag>
+                                                </SpaceItem>
+                                                <SpaceItem>
+                                                    <Text Strong>@(_selectedToolCallData.IsSuccess ? "✅ 成功" : "❌ 失败")</Text>
+                                                </SpaceItem>
+                                            </Space>
+                                        </div>
+
+                                        <!-- 时间和耗时信息 -->
+                                        <div style="margin-bottom: 16px; padding: 12px; background-color: #fafafa; border: 1px solid #d9d9d9; border-radius: 4px;">
+                                            <Descriptions Size="@DescriptionsSize.Small" Bordered Column="2">
+                                                <DescriptionsItem Title="调用时间">@_selectedToolCallData.CallTimestamp</DescriptionsItem>
+                                                <DescriptionsItem Title="返回时间">@_selectedToolCallData.ResultTimestamp</DescriptionsItem>
+                                                <DescriptionsItem Title="总耗时" Span="2">
+                                                    <Text Strong Style="color: #1890ff;">@_selectedToolCallData.TotalDurationMs.ToString("F0") ms</Text>
+                                                </DescriptionsItem>
+                                            </Descriptions>
+                                        </div>
+
+                                        <!-- 参数 -->
+                                        <div style="margin-bottom: 16px;">
+                                            <Card Title="📋 参数" Size="@CardSize.Small" Bordered Style="border-color: #1890ff;">
+                                                <Body>
+                                                    @if (!string.IsNullOrWhiteSpace(_selectedToolCallData.ArgumentsJson))
+                                                    {
+                                                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background-color: #f5f5f5; padding: 8px; border-radius: 4px; max-height: 300px; overflow-y: auto;">@_selectedToolCallData.ArgumentsJson</pre>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span style="color: rgba(0, 0, 0, 0.45);">无参数</span>
+                                                    }
+                                                </Body>
+                                            </Card>
+                                        </div>
+
+                                        <!-- 返回结果 -->
+                                        @{
+                                            var resultBorderColor = _selectedToolCallData.IsSuccess ? "#52c41a" : "#ff4d4f";
+                                        }
+                                        <div>
+                                            <Card Title="📤 返回结果" Size="@CardSize.Small" Bordered Style="@($"border-color: {resultBorderColor};")">
+                                                <Body>
+                                                    @if (!string.IsNullOrWhiteSpace(_selectedToolCallData.ErrorMessage))
+                                                    {
+                                                        <Alert Type="@AlertType.Error" Message="错误信息" Description="@_selectedToolCallData.ErrorMessage" ShowIcon="true" />
+                                                    }
+                                                    else if (!string.IsNullOrWhiteSpace(_selectedToolCallData.ResultJson))
+                                                    {
+                                                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background-color: #f5f5f5; padding: 8px; border-radius: 4px; max-height: 300px; overflow-y: auto;">@_selectedToolCallData.ResultJson</pre>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span style="color: rgba(0, 0, 0, 0.45);">无返回结果</span>
+                                                    }
+                                                </Body>
+                                            </Card>
+                                        </div>
+                                    </div>
+                                }
+                                else if (_selectedStartNodeData != null)
+                                {
+                                    <!-- Start 节点：显示优化后的开始信息 -->
+                                    <div>
+                                        <!-- 模型信息 -->
+                                        <div style="margin-bottom: 16px; padding: 12px; background-color: #f0f5ff; border: 1px solid #adc6ff; border-radius: 4px;">
+                                            <div style="display: flex; align-items: center;">
+                                                <span style="font-weight: 600; color: #1890ff; margin-right: 8px;">🤖 模型:</span>
+                                                <Text Code>@_selectedStartNodeData.Model</Text>
+                                            </div>
+                                        </div>
+
+                                        <!-- 工具列表 -->
+                                        @if (_selectedStartNodeData.Tools.Any())
+                                        {
+                                            <div style="margin-bottom: 16px;">
+                                                <Card Title="🔧 可用工具" Size="@CardSize.Small" Bordered Style="border-color: #722ed1;">
+                                                    <Body>
+                                                        <Space Direction="SpaceDirection.Vertical" Size="@("small")" Style="width: 100%;">
+                                                            @foreach (var tool in _selectedStartNodeData.Tools)
+                                                            {
+                                                                <SpaceItem>
+                                                                    <div style="padding: 8px; background-color: #f9f0ff; border-radius: 4px; border: 1px solid #d3adf7;">
+                                                                        <div style="font-weight: 600; color: #722ed1; margin-bottom: 4px;">
+                                                                            <Tag Color="@("purple")">@tool.Name</Tag>
+                                                                        </div>
+                                                                        <div style="font-size: 12px; color: #666;">@tool.Description</div>
+                                                                    </div>
+                                                                </SpaceItem>
+                                                            }
+                                                        </Space>
+                                                    </Body>
+                                                </Card>
+                                            </div>
+                                        }
+
+                                        <!-- 消息列表 -->
+                                        <div>
+                                            <Card Title="💬 消息" Size="@CardSize.Small" Bordered Style="border-color: #1890ff;">
+                                                <Body>
+                                                    <Space Direction="SpaceDirection.Vertical" Size="@("middle")" Style="width: 100%;">
+                                                        @foreach (var message in _selectedStartNodeData.Messages)
+                                                        {
+                                                            var (roleIcon, roleName, roleColor, bgColor) = message.Role.ToLower() switch
+                                                            {
+                                                                "system" => ("⚙️", "系统", "#8c8c8c", "#fafafa"),
+                                                                "user" => ("👤", "用户", "#1890ff", "#e6f7ff"),
+                                                                "assistant" => ("🤖", "助手", "#52c41a", "#f6ffed"),
+                                                                _ => ("📄", message.Role, "#8c8c8c", "#fafafa")
+                                                            };
+                                                            <SpaceItem>
+                                                                <div style="padding: 12px; background-color: @bgColor; border-radius: 4px; border-left: 3px solid @roleColor;">
+                                                                    <div style="margin-bottom: 8px;">
+                                                                        <Tag Color="@roleColor" Style="font-weight: 600;">@roleIcon @roleName</Tag>
+                                                                    </div>
+                                                                    <div style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; color: #262626;">
+                                                                        @message.Text
+                                                                    </div>
+                                                                </div>
+                                                            </SpaceItem>
+                                                        }
+                                                    </Space>
+                                                </Body>
+                                            </Card>
+                                        </div>
+                                    </div>
+                                }
+                                else if (!string.IsNullOrEmpty(_selectedNodeData))
+                                {
+                                    @if (_selectedNodeType == TimelineNodeType.TextChunk)
+                                    {
+                                        <!-- TextChunk 节点：直接显示文本内容 -->
+                                        <div style="background-color: #f9f9f9; padding: 16px; border-radius: 4px; border: 1px solid #e8e8e8;">
+                                            <div style="margin-bottom: 8px; font-weight: 600; color: #1890ff;">📝 文本内容</div>
+                                            <div style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">@_selectedNodeData</div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <!-- 其他节点：显示 JSON 格式 -->
+                                        <div style="background-color: #f5f5f5; padding: 12px; border-radius: 4px;">
+                                            <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; max-height: calc(100vh - 300px); overflow-y: auto;">@_selectedNodeData</pre>
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <Empty Description="@("点击左侧节点查看详细信息")" Simple />
+                                }
+                            </Body>
+                        </Card>
+                    </AntDesign.Col>
+                </Row>
+            }
+            else
+            {
+                <Empty Description="@("请从左侧选择一条记录")" Style="padding: 100px 0;" />
+            }
+        </AntDesign.Col>
+    </Row>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "appName")]
+    public string? AppName { get; set; }
+
+    private List<ChatExecutionRecord> _records = new();
+    private List<ChatExecutionTimelineNode> _timelineNodes = new();
+    private List<TimelineNodeDisplay> _displayNodes = new(); // 用于显示的合并后节点
+    private string? _selectedRecordId;
+    private string? _selectedNodeData;
+    private TimelineNodeType? _selectedNodeType; // 选中节点的类型
+    private ToolCallDisplayData? _selectedToolCallData; // 工具调用展示数据
+    private StartNodeDisplayData? _selectedStartNodeData; // Start 节点展示数据
+    private bool _loading = true;
+    private bool _loadingNodes = false;
+    private string _pageSubtitle = "";
+
+    // 工具调用展示数据
+    private class ToolCallDisplayData
+    {
+        public string ToolName { get; set; } = "";
+        public bool IsSuccess { get; set; }
+        public string CallTimestamp { get; set; } = "";
+        public string ResultTimestamp { get; set; } = "";
+        public double TotalDurationMs { get; set; }
+        public string ArgumentsJson { get; set; } = "";
+        public string ResultJson { get; set; } = "";
+        public string? ErrorMessage { get; set; }
+    }
+
+    // Start 节点展示数据
+    private class StartNodeDisplayData
+    {
+        public string Model { get; set; } = "";
+        public List<ToolInfo> Tools { get; set; } = new();
+        public List<MessageInfo> Messages { get; set; } = new();
+
+        public class ToolInfo
+        {
+            public string Name { get; set; } = "";
+            public string Description { get; set; } = "";
+        }
+
+        public class MessageInfo
+        {
+            public string Role { get; set; } = "";
+            public string Text { get; set; } = "";
+        }
+    }
+
+    // 展示用的节点模型
+    private class TimelineNodeDisplay
+    {
+        public int Sequence { get; set; }
+        public TimelineNodeType NodeType { get; set; }
+        public DateTime Timestamp { get; set; }
+        public double DeltaMs { get; set; }
+        public string DisplayName { get; set; } = "";
+        public ChatExecutionTimelineNode? OriginalNode { get; set; }
+        public ChatExecutionTimelineNode? ToolCallNode { get; set; }
+        public ChatExecutionTimelineNode? ToolResultNode { get; set; }
+        public bool IsMergedToolCall => ToolCallNode != null && ToolResultNode != null;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (string.IsNullOrWhiteSpace(AppName))
+        {
+            _message.Error("缺少 appName 参数");
+            return;
+        }
+
+        _pageSubtitle = $"App: {AppName}";
+        await LoadRecordsAsync();
+    }
+
+    private async Task LoadRecordsAsync()
+    {
+        _loading = true;
+        try
+        {
+            _records = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, 100);
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"加载记录失败: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SelectRecord(string recordId)
+    {
+        _selectedRecordId = recordId;
+        _selectedNodeData = null; // 清除之前选中的节点数据
+        _selectedNodeType = null; // 清除之前选中的节点类型
+        _selectedToolCallData = null; // 清除之前选中的工具调用数据
+        _selectedStartNodeData = null; // 清除之前选中的 Start 节点数据
+        _loadingNodes = true;
+
+        try
+        {
+            _timelineNodes = await PersistenceService.GetTimelineNodesAsync(recordId);
+            // 处理节点合并逻辑
+            MergeToolCallNodes();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"加载时间线节点失败: {ex.Message}");
+        }
+        finally
+        {
+            _loadingNodes = false;
+        }
+
+        StateHasChanged();
+    }
+
+    private void MergeToolCallNodes()
+    {
+        _displayNodes.Clear();
+
+        // 用于记录已处理的 ToolResult，避免重复添加
+        var processedResultIds = new HashSet<string>();
+
+        foreach (var node in _timelineNodes)
+        {
+            if (node.NodeType == TimelineNodeType.ToolCall)
+            {
+                // 解析 ToolCall 的 Data 获取 callId
+                string? callId = null;
+                string? toolName = null;
+                try
+                {
+                    var toolCallData = JsonDocument.Parse(node.Data);
+                    if (toolCallData.RootElement.TryGetProperty("callId", out var callIdElement))
+                    {
+                        callId = callIdElement.GetString();
+                    }
+                    if (toolCallData.RootElement.TryGetProperty("name", out var nameElement))
+                    {
+                        toolName = nameElement.GetString();
+                    }
+                }
+                catch { }
+
+                // 查找对应的 ToolResult
+                ChatExecutionTimelineNode? resultNode = null;
+                if (!string.IsNullOrEmpty(callId))
+                {
+                    resultNode = _timelineNodes.FirstOrDefault(n =>
+                    {
+                        if (n.NodeType != TimelineNodeType.ToolResult) return false;
+                        try
+                        {
+                            var resultData = JsonDocument.Parse(n.Data);
+                            if (resultData.RootElement.TryGetProperty("callId", out var resultCallId))
+                            {
+                                return resultCallId.GetString() == callId;
+                            }
+                        }
+                        catch { }
+                        return false;
+                    });
+                }
+
+                // 创建合并的显示节点
+                var displayNode = new TimelineNodeDisplay
+                {
+                    Sequence = node.Sequence,
+                    NodeType = TimelineNodeType.ToolCall, // 显示为 ToolCall 类型
+                    Timestamp = node.Timestamp,
+                    DeltaMs = node.DeltaMs,
+                    DisplayName = $"🔧 {toolName ?? "Tool"}",
+                    ToolCallNode = node,
+                    ToolResultNode = resultNode
+                };
+
+                _displayNodes.Add(displayNode);
+
+                // 标记 ToolResult 已处理
+                if (resultNode != null)
+                {
+                    processedResultIds.Add(resultNode.Id);
+                }
+            }
+            else if (node.NodeType == TimelineNodeType.ToolResult)
+            {
+                // 如果该 ToolResult 已经被合并到 ToolCall 中，跳过
+                if (processedResultIds.Contains(node.Id))
+                {
+                    continue;
+                }
+
+                // 否则作为独立节点添加（这种情况理论上不应该发生）
+                _displayNodes.Add(new TimelineNodeDisplay
+                {
+                    Sequence = node.Sequence,
+                    NodeType = node.NodeType,
+                    Timestamp = node.Timestamp,
+                    DeltaMs = node.DeltaMs,
+                    DisplayName = "✅ Tool Result",
+                    OriginalNode = node
+                });
+            }
+            else
+            {
+                // 其他类型的节点直接添加
+                _displayNodes.Add(new TimelineNodeDisplay
+                {
+                    Sequence = node.Sequence,
+                    NodeType = node.NodeType,
+                    Timestamp = node.Timestamp,
+                    DeltaMs = node.DeltaMs,
+                    DisplayName = GetNodeDisplayName(node.NodeType),
+                    OriginalNode = node
+                });
+            }
+        }
+    }
+
+    private string GetNodeDisplayName(TimelineNodeType nodeType)
+    {
+        return nodeType switch
+        {
+            TimelineNodeType.Start => "🚀 Start",
+            TimelineNodeType.TextChunk => "📝 Text",
+            TimelineNodeType.Complete => "🏁 Complete",
+            _ => nodeType.ToString()
+        };
+    }
+
+    private void OnDisplayNodeClick(RowData<TimelineNodeDisplay> node)
+    {
+        if (node.Data != null)
+        {
+            try
+            {
+                // 清空之前的数据
+                _selectedNodeData = null;
+                _selectedNodeType = null;
+                _selectedToolCallData = null;
+                _selectedStartNodeData = null;
+
+                if (node.Data.IsMergedToolCall)
+                {
+                    // 解析工具调用数据
+                    var callData = JsonDocument.Parse(node.Data.ToolCallNode!.Data);
+                    var resultData = JsonDocument.Parse(node.Data.ToolResultNode!.Data);
+
+                    // 提取关键信息
+                    var toolName = callData.RootElement.TryGetProperty("name", out var nameElement)
+                        ? nameElement.GetString() ?? "Unknown"
+                        : "Unknown";
+
+                    var isSuccess = resultData.RootElement.TryGetProperty("isSuccess", out var successElement)
+                        && successElement.GetBoolean();
+
+                    var callTimestamp = node.Data.ToolCallNode.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    var resultTimestamp = node.Data.ToolResultNode.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    var totalDurationMs = node.Data.ToolResultNode.ElapsedMs - node.Data.ToolCallNode.ElapsedMs;
+
+                    // 提取参数
+                    var argumentsJson = "";
+                    if (callData.RootElement.TryGetProperty("arguments", out var argsElement))
+                    {
+                        argumentsJson = JsonSerializer.Serialize(argsElement, new JsonSerializerOptions
+                        {
+                            WriteIndented = true,
+                            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                        });
+                    }
+
+                    // 提取返回结果
+                    var resultJson = "";
+                    string? errorMessage = null;
+                    if (resultData.RootElement.TryGetProperty("result", out var resultElement))
+                    {
+                        resultJson = JsonSerializer.Serialize(resultElement, new JsonSerializerOptions
+                        {
+                            WriteIndented = true,
+                            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                        });
+                    }
+                    else if (resultData.RootElement.TryGetProperty("error", out var errorElement)
+                        && errorElement.ValueKind != JsonValueKind.Null)
+                    {
+                        errorMessage = errorElement.GetString();
+                    }
+
+                    // 创建展示数据
+                    _selectedToolCallData = new ToolCallDisplayData
+                    {
+                        ToolName = toolName,
+                        IsSuccess = isSuccess,
+                        CallTimestamp = callTimestamp,
+                        ResultTimestamp = resultTimestamp,
+                        TotalDurationMs = totalDurationMs,
+                        ArgumentsJson = argumentsJson,
+                        ResultJson = resultJson,
+                        ErrorMessage = errorMessage
+                    };
+                }
+                else if (node.Data.OriginalNode != null)
+                {
+                    _selectedNodeType = node.Data.NodeType;
+
+                    // 根据节点类型提取数据
+                    var jsonDoc = JsonDocument.Parse(node.Data.OriginalNode.Data);
+
+                    if (node.Data.NodeType == TimelineNodeType.Start)
+                    {
+                        // Start 节点：提取 model、tools、messages
+                        var startData = new StartNodeDisplayData();
+
+                        // 提取 model
+                        if (jsonDoc.RootElement.TryGetProperty("model", out var modelElement))
+                        {
+                            startData.Model = modelElement.GetString() ?? "";
+                        }
+
+                        // 提取 tools
+                        if (jsonDoc.RootElement.TryGetProperty("tools", out var toolsElement)
+                            && toolsElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var toolElement in toolsElement.EnumerateArray())
+                            {
+                                var toolInfo = new StartNodeDisplayData.ToolInfo();
+                                if (toolElement.TryGetProperty("name", out var nameElement))
+                                {
+                                    toolInfo.Name = nameElement.GetString() ?? "";
+                                }
+                                if (toolElement.TryGetProperty("description", out var descElement))
+                                {
+                                    toolInfo.Description = descElement.GetString() ?? "";
+                                }
+                                startData.Tools.Add(toolInfo);
+                            }
+                        }
+
+                        // 提取 messages
+                        if (jsonDoc.RootElement.TryGetProperty("messages", out var messagesElement)
+                            && messagesElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var messageElement in messagesElement.EnumerateArray())
+                            {
+                                var messageInfo = new StartNodeDisplayData.MessageInfo();
+                                if (messageElement.TryGetProperty("role", out var roleElement))
+                                {
+                                    messageInfo.Role = roleElement.GetString() ?? "";
+                                }
+                                if (messageElement.TryGetProperty("text", out var textElement))
+                                {
+                                    messageInfo.Text = textElement.GetString() ?? "";
+                                }
+                                startData.Messages.Add(messageInfo);
+                            }
+                        }
+
+                        _selectedStartNodeData = startData;
+                    }
+                    else if (node.Data.NodeType == TimelineNodeType.TextChunk)
+                    {
+                        // TextChunk 节点：提取 text 字段内容
+                        if (jsonDoc.RootElement.TryGetProperty("text", out var textElement))
+                        {
+                            _selectedNodeData = textElement.GetString() ?? "";
+                        }
+                        else
+                        {
+                            _selectedNodeData = "无文本内容";
+                        }
+                    }
+                    else
+                    {
+                        // 其他节点：显示格式化的 JSON
+                        _selectedNodeData = JsonSerializer.Serialize(jsonDoc, new JsonSerializerOptions
+                        {
+                            WriteIndented = true,
+                            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _selectedNodeData = $"解析数据失败: {ex.Message}";
+                _selectedNodeType = null;
+                _selectedToolCallData = null;
+                _selectedStartNodeData = null;
+            }
+            StateHasChanged();
+        }
+    }
+
+    private (string icon, string color) GetNodeTypeInfo(TimelineNodeType nodeType)
+    {
+        return nodeType switch
+        {
+            TimelineNodeType.Start => ("🚀", "blue"),
+            TimelineNodeType.TextChunk => ("📝", "default"),
+            TimelineNodeType.ToolCall => ("🔧", "purple"),
+            TimelineNodeType.ToolResult => ("✅", "green"),
+            TimelineNodeType.Complete => ("🏁", "success"),
+            _ => ("📄", "default")
+        };
+    }
+
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/app-list");
+    }
+}
+
+<style>
+    .record-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+        border: 1px solid transparent;
+        margin-bottom: 4px;
+    }
+
+    .record-item:hover {
+        background-color: #f5f5f5;
+    }
+
+    .record-item.selected {
+        background-color: #e6f7ff;
+        border-color: #1890ff;
+    }
+</style>
