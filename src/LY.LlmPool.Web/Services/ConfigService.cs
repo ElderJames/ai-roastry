@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.LoadBalancing;
 using Microsoft.EntityFrameworkCore;
 
 namespace LY.LlmPool.Web.Services;
@@ -9,11 +10,18 @@ namespace LY.LlmPool.Web.Services;
 public class ConfigService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
+    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LoadBalancerService? _loadBalancer;
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
 
-    public ConfigService(IDbContextFactory<LlmDbContext> dbContextFactory)
+    public ConfigService(
+        IDbContextFactory<LlmDbContext> dbContextFactory,
+        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LoadBalancerService? loadBalancer = null) // Optional to avoid circular dependency
     {
         _dbContextFactory = dbContextFactory;
+        _cacheWarmup = cacheWarmup;
+        _loadBalancer = loadBalancer;
     }
 
     public async Task<List<LlmConfigGroup>> GetConfigGroupsAsync()
@@ -54,17 +62,44 @@ public class ConfigService
 
     public async Task<LlmConfig> AddConfigAsync(LlmConfig config)
     {
+        // 检查名称全局唯一性
+        if (_cacheWarmup != null)
+        {
+            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(config.Name, "Config");
+            if (uniquenessError != null)
+            {
+                throw new InvalidOperationException(uniquenessError);
+            }
+        }
+        
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         config.Id = Guid.NewGuid().ToString("N");
         config.CreatedAt = DateTime.UtcNow;
         config.UpdatedAt = DateTime.UtcNow;
         dbContext.Configs.Add(config);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnConfigChangedAsync(config.Name, config.Id);
+        }
+        
         return config;
     }
 
     public async Task<LlmConfig> UpdateConfigAsync(LlmConfig config)
     {
+        // 检查名称全局唯一性（排除自身）
+        if (_cacheWarmup != null)
+        {
+            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(config.Name, "Config", config.Id);
+            if (uniquenessError != null)
+            {
+                throw new InvalidOperationException(uniquenessError);
+            }
+        }
+        
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         var existing = await dbContext.Configs.FindAsync(config.Id);
         if (existing == null)
@@ -72,6 +107,7 @@ public class ConfigService
             throw new KeyNotFoundException($"Config with ID {config.Id} not found.");
         }
 
+        var oldName = existing.Name;
         existing.Name = config.Name;
         existing.Description = config.Description;
         existing.ModelTypeId = config.ModelTypeId;
@@ -83,6 +119,17 @@ public class ConfigService
         existing.UpdatedAt = DateTime.UtcNow;
 
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称）
+        if (_cacheWarmup != null)
+        {
+            if (oldName != config.Name && _loadBalancer != null)
+            {
+                await _loadBalancer.InvalidateModelCacheAsync(oldName);
+            }
+            await _cacheWarmup.OnConfigChangedAsync(config.Name, config.Id);
+        }
+        
         return existing;
     }
 
@@ -95,8 +142,20 @@ public class ConfigService
             throw new KeyNotFoundException($"Config with ID {id} not found.");
         }
 
+        var configName = config.Name;
         dbContext.Configs.Remove(config);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 清除 LoadBalancer 缓存
+        if (_loadBalancer != null)
+        {
+            await _loadBalancer.InvalidateModelCacheAsync(configName);
+        }
+        if (_cacheWarmup != null)
+        {
+            // 清除所有引用此 Config 的实体缓存
+            await _cacheWarmup.OnConfigChangedAsync(configName, id);
+        }
     }
 
     // Resolve a config directly by its name (enabled only)

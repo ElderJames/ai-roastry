@@ -210,7 +210,7 @@
                                                    OkText="确定"
                                                    CancelText="取消"
                                                    OnConfirm="ClearAllChatHistory">
-                                            <Button Danger Size="@ButtonSize.Small" Icon="delete">
+                                            <Button Danger Icon="delete">
                                                 清空所有历史
                                             </Button>
                                         </Popconfirm>
@@ -1936,7 +1936,11 @@
             // 添加子节点
             foreach (var tool in appTools)
             {
-                appCategoryNode.Children.Add(new ToolTreeNode(tool.Name, $"App:{tool.SourceId}")
+                var displayTitle = string.IsNullOrWhiteSpace(tool.Description) 
+                    ? tool.Name 
+                    : $"{tool.Name} - {tool.Description}";
+                
+                appCategoryNode.Children.Add(new ToolTreeNode(displayTitle, $"App:{tool.SourceId}")
                 {
                     ToolType = "App"
                 });
@@ -1960,7 +1964,7 @@
                 var serverId = serverGroup.Key;
                 var serverName = mcpServerDict.TryGetValue(serverId, out var name) ? name : serverId;
 
-                var mcpServerNode = new ToolTreeNode($"🔌 {serverName}", $"category_mcp_{serverId}", isCategory: true)
+                var mcpServerNode = new ToolTreeNode($"🔌MCP Server: {serverName}", $"category_mcp_{serverId}", isCategory: true)
                 {
                     ToolType = "Mcp"
                 };
@@ -1968,7 +1972,11 @@
                 // 添加子节点
                 foreach (var tool in serverGroup)
                 {
-                    mcpServerNode.Children.Add(new ToolTreeNode(tool.Name, $"MCP:{tool.SourceId}")
+                    var displayTitle = string.IsNullOrWhiteSpace(tool.Description) 
+                        ? tool.Name 
+                        : $"{tool.Name} - {tool.Description}";
+                    
+                    mcpServerNode.Children.Add(new ToolTreeNode(displayTitle, $"MCP:{tool.SourceId}")
                     {
                         ToolType = "Mcp"
                     });
@@ -1988,48 +1996,16 @@
 
         try
         {
-            Logger.LogInformation("=== LoadPromptToolsAsync ===");
-            Logger.LogInformation("Loading tools for Prompt ID: {PromptId}", _editingPrompt.Id);
-
             var promptTools = await PromptService.GetPromptToolsAsync(_editingPrompt.Id);
-
-            Logger.LogInformation("Retrieved {Count} PromptTools from database", promptTools.Count);
-
-            foreach (var pt in promptTools)
-            {
-                Logger.LogInformation("  PromptTool from DB:");
-                Logger.LogInformation("    ToolId: {ToolId}", pt.ToolId);
-                Logger.LogInformation("    ToolType: {ToolType}", pt.ToolType);
-            }
 
             // 映射 ToolType 到 ToolSource 格式
             _selectedToolIds = promptTools.Select(pt => 
             {
                 var sourceType = pt.ToolType == ToolType.Internal ? "App" : "MCP";
                 var value = $"{sourceType}:{pt.ToolId}";
-                Logger.LogInformation("  Mapping: {ToolType} + {ToolId} -> {Value}", 
-                    pt.ToolType, pt.ToolId, value);
+              
                 return value;
             }).ToArray();
-
-            Logger.LogInformation("Final _selectedToolIds ({Count} items):", _selectedToolIds.Count());
-            foreach (var id in _selectedToolIds)
-            {
-                Logger.LogInformation("  - {Id}", id);
-            }
-
-            Logger.LogInformation("Available tools in _availableTools ({Count} items):", _availableTools.Count);
-            foreach (var tool in _availableTools)
-            {
-                Logger.LogInformation("  - {Value} (Label: {Label})", tool.Value, tool.Label);
-            }
-
-            Logger.LogInformation("Checking if selected tools exist in available tools:");
-            foreach (var selectedId in _selectedToolIds)
-            {
-                var exists = _availableTools.Any(t => t.Value == selectedId);
-                Logger.LogInformation("  {SelectedId}: {Exists}", selectedId, exists ? "FOUND ✓" : "NOT FOUND ✗");
-            }
 
             // 通知 Blazor 组件状态已更改
             StateHasChanged();
@@ -2306,9 +2282,6 @@
                     ToolType = toolType
                 };
 
-                Logger.LogDebug("  Creating PromptTool: ToolId={ToolId}, ToolType={ToolType}", 
-                    promptTool.ToolId, promptTool.ToolType);
-
                 return promptTool;
             })
             .Where(pt => pt != null)
@@ -2316,7 +2289,6 @@
             .ToList();
 
             await PromptService.SetPromptToolsAsync(_editingPrompt.Id, promptTools);
-            Logger.LogInformation("Successfully saved {Count} PromptTools", promptTools.Count);
         }
         catch (Exception ex)
         {
@@ -2445,23 +2417,19 @@
                         {
                             // 更新现有的 system prompt
                             config.ChatHistory[0] = new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent);
-                            Logger.LogInformation("更新了 system prompt 为最新内容");
                         }
                         else if (firstMessage?.Role.Value != "system")
                         {
                             // 如果第一条不是 system 消息,在开头插入
                             config.ChatHistory.Insert(0, new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent));
-                            Logger.LogInformation("在历史记录开头插入了 system prompt");
                         }
                         
                         messages.AddRange(config.ChatHistory);
-                        Logger.LogInformation("加载了 {Count} 条历史消息用于多轮对话", config.ChatHistory.Count);
                     }
                     else
                     {
                         // 首次对话:添加系统消息
                         messages.Add(new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent));
-                        Logger.LogInformation("首次对话，添加系统消息");
                     }
 
                     // 记录发送前的历史消息数量
@@ -2472,8 +2440,6 @@
                     {
                         var userMessage = new AIChatMessage(Microsoft.Extensions.AI.ChatRole.User, _testContent);
                         messages.Add(userMessage);
-                        Logger.LogInformation("添加用户消息: {Message}", _testContent.Length > 50 ? _testContent.Substring(0, 50) + "..." : _testContent);
-
                         // 🎯 立即将用户消息添加到历史记录中并刷新UI，让用户看到已发送的消息
                         if (config.ChatHistory.Any())
                         {
@@ -2490,9 +2456,6 @@
                     }
                     else
                     {
-                        // 没有用户输入 - 直接使用 Prompt Content 作为测试
-                        Logger.LogInformation("没有用户输入，直接使用 Prompt Content 进行测试");
-
                         // 如果是首次对话且没有用户输入，将 system message 也添加到历史记录
                         if (!config.ChatHistory.Any())
                         {
@@ -2521,11 +2484,6 @@
                                         return toolValue == selectedId;
                                     });
 
-                                    if (tool == null)
-                                    {
-                                        Logger.LogWarning("Selected tool not found in metadata: {SelectedId}", selectedId);
-                                    }
-
                                     return tool;
                                 })
                                 .Where(t => t != null)
@@ -2535,7 +2493,6 @@
                             if (selectedMetadata.Any())
                             {
                                 tools = await ToolProviderService.GetToolsFromMetadataAsync(selectedMetadata);
-                                Logger.LogInformation("Loaded {Count} AI tools for testing", tools?.Count ?? 0);
                             }
                         }
                         catch (Exception ex)
@@ -2562,9 +2519,6 @@
                             parameters = ParameterUtils.ParseParametersToDict(_editingPrompt.ModelParameters);
                         }
 
-                        Logger.LogInformation("Starting streaming with {MessageCount} messages, {ToolCount} tools", 
-                            messages.Count, tools?.Count ?? 0);
-
                         // 使用新的 SendStreamingMessageWithDetailsAsync API 以获取工具调用详情
                         streamingResponse = ChatClientService.SendStreamingMessageWithDetailsAsync(
                             llmConfig,
@@ -2589,14 +2543,10 @@
                     // 流式接收响应
                     try
                     {
-                        Logger.LogInformation("Starting to receive streaming chunks...");
-
                         // 🎯 立即创建一个空的助手消息并添加到历史记录
                         var assistantMessage = new AIChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "");
                         config.ChatHistory.Add(assistantMessage);
                         StateHasChanged(); // 刷新UI，显示助手消息占位
-
-                        Logger.LogInformation("创建了空的助手消息，当前历史记录: {Count} 条", config.ChatHistory.Count);
 
                         // 🔥 使用 ChatClientService 的流式方法处理片段拼接
                         await foreach (var segments in LY.LlmPool.Web.Services.ChatClientService.ConvertToSegmentsStreamAsync(streamingResponse))
@@ -2667,9 +2617,6 @@
                                                     toolCall.CallId,
                                                     resultValue
                                                 ));
-
-                                                Logger.LogInformation("🔧 添加工具结果: {CallId} -> {ToolName}, Success: {Success}",
-                                                    toolCall.CallId, toolCall.ToolName, toolCall.Success);
                                             }
                                         }
                                     }
@@ -2707,19 +2654,11 @@
                             await Task.Delay(10, cancellationToken); // 保持打字效果的流畅性
                         }
                         
-                        Logger.LogInformation("流式接收完成，助手消息已更新");
-                        
-                        // � 调试：打印流式完成后的 messages 列表（FunctionInvokingChatClient 可能添加了额外的消息）
-                        Logger.LogInformation("🔍 流式循环结束，检查 FunctionInvokingChatClient 是否添加了额外消息");
-                        Logger.LogInformation("  messages 列表: {Count} 条", messages.Count);
-                        Logger.LogInformation("  ChatHistory: {Count} 条", config.ChatHistory.Count);
-                        
                         // 🔑 将最终的助手消息添加到 messages 列表（如果 messages 还没有）
                         // 这样 FunctionInvokingChatClient 的后续处理才能正确工作
                         if (!messages.Contains(assistantMessage))
                         {
                             messages.Add(assistantMessage);
-                            Logger.LogInformation("将助手消息添加到 messages 列表");
                         }
                         
                         // 🔑 同步 FunctionInvokingChatClient 添加的额外消息到 ChatHistory
@@ -2728,16 +2667,12 @@
                         if (messages.Count > currentHistoryCount)
                         {
                             var newMessages = messages.Skip(currentHistoryCount).ToList();
-                            Logger.LogInformation("同步 {Count} 条新消息到 ChatHistory（工具结果等）", newMessages.Count);
                             config.ChatHistory.AddRange(newMessages);
                         }
                         
                         // 计算总文本长度和工具调用数量（用于日志）
                         var totalTextLength = assistantMessage.Text?.Length ?? 0;
                         var totalToolCalls = assistantMessage.Contents?.OfType<Microsoft.Extensions.AI.FunctionCallContent>().Count() ?? 0;
-                        
-                        Logger.LogInformation("Streaming completed. Text length: {Length}, Tool calls: {ToolCalls}", 
-                            totalTextLength, totalToolCalls);
                         
                         // 🔑 最终刷新UI，确保历史记录显示
                         StateHasChanged();
@@ -2750,18 +2685,6 @@
                         if (messages.Count > finalHistoryCount)
                         {
                             var additionalMessages = messages.Skip(finalHistoryCount).ToList();
-                            Logger.LogInformation("🔧 流式完成后同步额外的 {Count} 条消息", additionalMessages.Count);
-                            foreach (var msg in additionalMessages)
-                            {
-                                Logger.LogInformation("  - 消息类型: {Role}, Contents: {Count}", msg.Role, msg.Contents?.Count ?? 0);
-                                if (msg.Contents != null)
-                                {
-                                    foreach (var content in msg.Contents)
-                                    {
-                                        Logger.LogInformation("    - Content 类型: {Type}", content.GetType().Name);
-                                    }
-                                }
-                            }
                             config.ChatHistory.AddRange(additionalMessages);
                             StateHasChanged(); // 刷新UI显示工具结果
                         }

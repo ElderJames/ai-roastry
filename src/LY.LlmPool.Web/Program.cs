@@ -70,6 +70,12 @@ builder.Services.AddScoped<CallRecordService>();
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
 builder.Services.AddScoped<McpServerConfigService>();
 
+// 🎯 添加负载均衡服务（Singleton - 共享状态用于跟踪请求数）
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.LoadBalancing.LoadBalancerService>();
+
+// 🎯 添加负载均衡缓存预热后台服务
+builder.Services.AddHostedService<LY.LlmPool.Web.Services.LoadBalancing.LoadBalancerCacheWarmupService>();
+
 // Add monitoring and persistence services
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Monitoring.ChatExecutionPersistenceService>();
 // Using ModelContextProtocol SDK for MCP discovery (no custom SSE client registered)

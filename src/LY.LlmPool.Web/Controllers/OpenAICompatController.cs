@@ -13,6 +13,7 @@ using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.Telemetry;
 using LY.LlmPool.Web.Services.Monitoring;
+using LY.LlmPool.Web.Services.LoadBalancing;
 using LY.LlmPool.Web.Components.ChatHelpers;
 using LY.LlmPool.Web.Filters;
 using Microsoft.AspNetCore.Mvc;
@@ -42,6 +43,7 @@ namespace LY.LlmPool.Web.Controllers
         private readonly AgentOrchestratorServiceAlias _agentOrchestrator;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ChatExecutionPersistenceService _persistenceService;
+        private readonly LoadBalancerService _loadBalancer; // 🎯 注入负载均衡服务
 
         private static readonly JsonSerializerOptions _jsonSerializerOptions = new()
         {
@@ -60,7 +62,8 @@ namespace LY.LlmPool.Web.Controllers
             ILogger<LoggingHttpHandler> httpLogger,
             AgentOrchestratorServiceAlias agentOrchestrator,
             IHttpClientFactory httpClientFactory,
-            ChatExecutionPersistenceService persistenceService)
+            ChatExecutionPersistenceService persistenceService,
+            LoadBalancerService loadBalancer) // 🎯 注入负载均衡服务
         {
             _llmPoolService = llmPoolService;
             _callRecordService = callRecordService;
@@ -72,6 +75,7 @@ namespace LY.LlmPool.Web.Controllers
             _agentOrchestrator = agentOrchestrator;
             _httpClientFactory = httpClientFactory;
             _persistenceService = persistenceService;
+            _loadBalancer = loadBalancer; // 🎯 注入负载均衡服务
         }
 
         [HttpPost("chat/completions")]
@@ -117,6 +121,8 @@ namespace LY.LlmPool.Web.Controllers
             var requestStartTime = DateTime.UtcNow;
             object? requestData = null;
             string? requestBody = null;
+            LlmConfig? config = null; // 🎯 移到外层以便 finally 访问
+            bool shouldReleaseConfig = false; // 🎯 标记是否需要释放配置锁
 
             try
             {
@@ -192,7 +198,7 @@ namespace LY.LlmPool.Web.Controllers
                     requestId, chatRequest.Model, chatRequest.Messages.Count);
 
                 var modelAcquireStartTime = DateTime.UtcNow;
-                LlmConfig? config = null;
+                config = null; // 重置
                 LlmApp? app = null;
                 string? promptContent = null;
                 LlmPrompt? prompt = null;
@@ -201,65 +207,72 @@ namespace LY.LlmPool.Web.Controllers
                 string? actualModelName = chatRequest.Model;
                 string? actualEndpointId = null;
                 string selectionStrategy = string.Empty;
+                shouldReleaseConfig = false; // 重置
 
-                // 先按 app 名称解析
-                if (!string.IsNullOrEmpty(chatRequest.Model))
+                // 🎯 使用 LoadBalancerService 进行配置选择和负载均衡
+                _logger.LogInformation("使用 LoadBalancerService 为模型名称 '{ModelName}' 选择配置...", chatRequest.Model);
+                var selectionResult = await _loadBalancer.SelectConfigAsync(chatRequest.Model);
+
+                if (selectionResult == null)
                 {
-                    app = await _llmPoolService.GetAppByNameAsync(chatRequest.Model);
+                    if (executionRecord != null)
+                    {
+                        await _persistenceService.UpdateExecutionRecordErrorAsync(
+                            executionRecord.Id,
+                            "No available model found or invalid API key");
+                    }
+
+                    if (callRecord != null)
+                    {
+                        callRecord.IsSuccessful = false;
+                        callRecord.ErrorMessage = "No available model found or invalid API key";
+                        await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                    }
+
+                    requestActivity?.SetStatus(ActivityStatusCode.Error, "No available model found");
+                    requestActivity?.SetTag("error.type", "ModelNotFound");
+
+                    Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                    _logger.LogError("LoadBalancerService 未能找到模型 '{ModelName}' 的可用配置", chatRequest.Model);
+                    var err = new { error = new { message = "未找到可用模型或 API Key 无效。" } };
+                    await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
+                    return;
                 }
 
+                // 🎯 从 LoadBalancerService 的结果中提取信息
+                app = selectionResult.App;
+                selectionStrategy = selectionResult.Strategy;
+                shouldReleaseConfig = selectionResult.NeedsRelease;
+
+                // 🎯 AgentGroup 应用走编排分支（AgentGroup 不需要 Config）
+                if (app != null && string.Equals(app.AppType, "AgentGroup", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("App {AppName} 为 AgentGroup 类型，进入编排分支。", app.Name);
+                    requestActivity?.SetTag("app.name", app.Name);
+                    requestActivity?.SetTag("app.type", app.AppType);
+                    requestActivity?.SetTag("app.id", app.Id);
+                    requestActivity?.SetTag("routing", "agent_group");
+                    
+                    await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
+                    return;
+                }
+
+                // 🎯 非 AgentGroup 类型必须有 Config
+                config = selectionResult.Config!;
+                actualModelName = config.Model;
+                actualEndpointId = selectionResult.Endpoint?.Id;
+
+                _logger.LogInformation("LoadBalancerService 选择配置: Config={ConfigName}, Strategy={Strategy}, NeedsRelease={NeedsRelease}",
+                    config.Name, selectionStrategy, shouldReleaseConfig);
+
+                // 🎯 记录 App 信息到 Activity（如果是 App 请求）
                 if (app != null)
                 {
-                    _logger.LogInformation("找到应用: {AppName}, 类型: {AppType}", app.Name, app.AppType);
-
-                    // 🎯 记录 App 信息到 Activity
                     requestActivity?.SetTag("app.name", app.Name);
                     requestActivity?.SetTag("app.type", app.AppType);
                     requestActivity?.SetTag("app.id", app.Id);
 
-                    // AgentGroup 应用走编排分支
-                    if (string.Equals(app.AppType, "AgentGroup", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _logger.LogInformation("App {AppName} 为 AgentGroup 类型，进入编排分支。", app.Name);
-                        requestActivity?.SetTag("routing", "agent_group");
-                        await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
-                        return;
-                    }
-
-                    if (!string.IsNullOrEmpty(app.LlmConfigId))
-                    {
-                        var appConfig = await _llmPoolService.GetConfigByIdAsync(app.LlmConfigId);
-                        if (appConfig != null && appConfig.IsEnabled)
-                        {
-                            config = appConfig;
-                            actualModelName = appConfig.Model;
-                            var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(appConfig.Id!);
-                            if (!acquired)
-                            {
-                                await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
-                                return;
-                            }
-                            selectionStrategy = "app-config";
-                            var epForCfg = await _llmPoolService.GetEndpointForConfigAsync(appConfig.Id!);
-                            if (epForCfg != null)
-                            {
-                                actualEndpointId = epForCfg.Id;
-                                callRecord = await _callRecordService.CreateAsync(epForCfg.Id, requestData);
-                            }
-                        }
-                    }
-                    else if (!string.IsNullOrEmpty(app.EndpointId))
-                    {
-                        config = await _llmPoolService.GetAvailableConfigByKeyAsync(app.EndpointId);
-                        if (config != null)
-                        {
-                            actualModelName = config.Model;
-                            actualEndpointId = app.EndpointId;
-                            selectionStrategy = "app-endpoint-lb";
-                            callRecord = await _callRecordService.CreateAsync(app.EndpointId, requestData);
-                        }
-                    }
-
+                    // 🎯 加载 App 的 Prompt
                     if (!string.IsNullOrEmpty(app.PromptId))
                     {
                         prompt = await _llmPoolService.GetPromptByIdAsync(app.PromptId);
@@ -282,7 +295,6 @@ namespace LY.LlmPool.Web.Controllers
                     if (promptTools != null && promptTools.Count > 0)
                     {
                         _logger.LogInformation("成功加载 {Count} 个工具用于 App {AppName}", promptTools.Count, app.Name);
-                        // 🎯 记录工具数量到 Activity
                         requestActivity?.SetTag("app.tools.count", promptTools.Count);
                     }
                     else
@@ -290,55 +302,12 @@ namespace LY.LlmPool.Web.Controllers
                         _logger.LogInformation("App {AppName} 没有关联的工具", app.Name);
                         requestActivity?.SetTag("app.tools.count", 0);
                     }
-
-                    if (config == null)
-                    {
-                        await WriteAssistantMessageAsync(chatRequest.Model, $"应用 '{app.Name}' 没有有效的模型配置。");
-                        return;
-                    }
                 }
-                else
+
+                // 🎯 创建 CallRecord（如果需要）
+                if (!string.IsNullOrEmpty(actualEndpointId) && callRecord == null)
                 {
-                    // 非 app 请求：按 config 名称或 endpoint 名称解析
-                    var cfgByName = await _llmPoolService.GetConfigByNameAsync(chatRequest.Model);
-                    if (cfgByName != null)
-                    {
-                        var acquired = await _llmPoolService.AcquireConfigIfAvailableAsync(cfgByName.Id!);
-                        if (!acquired)
-                        {
-                            await WriteAssistantMessageAsync(chatRequest.Model, "所有配置当前繁忙，请稍后重试。");
-                            return;
-                        }
-                        config = cfgByName;
-                        actualModelName = cfgByName.Model;
-                        selectionStrategy = "config-name-direct";
-                    }
-                    else
-                    {
-                        var epByName = await _llmPoolService.GetEndpointByNameAsync(chatRequest.Model);
-                        if (epByName != null)
-                        {
-                            config = await _llmPoolService.GetAvailableConfigByKeyAsync(epByName.Id);
-                            actualEndpointId = epByName.Id;
-                            if (config != null)
-                            {
-                                callRecord = await _callRecordService.CreateAsync(epByName.Id, requestData);
-                                selectionStrategy = "endpoint-name-lb";
-                                actualModelName = config.Model;
-                            }
-                        }
-                        else
-                        {
-                            // 兼容：将 model 视为 endpoint id
-                            config = await _llmPoolService.GetAvailableConfigByKeyAsync(chatRequest.Model);
-                            actualEndpointId = chatRequest.Model;
-                            if (config != null)
-                            {
-                                callRecord = await _callRecordService.CreateAsync(chatRequest.Model, requestData);
-                                selectionStrategy = "endpoint-id-lb";
-                            }
-                        }
-                    }
+                    callRecord = await _callRecordService.CreateAsync(actualEndpointId, requestData);
                 }
 
                 var waitTime = DateTime.UtcNow - modelAcquireStartTime;
@@ -580,11 +549,11 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity.SetStatus(ActivityStatusCode.Ok);
                 }
                 
-                if (Request != null)
+                // 🎯 使用 LoadBalancerService 释放配置（仅在需要时）
+                if (shouldReleaseConfig && !string.IsNullOrEmpty(config?.Id))
                 {
-                    // 释放占用的配置
-                    // 注意：只有通过 AcquireConfigIfAvailable 成功占用的才需要释放
-                    // 这里简化：若解析到了 config.Id 则尝试释放
+                    _loadBalancer.ReleaseConfig(config.Id);
+                    _logger.LogDebug("通过 LoadBalancerService 释放配置: {ConfigId}", config.Id);
                 }
             }
         }

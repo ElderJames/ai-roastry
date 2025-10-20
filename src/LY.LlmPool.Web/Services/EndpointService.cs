@@ -1,5 +1,6 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Services.LoadBalancing;
 using Microsoft.EntityFrameworkCore;
 
 namespace LY.LlmPool.Web.Services;
@@ -7,10 +8,17 @@ namespace LY.LlmPool.Web.Services;
 public class EndpointService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
+    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LoadBalancerService? _loadBalancer;
 
-    public EndpointService(IDbContextFactory<LlmDbContext> dbContextFactory)
+    public EndpointService(
+        IDbContextFactory<LlmDbContext> dbContextFactory,
+        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LoadBalancerService? loadBalancer = null)
     {
         _dbContextFactory = dbContextFactory;
+        _cacheWarmup = cacheWarmup;
+        _loadBalancer = loadBalancer;
     }
 
     public async Task<List<LlmEndpoint>> GetEndpointsAsync()
@@ -35,15 +43,42 @@ public class EndpointService
 
     public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
     {
+        // 检查名称全局唯一性
+        if (_cacheWarmup != null)
+        {
+            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint");
+            if (uniquenessError != null)
+            {
+                throw new InvalidOperationException(uniquenessError);
+            }
+        }
+        
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         endpoint.Id = Guid.NewGuid().ToString("N");
         dbContext.Endpoints.Add(endpoint);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnEndpointChangedAsync(endpoint.Name, endpoint.Id);
+        }
+        
         return endpoint;
     }
 
     public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
     {
+        // 检查名称全局唯一性（排除自身）
+        if (_cacheWarmup != null)
+        {
+            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint", endpoint.Id);
+            if (uniquenessError != null)
+            {
+                throw new InvalidOperationException(uniquenessError);
+            }
+        }
+        
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         var existing = await dbContext.Endpoints
             .Include(x => x.EndpointConfigs)
@@ -54,6 +89,7 @@ public class EndpointService
             throw new KeyNotFoundException($"Endpoint with ID {endpoint.Id} not found.");
         }
 
+        var oldName = existing.Name;
         existing.Name = endpoint.Name;
         existing.Description = endpoint.Description;
         existing.IsEnabled = endpoint.IsEnabled;
@@ -101,6 +137,19 @@ public class EndpointService
         }
 
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称和旧 ID）
+        if (_cacheWarmup != null)
+        {
+            if (oldName != existing.Name && _loadBalancer != null)
+            {
+                await _loadBalancer.InvalidateModelCacheAsync(oldName);
+                // 也需要清除 ID 映射的旧缓存（因为 Endpoint 可以通过 ID 访问）
+                await _loadBalancer.InvalidateModelCacheAsync(existing.Id);
+            }
+            await _cacheWarmup.OnEndpointChangedAsync(existing.Name, existing.Id);
+        }
+        
         return existing;
     }
 
@@ -113,8 +162,16 @@ public class EndpointService
             throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
         }
 
+        var endpointName = endpoint.Name;
         dbContext.Endpoints.Remove(endpoint);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 清除 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.RefreshModelCacheAsync(endpointName);
+            await _cacheWarmup.RefreshModelCacheAsync(id);
+        }
     }
 
     // Resolve an endpoint by its name (enabled only)

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.LoadBalancing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
@@ -16,13 +17,23 @@ public class LlmPoolService
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
     private readonly IChatClientService _chatClientService;
     private readonly McpServerConfigService? _mcpService;
+    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LoadBalancerService? _loadBalancer;
 
-    public LlmPoolService(IDbContextFactory<LlmDbContext> dbContextFactory, ILogger<LlmPoolService> logger, IChatClientService chatClientService, McpServerConfigService? mcpService = null)
+    public LlmPoolService(
+        IDbContextFactory<LlmDbContext> dbContextFactory,
+        ILogger<LlmPoolService> logger,
+        IChatClientService chatClientService,
+        McpServerConfigService? mcpService = null,
+        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LoadBalancerService? loadBalancer = null) // Optional to avoid circular dependency
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
         _chatClientService = chatClientService;
         _mcpService = mcpService;
+        _cacheWarmup = cacheWarmup;
+        _loadBalancer = loadBalancer;
     }
 
     #region Model Types
@@ -246,15 +257,38 @@ public class LlmPoolService
     public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        
+        // 验证名称唯一性
+        var exists = await dbContext.Endpoints.AnyAsync(e => e.Name == endpoint.Name);
+        if (exists)
+        {
+            throw new InvalidOperationException($"端点名称 '{endpoint.Name}' 已存在，请使用不同的名称。");
+        }
+        
         endpoint.Id = Guid.NewGuid().ToString("N");
         dbContext.Endpoints.Add(endpoint);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnEndpointChangedAsync(endpoint.Name, endpoint.Id);
+        }
+        
         return endpoint;
     }
 
     public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        
+        // 验证名称唯一性（排除自身）
+        var exists = await dbContext.Endpoints.AnyAsync(e => e.Name == endpoint.Name && e.Id != endpoint.Id);
+        if (exists)
+        {
+            throw new InvalidOperationException($"端点名称 '{endpoint.Name}' 已被其他端点使用，请使用不同的名称。");
+        }
+        
         var existing = await dbContext.Endpoints
             .Include(x => x.EndpointConfigs)
             .FirstOrDefaultAsync(x => x.Id == endpoint.Id);
@@ -311,6 +345,13 @@ public class LlmPoolService
         }
 
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnEndpointChangedAsync(existing.Name, existing.Id);
+        }
+        
         return existing;
     }
 
@@ -323,8 +364,16 @@ public class LlmPoolService
             throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
         }
 
+        var endpointName = endpoint.Name;
         dbContext.Endpoints.Remove(endpoint);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 清除 LoadBalancer 缓存
+        if (_loadBalancer != null)
+        {
+            await _loadBalancer.InvalidateModelCacheAsync(endpointName);
+            await _loadBalancer.InvalidateModelCacheAsync(id); // 也清除 ID 映射
+        }
     }
 
     #endregion
@@ -886,11 +935,26 @@ public class LlmPoolService
         }
 
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        
+        // 验证名称唯一性
+        var exists = await dbContext.Apps.AnyAsync(a => a.Name == app.Name);
+        if (exists)
+        {
+            throw new InvalidOperationException($"应用名称 '{app.Name}' 已存在，请使用不同的名称。");
+        }
+
         app.Id = Guid.NewGuid().ToString("N");
         app.CreatedAt = DateTime.UtcNow;
         app.UpdatedAt = DateTime.UtcNow;
         dbContext.Apps.Add(app);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnAppChangedAsync(app.Name);
+        }
+        
         return app;
     }
 
@@ -915,12 +979,21 @@ public class LlmPoolService
         }
 
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        
+        // 验证名称唯一性（排除自身）
+        var exists = await dbContext.Apps.AnyAsync(a => a.Name == app.Name && a.Id != app.Id);
+        if (exists)
+        {
+            throw new InvalidOperationException($"应用名称 '{app.Name}' 已被其他应用使用，请使用不同的名称。");
+        }
+
         var existing = await dbContext.Apps.FindAsync(app.Id);
         if (existing == null)
         {
             throw new KeyNotFoundException($"App with ID {app.Id} not found.");
         }
 
+        var oldName = existing.Name;
         existing.Name = app.Name;
         existing.Description = app.Description;
         existing.AppType = app.AppType;
@@ -933,6 +1006,17 @@ public class LlmPoolService
         existing.UpdatedAt = DateTime.UtcNow;
 
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 刷新 LoadBalancer 缓存
+        if (oldName != app.Name && _loadBalancer != null)
+        {
+            await _loadBalancer.InvalidateModelCacheAsync(oldName);
+        }
+        if (_cacheWarmup != null)
+        {
+            await _cacheWarmup.OnAppChangedAsync(app.Name);
+        }
+        
         return existing;
     }
 
@@ -945,8 +1029,15 @@ public class LlmPoolService
             throw new KeyNotFoundException($"App with ID {id} not found.");
         }
 
+        var appName = app.Name;
         dbContext.Apps.Remove(app);
         await dbContext.SaveChangesAsync();
+        
+        // 🎯 清除 LoadBalancer 缓存
+        if (_loadBalancer != null)
+        {
+            await _loadBalancer.InvalidateModelCacheAsync(appName);
+        }
     }
 
     // Create an AgentGroup app with members in one shot
