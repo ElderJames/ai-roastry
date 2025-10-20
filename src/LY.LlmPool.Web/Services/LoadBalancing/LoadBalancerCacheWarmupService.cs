@@ -92,8 +92,15 @@ public class LoadBalancerCacheWarmupService : IHostedService
                 // 🎯 对于 AgentGroup 类型的 App，Config 为 null 但仍需要缓存
                 if (result?.Success == true)
                 {
-                    await _cache.SetAsync($"{CacheKeyPrefix}{app.Name}", result, new HybridCacheEntryOptions { Expiration = CacheExpiration });
-                    _logger.LogDebug("✅ 预热 App: {AppName} -> {Strategy}", app.Name, result.Strategy);
+                    var cacheKey = $"{CacheKeyPrefix}{app.Name}";
+                    await _cache.SetAsync(cacheKey, result, new HybridCacheEntryOptions { Expiration = CacheExpiration });
+                    _logger.LogInformation("✅ 预热 App: {AppName} -> {Strategy} | CacheKey={CacheKey}", 
+                        app.Name, result.Strategy, cacheKey);
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ 预热 App {AppName} 失败: Success={Success}", 
+                        app.Name, result?.Success ?? false);
                 }
             }
             catch (Exception ex)

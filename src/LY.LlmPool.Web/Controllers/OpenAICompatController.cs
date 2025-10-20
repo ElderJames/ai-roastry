@@ -88,15 +88,29 @@ namespace LY.LlmPool.Web.Controllers
         {
             // 🎯 从 HTTP Headers 中提取父 Activity Context（如果存在）
             ActivityContext parentContext = default;
+            bool hasTraceparent = false;
+            
             if (Request.Headers.TryGetValue("traceparent", out var traceparentValue))
             {
+                hasTraceparent = true;
                 var traceparent = traceparentValue.ToString();
+                
+                _logger.LogInformation("📨 收到 traceparent header: {Traceparent}", traceparent);
+                
                 if (ActivityContext.TryParse(traceparent, null, out var parsedContext))
                 {
                     parentContext = parsedContext;
-                    _logger.LogInformation("从 traceparent header 提取父 Activity: TraceId={TraceId}, SpanId={SpanId}", 
+                    _logger.LogInformation("✅ 成功解析 traceparent - TraceId={TraceId}, SpanId={SpanId}", 
                         parsedContext.TraceId, parsedContext.SpanId);
                 }
+                else
+                {
+                    _logger.LogWarning("⚠️ 无法解析 traceparent: {Traceparent}", traceparent);
+                }
+            }
+            else
+            {
+                _logger.LogInformation("ℹ️ 未收到 traceparent header - 将创建新的 TraceId");
             }
 
             // 🎯 创建 LlmPool 服务端请求处理 Activity
@@ -108,13 +122,20 @@ namespace LY.LlmPool.Web.Controllers
             if (requestActivity != null)
             {
                 requestActivity.SetTag("http.method", "POST");
+                requestActivity.SetTag("http.has_traceparent", hasTraceparent);
+                requestActivity.SetTag("llmpool.is_root", parentContext == default);  // 🎯 标记是否为根节点
                 
-                _logger.LogInformation("🌐 LlmPool Server Activity 已启动: TraceId={TraceId}, SpanId={SpanId}, ParentSpanId={ParentSpanId}",
-                    requestActivity.TraceId, requestActivity.SpanId, requestActivity.ParentSpanId);
+                _logger.LogInformation("🌐 LlmPool Server Activity 已启动: {OperationName}", requestActivity.OperationName);
+                _logger.LogInformation("   TraceId: {TraceId}", requestActivity.TraceId);
+                _logger.LogInformation("   SpanId: {SpanId}", requestActivity.SpanId);
+                _logger.LogInformation("   ParentSpanId: {ParentSpanId} (是否为根: {IsRoot})", 
+                    requestActivity.ParentSpanId, parentContext == default);
+                _logger.LogInformation("   Activity.Current == requestActivity: {IsCurrent}", 
+                    Activity.Current == requestActivity);
             }
             else
             {
-                _logger.LogWarning("未能创建 Server Request Activity - 可能 ActivitySource 未启用");
+                _logger.LogWarning("❌ 未能创建 Server Request Activity - ActivitySource 可能未启用");
             }
             
             EndpointCallRecord? callRecord = null;

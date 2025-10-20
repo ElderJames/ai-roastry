@@ -88,34 +88,55 @@ internal class AppToolActivityScope : IActivityScope
         // 🎯 自动查找父 Activity
         Activity? parentActivity = null;
         
-        // 方法 1: 从 ChatActivityContext 获取
-        var savedActivity = ChatActivityContext.GetChatActivity();
-        if (savedActivity != null && serviceProvider != null)
+        // 方法 1: 从 Activity.Current 获取（最快）
+        parentActivity = Activity.Current;
+        if (parentActivity != null)
+        {
+            _logger?.LogDebug(
+                "🔍 [ActivityScope] 从 Activity.Current 找到父: {ParentName} | TraceId: {TraceId}",
+                parentActivity.OperationName,
+                parentActivity.TraceId
+            );
+        }
+        
+        // 方法 2: 从 ChatActivityContext 获取（AsyncLocal fallback）
+        if (parentActivity == null)
+        {
+            var savedActivity = ChatActivityContext.GetChatActivity();
+            if (savedActivity != null && serviceProvider != null)
+            {
+                var activityTraceService = serviceProvider.GetService<ActivityTraceService>();
+                if (activityTraceService != null)
+                {
+                    var traceId = savedActivity.TraceId.ToString();
+                    parentActivity = activityTraceService.GetChatActivityByTraceId(traceId);
+                    
+                    _logger?.LogDebug(
+                        "🔍 [ActivityScope] 从 ChatActivityContext 找到父: {ParentName} | TraceId: {TraceId}",
+                        parentActivity?.OperationName ?? "NULL",
+                        traceId
+                    );
+                }
+            }
+        }
+        
+        // 方法 3: 从 ActivityTraceService 的最近 chat Activity 获取（最后的 fallback）
+        if (parentActivity == null && serviceProvider != null)
         {
             var activityTraceService = serviceProvider.GetService<ActivityTraceService>();
             if (activityTraceService != null)
             {
-                var traceId = savedActivity.TraceId.ToString();
-                parentActivity = activityTraceService.GetChatActivityByTraceId(traceId);
+                // 获取最近的 chat Activity（按开始时间倒序）
+                parentActivity = activityTraceService.GetLatestChatActivity();
                 
-                _logger?.LogDebug(
-                    "🔍 [ActivityScope] 从 ChatActivityContext 查找父 Activity: {ParentName}",
-                    parentActivity?.OperationName ?? "NULL"
-                );
-            }
-        }
-        
-        // 方法 2: Fallback 到 Activity.Current
-        if (parentActivity == null)
-        {
-            parentActivity = Activity.Current;
-            
-            if (parentActivity != null)
-            {
-                _logger?.LogDebug(
-                    "🔍 [ActivityScope] 使用 Activity.Current 作为父: {ParentName}",
-                    parentActivity.OperationName
-                );
+                if (parentActivity != null)
+                {
+                    _logger?.LogWarning(
+                        "⚠️ [ActivityScope] AsyncLocal 丢失上下文! 使用最近的 chat Activity 作为父: {ParentName} | TraceId: {TraceId}",
+                        parentActivity.OperationName,
+                        parentActivity.TraceId
+                    );
+                }
             }
         }
         
@@ -145,6 +166,19 @@ internal class AppToolActivityScope : IActivityScope
                 "✅ [ActivityScope] 创建 Tool Activity: {ActivityName} | Parent: {ParentName}",
                 _activity.OperationName,
                 _activity.Parent?.OperationName ?? "NULL"
+            );
+        }
+        
+        // 🔑 关键修复: 设置 Activity.Current，使其成为后续操作的父 Activity
+        // 这样 OpenTelemetry client (.UseOpenTelemetry()) 创建的 chat Activity 会正确链接到这个 Tool Activity
+        if (_activity != null)
+        {
+            Activity.Current = _activity;
+            
+            _logger?.LogDebug(
+                "🔗 [ActivityScope] 设置 Activity.Current = {ActivityName} (SpanId: {SpanId})",
+                _activity.OperationName,
+                _activity.SpanId
             );
         }
     }

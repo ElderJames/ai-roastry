@@ -602,50 +602,102 @@ public class ToolProviderService
             _logger.LogInformation("Executing MCP Tool {ToolName} (Server: {ServerId}) with arguments: {Args}", 
                 toolName, serverId, string.Join(", ", arguments.Select(a => $"{a.Key}={a.Value}")));
             
-            try
+            // 🔑 验证必填参数（如果有 Schema）
+            if (!string.IsNullOrWhiteSpace(mcpTool.ParametersSchema))
             {
-                // 🔑 验证必填参数（如果有 Schema）
-                if (!string.IsNullOrWhiteSpace(mcpTool.ParametersSchema))
+                var validationError = _promptParameterService.ValidateParametersFromSchemaDetailed(
+                    mcpTool.ParametersSchema,
+                    arguments
+                );
+                
+                if (validationError != null)
                 {
-                    var validationError = _promptParameterService.ValidateParametersFromSchemaDetailed(
-                        mcpTool.ParametersSchema,
-                        arguments
-                    );
-                    
-                    if (validationError != null)
+                    _logger.LogWarning("MCP Tool {ToolName} validation failed", toolName);
+                    return validationError;
+                }
+            }
+            
+            // 🎯 AOP: 使用 ActivityScopeManager 管理 MCP Tool 的 Activity 生命周期
+            // 转换 arguments 为 Dictionary 用于记录
+            var argumentsDict = new Dictionary<string, object?>();
+            foreach (var arg in arguments)
+            {
+                argumentsDict[arg.Key] = arg.Value;
+            }
+            
+            using var scope = ActivityScopeManager.CreateToolScope(
+                toolName: toolName,
+                modelId: $"mcp://{serverId}/{toolName}",
+                parameters: argumentsDict,
+                serviceProvider: _serviceProvider
+            );
+            
+            // 转换 AIFunctionArguments 为 Dictionary（与 App Tool 相同的处理方式）
+            // 提前声明以便在 catch 块中使用
+            Dictionary<string, object?>? mcpArguments = null;
+            if (arguments.Any())
+            {
+                mcpArguments = new Dictionary<string, object?>();
+                foreach (var arg in arguments)
+                {
+                    if (arg.Value != null)
                     {
-                        _logger.LogWarning("MCP Tool {ToolName} validation failed", toolName);
-                        return validationError;
+                        mcpArguments[arg.Key] = arg.Value;
                     }
                 }
-                
+            }
+            
+            try
+            {
                 // 获取 MCP Client（McpClientsFactory 内部已有 ConcurrentDictionary 缓存）
                 var client = await mcpClientsFactory.GetMcpClientAsync(serverId, ct);
                 if (client == null)
                 {
                     var errorMsg = $"[MCP Error] Cannot connect to MCP Server '{serverId}'. Server may be offline or not configured.";
                     _logger.LogError(errorMsg);
+                    scope.RecordError(new InvalidOperationException(errorMsg));
                     return errorMsg;
-                }
-                
-                // 转换 AIFunctionArguments 为 Dictionary（与 App Tool 相同的处理方式）
-                Dictionary<string, object?>? mcpArguments = null;
-                if (arguments.Any())
-                {
-                    mcpArguments = new Dictionary<string, object?>();
-                    foreach (var arg in arguments)
-                    {
-                        if (arg.Value != null)
-                        {
-                            mcpArguments[arg.Key] = arg.Value;
-                        }
-                    }
                 }
                 
                 _logger.LogInformation("Calling MCP Tool {ToolName} with arguments: {Args}", 
                     toolName, System.Text.Json.JsonSerializer.Serialize(mcpArguments));
                 
+                // 🔍 诊断: 检查当前的 Activity Context (MCP SDK 应该从这里读取 traceparent)
+                var currentActivity = Activity.Current;
+                Console.WriteLine($"📍 [MCP CallTool] Activity.Current: {currentActivity?.OperationName ?? "NULL"} | SpanId: {currentActivity?.SpanId.ToString() ?? "NULL"}");
+                
+                if (currentActivity != null)
+                {
+                    _logger.LogInformation(
+                        "🎯 Current Activity before CallToolAsync: {OperationName} | TraceId: {TraceId} | SpanId: {SpanId}",
+                        currentActivity.OperationName,
+                        currentActivity.TraceId,
+                        currentActivity.SpanId
+                    );
+                    
+                    // 🔍 额外诊断:检查父 Activity 链
+                    var parent = currentActivity.Parent;
+                    if (parent != null)
+                    {
+                        Console.WriteLine($"   └─ Parent: {parent.OperationName} | SpanId: {parent.SpanId}");
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ Activity.Current is NULL before calling MCP Tool!");
+                    
+                    // 🔧 尝试从 ChatActivityContext 恢复
+                    var savedActivity = ChatActivityContext.GetChatActivity();
+                    if (savedActivity != null)
+                    {
+                        Console.WriteLine($"⚠️ [MCP CallTool] Activity.Current 为 NULL，但 ChatActivityContext 有: {savedActivity.OperationName} | SpanId: {savedActivity.SpanId}");
+                        // 注意:这里不能直接设置 Activity.Current,因为 MCP SDK 会在内部创建新的 Activity
+                        // 只能通过日志记录这个问题
+                    }
+                }
+                
                 // 调用 MCP Tool（显式转换为 IReadOnlyDictionary，与 McpInspectorService 保持一致）
+                // MCP SDK 会自动从 Activity.Current 注入 traceparent 到 params._meta
                 var result = await client.CallToolAsync(toolName, mcpArguments as IReadOnlyDictionary<string, object?>);
                 
                 _logger.LogInformation("MCP Tool {ToolName} returned result type: {ResultType}", 
@@ -659,18 +711,46 @@ public class ToolProviderService
                     _logger.LogInformation("MCP Tool {ToolName} executed successfully. Result length: {Length}", 
                         toolName, parsedResult.Length);
                     
+                    // 🎯 AOP: 使用 scope.RecordSuccess 记录成功，包含工具名称、参数和结果
+                    scope.RecordSuccess(tags: new Dictionary<string, object?>
+                    {
+                        ["mcp.server.id"] = serverId,
+                        ["mcp.tool.name"] = toolName,
+                        ["mcp.tool.arguments"] = System.Text.Json.JsonSerializer.Serialize(mcpArguments),
+                        ["mcp.tool.result"] = parsedResult,
+                        ["mcp.result.length"] = parsedResult.Length,
+                        ["tool.result"] = parsedResult // 🎯 统一的结果记录，与 App Tool 一致
+                    });
+                    
                     return parsedResult;
                 }
                 
                 _logger.LogWarning("MCP Tool {ToolName} returned null result", toolName);
-                return "[MCP Tool executed but returned null]";
+                var nullResultMsg = "[MCP Tool executed but returned null]";
+                
+                // 🎯 记录空结果
+                scope.RecordSuccess(tags: new Dictionary<string, object?>
+                {
+                    ["mcp.server.id"] = serverId,
+                    ["mcp.tool.name"] = toolName,
+                    ["mcp.tool.arguments"] = System.Text.Json.JsonSerializer.Serialize(mcpArguments),
+                    ["mcp.result.is_null"] = true,
+                    ["tool.result"] = nullResultMsg
+                });
+                
+                return nullResultMsg;
+            }
+            catch (OperationCanceledException)
+            {
+                scope.RecordError(new OperationCanceledException($"MCP tool '{toolName}' cancelled"));
+                _logger.LogWarning("MCP Tool '{ToolName}' execution was cancelled", toolName);
+                throw;
             }
             catch (Exception ex)
             {
-                var errorMsg = $"[MCP Error] Failed to execute tool '{toolName}': {ex.Message}";
-                _logger.LogError(ex, "Failed to execute MCP Tool {ToolName} on Server {ServerId}. Exception Details: {ExceptionDetails}", 
-                    toolName, serverId, ex.ToString());
-                return errorMsg;
+                _logger.LogError(ex, "Failed to execute MCP Tool {ToolName} on Server {ServerId}", toolName, serverId);
+                scope.RecordError(ex);
+                return $"Error executing tool '{toolName}' on server '{serverId}': {ex.Message}";
             }
         };
 

@@ -34,6 +34,27 @@ public class ActivityTraceService : IDisposable
         return chatActivity;
     }
 
+    /// <summary>
+    /// 获取最近的 chat Activity（用于并发工具调用时 AsyncLocal 丢失的场景）
+    /// 按 StartTime 倒序,返回最新的 chat Activity
+    /// </summary>
+    public Activity? GetLatestChatActivity()
+    {
+        if (_traceToChatActivity.IsEmpty)
+        {
+            Console.WriteLine("🔍 GetLatestChatActivity: 没有活跃的 chat Activity");
+            return null;
+        }
+
+        // 按 StartTime 倒序排序,取最新的
+        var latestActivity = _traceToChatActivity.Values
+            .OrderByDescending(a => a.StartTimeUtc)
+            .FirstOrDefault();
+
+        Console.WriteLine($"🔍 GetLatestChatActivity: {latestActivity?.OperationName ?? "NULL"} | TraceId: {latestActivity?.TraceId.ToString() ?? "NULL"}");
+        return latestActivity;
+    }
+
     public ActivityTraceService(ILogger<ActivityTraceService> logger)
     {
         _logger = logger;
@@ -52,6 +73,7 @@ public class ActivityTraceService : IDisposable
             {
                 var shouldListen = source.Name.StartsWith("Microsoft.Extensions.AI") ||
                                   source.Name.StartsWith("Experimental.Microsoft.Extensions.AI") ||  // 🔑 添加实验性版本
+                                  source.Name.StartsWith("Experimental.ModelContextProtocol") ||      // 🔑 MCP SDK ActivitySource
                                   source.Name.Contains("LlmPool") ||
                                   source.Name.StartsWith("OpenAI") ||  // 可能是 OpenAI.* 
                                   source.Name.Contains("ChatClient"); // 可能是其他命名
@@ -135,6 +157,9 @@ public class ActivityTraceService : IDisposable
 
         // 提取关键信息
         ExtractKeyInformation(activity, node);
+        
+        // 🎯 识别节点类型
+        IdentifyNodeType(node);
 
         _activeTraces.TryAdd(node.ActivityId, node);
 
@@ -148,6 +173,15 @@ public class ActivityTraceService : IDisposable
             node.SpanId,
             node.ParentSpanId != "0000000000000000" ? node.ParentSpanId : "ROOT"
         );
+
+        // 🎯 特别标记 llmpool.server Activity
+        if (node.OperationName.StartsWith("llmpool.server", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "  🌐 [SERVER] LlmPool 服务端 Activity | IsRoot: {IsRoot} | Kind: {Kind}",
+                node.ParentSpanId == "0000000000000000",
+                node.Kind);
+        }
 
         // 记录工具调用
         if (node.IsToolCall)
@@ -246,6 +280,15 @@ public class ActivityTraceService : IDisposable
                     node.ErrorType,
                     node.StatusDescription
                 );
+                
+                // 记录完整的堆栈跟踪（如果有）
+                if (!string.IsNullOrEmpty(node.ErrorStackTrace))
+                {
+                    _logger.LogError(
+                        "  📋 Stack Trace:\n{StackTrace}",
+                        node.ErrorStackTrace
+                    );
+                }
             }
         }
     }
@@ -527,10 +570,79 @@ public class ActivityTraceService : IDisposable
                 case "error.type":
                     node.ErrorType = tag.Value;
                     break;
+                
+                case "error.stack_trace":
+                    node.ErrorStackTrace = tag.Value;
+                    break;
 
                 case "tool.result":
                     node.ToolResult = tag.Value;
                     break;
+                    
+                // MCP Server 相关
+                case "mcp.session.id":
+                    node.IsMcpServer = true;
+                    break;
+                    
+                case "mcp.server.name":
+                    node.McpServerName = tag.Value;
+                    node.IsMcpServer = true;
+                    break;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// 识别节点类型
+    /// </summary>
+    private void IdentifyNodeType(TraceNode node)
+    {
+        // 1. 识别 MCP Tool (tools/call)
+        if (node.OperationName.Contains("tools/call", StringComparison.OrdinalIgnoreCase))
+        {
+            node.IsMcpTool = true;
+            node.IsToolCall = true;
+            
+            // 尝试从 Tags 中获取 MCP Server 名称
+            if (node.Tags.TryGetValue("mcp.server.name", out var serverName))
+            {
+                node.McpServerName = serverName;
+            }
+        }
+        // 2. 识别 App Tool (llmpool.tool 或 llmpool.app)
+        else if (node.OperationName.StartsWith("llmpool.tool", StringComparison.OrdinalIgnoreCase) ||
+                 node.OperationName.StartsWith("llmpool.app", StringComparison.OrdinalIgnoreCase))
+        {
+            node.IsAppTool = true;
+            node.IsToolCall = true;
+        }
+        // 3. 识别 MCP Server Activity (initialize, tools/list等)
+        else if (node.OperationName.Contains("initialize", StringComparison.OrdinalIgnoreCase) ||
+                 node.OperationName.Contains("tools/list", StringComparison.OrdinalIgnoreCase) ||
+                 node.OperationName.Contains("notifications/", StringComparison.OrdinalIgnoreCase) ||
+                 node.Tags.ContainsKey("mcp.session.id"))
+        {
+            node.IsMcpServer = true;
+            
+            // 尝试从 Tags 中获取 MCP Server 名称
+            if (node.Tags.TryGetValue("mcp.server.name", out var serverName))
+            {
+                node.McpServerName = serverName;
+            }
+        }
+        // 4. 识别 LlmPool Server (llmpool.server)
+        else if (node.OperationName.StartsWith("llmpool.server", StringComparison.OrdinalIgnoreCase))
+        {
+            node.IsLlmPoolServer = true;
+        }
+        // 5. 识别 HTTP Request
+        else if (node.OperationName.StartsWith("http", StringComparison.OrdinalIgnoreCase) ||
+                 node.Kind == "Client")
+        {
+            // HTTP 请求类型 - 可以进一步细分
+            if (node.ServerAddress != null && node.ServerAddress.Contains("localhost"))
+            {
+                node.IsLlmPoolServer = true;
             }
         }
     }
@@ -872,6 +984,84 @@ public class ActivityTraceService : IDisposable
         _logger.LogInformation("已清除历史追踪记录");
     }
 
+    /// <summary>
+    /// 添加来自外部进程的 Activity (通过 OTLP 接收)
+    /// 用于跨进程追踪 (如 MCP Server 的 Activity)
+    /// </summary>
+    public void AddExternalActivity(ExternalActivityDto activityDto)
+    {
+        try
+        {
+            var node = new TraceNode
+            {
+                ActivityId = $"{activityDto.TraceId}:{activityDto.SpanId}",
+                TraceId = activityDto.TraceId,
+                SpanId = activityDto.SpanId,
+                ParentSpanId = activityDto.ParentSpanId ?? "0000000000000000",
+                OperationName = activityDto.OperationName,
+                DisplayName = activityDto.OperationName,
+                StartTime = activityDto.StartTimeUtc,
+                EndTime = activityDto.StartTimeUtc + activityDto.Duration,
+                Duration = activityDto.Duration,
+                Kind = "External", // 标记为外部 Activity
+                Tags = activityDto.Tags?.ToDictionary(k => k.Key, v => v.Value?.ToString() ?? string.Empty) 
+                    ?? new Dictionary<string, string>(),
+                Status = activityDto.Status switch
+                {
+                    ActivityStatusCode.Ok => "Success",
+                    ActivityStatusCode.Error => "Error",
+                    _ => "Completed"
+                },
+                StatusDescription = activityDto.StatusDescription
+            };
+
+            // 从 Tags 中提取信息
+            if (activityDto.Tags != null)
+            {
+                if (activityDto.Tags.TryGetValue("service.name", out var serviceName))
+                {
+                    node.Tags["ServiceName"] = serviceName?.ToString() ?? string.Empty;
+                }
+                
+                if (activityDto.Tags.TryGetValue("scope.name", out var scopeName))
+                {
+                    node.Tags["ScopeName"] = scopeName?.ToString() ?? string.Empty;
+                }
+                
+                // 标记为 MCP Server Activity
+                if (activityDto.Source?.Contains("ModelContextProtocol") == true)
+                {
+                    node.Tags["IsMcpServer"] = "true";
+                    node.Tags["Source"] = activityDto.Source;
+                }
+            }
+
+            // 直接添加到完成队列 (外部 Activity 已经完成)
+            _completedTraces.Enqueue(node);
+
+            // 限制队列大小
+            while (_completedTraces.Count > MaxCompletedTraces)
+            {
+                _completedTraces.TryDequeue(out _);
+            }
+
+            _logger.LogInformation(
+                "📥 External Activity Added: {OperationName} | TraceId: {TraceId} | SpanId: {SpanId} | Source: {Source}",
+                node.OperationName,
+                node.TraceId,
+                node.SpanId,
+                activityDto.Source ?? "external"
+            );
+
+            // 🎯 触发事件通知
+            ActivityStopped?.Invoke(this, node);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ 添加外部 Activity 失败: {OperationName}", activityDto.OperationName);
+        }
+    }
+
     public void Dispose()
     {
         _activityListener?.Dispose();
@@ -915,6 +1105,7 @@ public class TraceNode
     public string? ServerAddress { get; set; }
     public int? ServerPort { get; set; }
     public string? ErrorType { get; set; }
+    public string? ErrorStackTrace { get; set; }
     
     // App 相关属性
     public bool IsAppCall { get; set; }
@@ -925,6 +1116,15 @@ public class TraceNode
     public string? ToolName { get; set; }
     public string? ToolArguments { get; set; }
     public string? ToolResult { get; set; }
+    
+    // 工具类型区分
+    public bool IsAppTool { get; set; }  // llmpool.tool (App Tool)
+    public bool IsMcpTool { get; set; }   // tools/call (MCP Tool)
+    
+    // Server 类型区分
+    public bool IsLlmPoolServer { get; set; }  // llmpool.server
+    public bool IsMcpServer { get; set; }      // MCP Server (initialize, tools/list等)
+    public string? McpServerName { get; set; } // MCP Server 的配置名称
     
     // Chat 消息内容（从 Events 中提取）
     public List<TraceChatMessage> InputMessages { get; set; } = new();

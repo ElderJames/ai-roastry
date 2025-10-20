@@ -16,6 +16,8 @@ using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -99,6 +101,13 @@ builder.Services.AddHybridCache(options =>
     };
 });
 
+// Configure JSON serialization for HybridCache to handle cycles
+builder.Services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(options =>
+{
+    options.SerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+    options.SerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+});
+
 // Add distributed cache (Redis) for L2 cache (optional, for production)
 // Uncomment and configure when Redis is available:
 // builder.Services.AddStackExchangeRedisCache(options =>
@@ -124,6 +133,89 @@ builder.Services.AddScoped<IMcpInspectorService, McpInspectorService>();
 
 // 🎯 注册 OpenTelemetry Activity 追踪服务
 builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.ActivityTraceService>();
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.OtlpTraceParser>();
+
+// 🎯 配置 OpenTelemetry - 让 LlmPool 成为简易版 OTLP Collector
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource
+        .AddService("LlmPool")
+        .AddAttributes(new Dictionary<string, object>
+        {
+            ["service.version"] = "1.0.0",
+            ["deployment.environment"] = builder.Environment.EnvironmentName
+        }))
+    .WithTracing(tracing =>
+    {
+        tracing
+            // 🎯 监听 MCP SDK 的 ActivitySource (关键!)
+            .AddSource("Experimental.ModelContextProtocol")
+            // 监听 Microsoft.Extensions.AI
+            .AddSource("Microsoft.Extensions.AI")
+            .AddSource("Experimental.Microsoft.Extensions.AI")
+            // 监听 LlmPool 自定义 ActivitySource
+            .AddSource("LlmPool.*")
+            // 监听 ASP.NET Core 和 HttpClient
+            .AddAspNetCoreInstrumentation(options =>
+            {
+                options.RecordException = true;
+                options.Filter = context =>
+                {
+                    // 过滤掉健康检查和静态资源请求
+                    var path = context.Request.Path.Value ?? "";
+                    return !path.StartsWith("/_blazor") && 
+                           !path.StartsWith("/health") &&
+                           !path.StartsWith("/_framework");
+                };
+            })
+            .AddHttpClientInstrumentation(options =>
+            {
+                options.RecordException = true;
+                
+                // 🎯 过滤不需要记录的 HTTP 请求
+                options.FilterHttpRequestMessage = (httpRequestMessage) =>
+                {
+                    var url = httpRequestMessage.RequestUri?.ToString() ?? string.Empty;
+                    
+                    // 过滤掉 trace exporter 的 HTTP 请求（避免循环追踪）
+                    if (url.Contains("/v1/traces/json") || url.Contains("/traces"))
+                    {
+                        return false;
+                    }
+                    
+                    // 过滤掉内部健康检查等请求
+                    if (url.Contains("/health") || url.Contains("/_blazor"))
+                    {
+                        return false;
+                    }
+                    
+                    return true;
+                };
+                
+                // 🎯 自定义 Activity 显示名称
+                options.EnrichWithHttpRequestMessage = (activity, httpRequestMessage) =>
+                {
+                    var path = httpRequestMessage.RequestUri?.PathAndQuery ?? string.Empty;
+                    
+                    // 为调用上游 LLM 的请求设置更友好的名称
+                    if (path.Contains("/chat/completions"))
+                    {
+                        activity.DisplayName = "upstream.llm.chat";
+                    }
+                };
+            })
+            // 🎯 使用自定义 Exporter 将数据导出到 ActivityTraceService (内存存储)
+            .AddProcessor(sp => new OpenTelemetry.SimpleActivityExportProcessor(
+                new LY.LlmPool.Web.Services.Telemetry.InMemoryActivityExporter(
+                    sp.GetRequiredService<LY.LlmPool.Web.Services.Telemetry.ActivityTraceService>(),
+                    sp.GetRequiredService<ILogger<LY.LlmPool.Web.Services.Telemetry.InMemoryActivityExporter>>()
+                )
+            ));
+            // 💡 可选: 同时导出到外部 OTLP Collector (Jaeger/Tempo/Grafana)
+            // .AddOtlpExporter(options =>
+            // {
+            //     options.Endpoint = new Uri("http://localhost:4317");
+            // });
+    });
 
 // Add HTTP client factory
 builder.Services.AddHttpClient();

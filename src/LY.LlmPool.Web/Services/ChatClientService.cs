@@ -923,6 +923,25 @@ public class ChatClientService : IChatClientService
         Dictionary<string, object>? parameters,
         IEnumerable<Microsoft.Extensions.AI.AITool>? tools)
     {
+        // 🎯 如果没有 Activity.Current，创建一个根 llmpool.server Activity
+        // 这确保从 UI 直接调用时也有完整的调用链
+        System.Diagnostics.Activity? rootActivity = null;
+        var needsRootActivity = System.Diagnostics.Activity.Current == null;
+        
+        if (needsRootActivity)
+        {
+            _logger.LogInformation("🏠 检测到没有 Activity.Current，创建根 llmpool.server Activity");
+            rootActivity = ActivityExtensions.StartServerRequestActivity(
+                route: "/ui/chat",  // 标记为 UI 调用
+                appName: null);
+            
+            if (rootActivity != null)
+            {
+                _logger.LogInformation("✅ 根 Activity 已创建: {OperationName} | TraceId: {TraceId} | SpanId: {SpanId}",
+                    rootActivity.OperationName, rootActivity.TraceId, rootActivity.SpanId);
+            }
+        }
+        
         _logger.LogInformation("开始发送流式消息(详细模式)，模型: {Model}@{BaseUrl}, 消息数量: {MessageCount}", 
             model, baseUrl, messages.Count);
 
@@ -937,8 +956,29 @@ public class ChatClientService : IChatClientService
             Model = model 
         };
 
-        // 使用 ChatClientFactory 创建 IChatClient，启用自动工具调用
-        var chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+        // 🎯 判断调用方式：
+        // 1. 如果 baseUrl 不为空且不是 localhost，说明是直接调用真实模型 API（测试配置场景）
+        // 2. 如果 baseUrl 为空或 apiKey 是 app-temp-key，说明是通过 Controller 调用（App 场景）
+        Microsoft.Extensions.AI.IChatClient chatClient;
+        var isDirectModelCall = !string.IsNullOrEmpty(baseUrl) && 
+                                !baseUrl.Contains("localhost") && 
+                                !baseUrl.Contains("127.0.0.1");
+        
+        if (isDirectModelCall)
+        {
+            // 🔑 直接调用真实模型 API（不经过 Controller）
+            _logger.LogInformation("🎯 直接调用真实模型 API: {BaseUrl}", baseUrl);
+            chatClient = _chatClientFactory.CreateClient(config, enableFunctionInvocation: true);
+        }
+        else
+        {
+            // 🔑 通过 LlmPoolApi HttpClient 调用 Controller（创建完整的 Activity 链）
+            _logger.LogInformation("🎯 通过 Controller 调用模型: {Model}", model);
+            chatClient = _chatClientFactory.CreateClientWithHttpClient(
+                config, 
+                httpClientName: "LlmPoolApi",  // 使用本地 HTTP 客户端
+                enableFunctionInvocation: true);
+        }
 
         var chatOptions = new Microsoft.Extensions.AI.ChatOptions();
         
@@ -1115,6 +1155,13 @@ public class ChatClientService : IChatClientService
         }
 
         _logger.LogInformation("流式响应(详细模式)完成");
+        
+        // 🎯 Dispose 根 Activity
+        if (rootActivity != null)
+        {
+            _logger.LogInformation("🏁 关闭根 Activity: {OperationName}", rootActivity.OperationName);
+            rootActivity.Dispose();
+        }
     }
     
     /// <summary>

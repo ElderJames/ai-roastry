@@ -53,15 +53,21 @@ public class LoadBalancerService
         var cacheKey = $"{CacheKeyPrefix}{modelName}";
         var cacheNotFoundMarker = new ConfigSelectionResult { Success = false, Message = "__CACHE_NOT_FOUND__" };
         
+        _logger.LogDebug("🔍 [LoadBalancer] 尝试从缓存读取: Key={CacheKey}", cacheKey);
+        
         var result = await _cache.GetOrCreateAsync<ConfigSelectionResult>(
             cacheKey,
             cancel => new ValueTask<ConfigSelectionResult>(cacheNotFoundMarker)
         );
 
+        _logger.LogDebug("🔍 [LoadBalancer] 缓存读取结果: Message={Message}, Success={Success}", 
+            result.Message ?? "(null)", result.Success);
+
         // 如果返回的是标记值，说明缓存未命中
         if (result.Message == "__CACHE_NOT_FOUND__")
         {
-            _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，请检查缓存预热是否完成", modelName);
+            _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，请检查缓存预热是否完成 | CacheKey={CacheKey}", 
+                modelName, cacheKey);
             return null;
         }
 

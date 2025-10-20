@@ -123,12 +123,25 @@
                                                 <span>
                                                     @GetNodeIcon(context.DataItem) 
                                                     <strong>@context.DataItem.DisplayName</strong>
-                                                    @if (context.DataItem.IsAppCall || context.DataItem.IsToolCall)
-                                                    {
-                                                        <Tag Color="@(context.DataItem.IsAppCall ? "blue" : "purple")">
-                                                            @(context.DataItem.IsAppCall ? context.DataItem.AppName : context.DataItem.ToolName)
-                                                        </Tag>
+                                                    
+                                                    @{
+                                                        var typeTag = GetNodeTypeTag(context.DataItem);
                                                     }
+                                                    <Tag Color="@typeTag.Color">@typeTag.Text</Tag>
+                                                    
+                                                    @if (!string.IsNullOrEmpty(context.DataItem.AppName))
+                                                    {
+                                                        <Tag Color="@("blue")">@context.DataItem.AppName</Tag>
+                                                    }
+                                                    @if (!string.IsNullOrEmpty(context.DataItem.ToolName))
+                                                    {
+                                                        <Tag Color="@("purple")">@context.DataItem.ToolName</Tag>
+                                                    }
+                                                    @if (!string.IsNullOrEmpty(context.DataItem.McpServerName))
+                                                    {
+                                                        <Tag Color="@("orange")">@context.DataItem.McpServerName</Tag>
+                                                    }
+                                                    
                                                     <Tag Color="@("processing")">
                                                         @((DateTime.UtcNow - context.DataItem.StartTime).TotalSeconds.ToString("F1"))s
                                                     </Tag>
@@ -187,16 +200,27 @@
                                             @{
                                                 var statusIcon = context.DataItem.Status == "Success" ? "✅" : 
                                                                context.DataItem.Status == "Error" ? "❌" : "⏹️";
+                                                var typeTag = GetNodeTypeTag(context.DataItem);
                                             }
                                             <span>
                                                 @statusIcon @GetNodeIcon(context.DataItem) 
                                                 <strong>@context.DataItem.DisplayName</strong>
-                                                @if (context.DataItem.IsAppCall || context.DataItem.IsToolCall)
+                                                
+                                                <Tag Color="@typeTag.Color">@typeTag.Text</Tag>
+                                                
+                                                @if (!string.IsNullOrEmpty(context.DataItem.AppName))
                                                 {
-                                                    <Tag Color="@(context.DataItem.IsAppCall ? "blue" : "purple")">
-                                                        @(context.DataItem.IsAppCall ? context.DataItem.AppName : context.DataItem.ToolName)
-                                                    </Tag>
+                                                    <Tag Color="@("blue")">@context.DataItem.AppName</Tag>
                                                 }
+                                                @if (!string.IsNullOrEmpty(context.DataItem.ToolName))
+                                                {
+                                                    <Tag Color="@("purple")">@context.DataItem.ToolName</Tag>
+                                                }
+                                                @if (!string.IsNullOrEmpty(context.DataItem.McpServerName))
+                                                {
+                                                    <Tag Color="@("orange")">@context.DataItem.McpServerName</Tag>
+                                                }
+                                                
                                                 <Tag>@context.DataItem.Duration.TotalSeconds.ToString("F2")s</Tag>
                                             </span>
                                         </TitleTemplate>
@@ -544,15 +568,57 @@
     // 获取节点图标
     private string GetNodeIcon(TraceNode node)
     {
-        if (node.OperationName.StartsWith("http.request"))
-            return "🌐";
-        if (node.OperationName.StartsWith("gen_ai."))
-            return "🤖";
+        // MCP 相关
+        if (node.IsMcpTool)
+            return "🔌"; // MCP Tool 调用
+        if (node.IsMcpServer)
+            return "🖥️"; // MCP Server Activity
+            
+        // App 相关
+        if (node.IsAppTool)
+            return "⚙️"; // App Tool
         if (node.IsAppCall)
-            return "📱";
+            return "📱"; // App 调用
+            
+        // LlmPool Server
+        if (node.IsLlmPoolServer)
+            return "🏠"; // LlmPool Server
+            
+        // HTTP 请求
+        if (node.OperationName.StartsWith("http.request") || node.Kind == "Client")
+            return "🌐";
+            
+        // AI 相关
+        if (node.OperationName.StartsWith("gen_ai.") || node.OperationName.StartsWith("chat"))
+            return "🤖";
+            
+        // 通用工具调用
         if (node.IsToolCall)
             return "🔧";
+            
         return "📄";
+    }
+    
+    // 获取节点类型标签
+    private (string Text, string Color) GetNodeTypeTag(TraceNode node)
+    {
+        if (node.IsMcpTool)
+            return ("MCP Tool", "purple");
+        if (node.IsAppTool)
+            return ("App Tool", "blue");
+        if (node.IsMcpServer)
+            return (node.McpServerName ?? "MCP Server", "orange");
+        if (node.IsLlmPoolServer)
+            return ("LlmPool", "green");
+        if (node.IsAppCall)
+            return ("App", "blue");
+        if (node.IsToolCall)
+            return ("Tool", "cyan");
+        if (node.OperationName.StartsWith("chat"))
+            return ("Chat", "geekblue");
+        if (node.OperationName.StartsWith("http"))
+            return ("HTTP", "default");
+        return ("Other", "default");
     }
 
     // 渲染节点详情
