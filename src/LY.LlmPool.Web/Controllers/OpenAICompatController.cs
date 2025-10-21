@@ -33,6 +33,9 @@ namespace LY.LlmPool.Web.Controllers
     [ActivityCapture] // 🎯 AOP: 自动捕获和保存 Activity,替代手动 FunctionCall 检测
     public class OpenAICompatController : ControllerBase
     {
+        // 🎯 HttpContext.Items 键，用于存储当前请求的 requestActivity
+        private const string RequestActivityKey = "LlmPool.RequestActivity";
+
         private readonly LlmPoolService _llmPoolService;
         private readonly CallRecordService _callRecordService;
         private readonly PromptParameterService _promptParameterService;
@@ -84,6 +87,14 @@ namespace LY.LlmPool.Web.Controllers
             await ProcessChatCompletions();
         }
 
+        /// <summary>
+        /// 从 HttpContext.Items 获取当前请求的 requestActivity
+        /// </summary>
+        private Activity? GetRequestActivity()
+        {
+            return HttpContext.Items[RequestActivityKey] as Activity;
+        }
+
         private async Task ProcessChatCompletions()
         {
             // 🎯 从 HTTP Headers 中提取父 Activity Context（如果存在）
@@ -118,7 +129,10 @@ namespace LY.LlmPool.Web.Controllers
                 route: "/v1/chat/completions",
                 appName: null, // 稍后从请求体中解析后设置
                 parentContext: parentContext);
-            
+
+            // 🎯 将 requestActivity 存储到 HttpContext.Items 供所有方法使用
+            HttpContext.Items[RequestActivityKey] = requestActivity;
+
             if (requestActivity != null)
             {
                 requestActivity.SetTag("http.method", "POST");
@@ -184,6 +198,7 @@ namespace LY.LlmPool.Web.Controllers
 
             try
             {
+                requestActivity?.SetTag("request.body", requestBody);
                 _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
                 ChatRequest chatRequest;
                 try
@@ -467,6 +482,16 @@ namespace LY.LlmPool.Web.Controllers
                             cancellationToken: HttpContext.RequestAborted);
 
                         await WriteChatCompletionResponse(aiResponse, actualModelName);
+
+                        // 🎯 记录响应数据到 requestActivity
+                        var reqActivity = GetRequestActivity();
+                        if (reqActivity != null)
+                        {
+                            var lastMessage = aiResponse.Messages.LastOrDefault();
+                            var responseContent = lastMessage?.Text ?? string.Empty;
+
+                            reqActivity.SetTag("response.content", responseContent);  
+                        }
                     }
                     
                     // 🎯 记录 App 执行成功
@@ -558,7 +583,7 @@ namespace LY.LlmPool.Web.Controllers
                 requestActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 requestActivity?.SetTag("error.type", ex.GetType().Name);
                 requestActivity?.SetTag("error.message", ex.Message);
-                
+
                 _logger.LogError(ex, "Error processing request");
                 await WriteAssistantMessageAsync(null, "服务器内部错误。");
             }
@@ -586,6 +611,17 @@ namespace LY.LlmPool.Web.Controllers
                 _logger.LogWarning("Skip writing OpenAI error because response has already started: {Message}", message);
                 return;
             }
+
+            // 🎯 记录错误响应到 requestActivity
+            var requestActivity = GetRequestActivity();
+            if (requestActivity != null)
+            {
+                requestActivity.SetTag("response.error", message);
+                requestActivity.SetTag("response.error_type", type);
+                requestActivity.SetTag("response.status_code", (int)statusCode);
+                _logger.LogDebug("📝 记录错误响应到 requestActivity: {ErrorType} - {Message}", type, message);
+            }
+
             Response.StatusCode = (int)statusCode;
             var payload = new
             {
@@ -608,7 +644,13 @@ namespace LY.LlmPool.Web.Controllers
                 _logger.LogWarning("Skip writing assistant message because response has already started: {Message}", message);
                 return;
             }
-            
+
+            // 🎯 记录助手消息响应到 requestActivity
+            var requestActivity = GetRequestActivity();
+            if (requestActivity != null)
+            {
+                requestActivity.SetTag("response.content", message);
+            } 
             // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
             var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
             if (!string.IsNullOrEmpty(conversationId))
@@ -616,7 +658,7 @@ namespace LY.LlmPool.Web.Controllers
                 Response.Headers.Append("X-Conversation-Id", conversationId);
                 _logger.LogDebug("📤 响应 Header: X-Conversation-Id={ConversationId}", conversationId);
             }
-            
+
             Response.StatusCode = (int)HttpStatusCode.OK;
             var payload = new
             {
@@ -648,6 +690,9 @@ namespace LY.LlmPool.Web.Controllers
 
                 // 转换消息格式
                 var userMessages = ConvertToAIChatMessages(chatRequest.Messages);
+
+                // 🎯 提前获取 requestActivity 供后续使用
+                var reqActivity = GetRequestActivity();
 
                 // 若请求需要流式返回（SSE），通过 onProgress 回调写 SSE 数据
                 if (chatRequest.Stream == true)
@@ -698,6 +743,12 @@ namespace LY.LlmPool.Web.Controllers
                         try { await ProgressWriter(name, role, step, text, done); } catch { }
                     });
 
+                    // 🎯 记录 AgentGroup 流式响应数据到 requestActivity
+                    if (reqActivity != null && !string.IsNullOrEmpty(result))
+                    {
+                        reqActivity.SetTag("response.content", result); 
+                    }
+
                     // 在将结束标记写回客户端之前，先尝试更新调用记录，避免在写入完成后宿主可能已释放请求作用域导致的 ObjectDisposedException
                     if (callRecord != null)
                     {
@@ -730,6 +781,12 @@ namespace LY.LlmPool.Web.Controllers
 
                 // 非流式，直接调用并返回完整结果
                 var nonStreamResult = await _agentOrchestrator.ExecuteAsync(app, userMessages);
+
+                // 🎯 记录 AgentGroup 非流式响应数据到 requestActivity
+                if (reqActivity != null && !string.IsNullOrEmpty(nonStreamResult))
+                {
+                    reqActivity.SetTag("response.content", nonStreamResult); 
+                }
 
                 // 记录响应时间（简化处理）
                 if (callRecord != null)
@@ -1041,8 +1098,14 @@ namespace LY.LlmPool.Web.Controllers
             var currentActivity = Activity.Current;
             if (currentActivity != null && aiMessages.Any())
             {
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,               // 保持换行缩进
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping // 不转义中文、<> 等
+                };
                 var inputMessagesJson = JsonSerializer.Serialize(
-                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList()
+                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList(),
+                    jsonOptions
                 );
                 currentActivity.SetTag("gen_ai.prompt", inputMessagesJson);
                 _logger.LogDebug("📝 记录输入消息到 Activity (Streaming): {MessageCount} messages", aiMessages.Count);
@@ -1269,6 +1332,13 @@ namespace LY.LlmPool.Web.Controllers
             {
                 currentActivity.SetTag("gen_ai.completion", fullContentText);
                 _logger.LogDebug("📝 记录输出内容到 Activity (Streaming): {Length} chars", fullContentText.Length);
+            }
+
+            // 🎯 记录流式响应数据到 requestActivity
+            var requestActivity = GetRequestActivity();
+            if (requestActivity != null && !string.IsNullOrEmpty(fullContentText))
+            {
+                requestActivity.SetTag("response.content", fullContentText); 
             }
 
             // 发送结束标记

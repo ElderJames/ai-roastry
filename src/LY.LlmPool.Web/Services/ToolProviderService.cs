@@ -467,12 +467,7 @@ public class ToolProviderService
             using var scope = ActivityScopeManager.CreateToolScope(
                 toolName: app.Name,
                 modelId: app.Name,
-                parameters: new Dictionary<string, object?>
-                {
-                    ["depth"] = currentDepth,
-                    ["hasNestedTools"] = nestedTools?.Count > 0,
-                    ["nestedToolsCount"] = nestedTools?.Count ?? 0
-                },
+                parameters: new Dictionary<string, object?>(arguments),
                 serviceProvider: _serviceProvider
             );
             

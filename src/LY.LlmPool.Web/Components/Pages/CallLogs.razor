@@ -35,7 +35,7 @@
                         {
                             <div class="record-item @(record.Id == _selectedRecordId ? "selected" : "")"
                                  @onclick="() => SelectRecord(record.Id)">
-                                <div style="display: flex; justify-content: between; align-items: center;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <div>
                                         @if (!record.IsSuccessful)
                                         {

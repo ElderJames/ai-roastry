@@ -219,6 +219,9 @@ public class ActivityTraceService : IDisposable
                          activity.Status == ActivityStatusCode.Error ? "Error" : "Completed";
             node.StatusDescription = activity.StatusDescription;
 
+            // 🎯 重新更新完整的 Tags 字典（Activity 执行过程中可能添加了新的 Tags）
+            node.Tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value?.ToString() ?? string.Empty);
+
             // 🎯 重新提取 Tags（因为 OnActivityStarted 时 Tags 可能为空）
             ExtractKeyInformation(activity, node);
             
