@@ -73,7 +73,7 @@
                                     </Space>
                                 </div>
                                 <div style="margin-top: 2px; font-size: 11px; color: #999;">
-                                    🕐 @conv.LastRequestTime.ToString("HH:mm:ss")
+                                    🕐 @conv.LastRequestTime.ToLocalTime().ToString("HH:mm:ss")
                                 </div>
                                 @if (conv.ErrorCount > 0)
                                 {
