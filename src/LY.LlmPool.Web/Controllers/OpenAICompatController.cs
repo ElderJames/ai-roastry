@@ -254,8 +254,8 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity?.SetTag("error.type", "ModelNotFound");
 
                     Response.StatusCode = (int)HttpStatusCode.BadRequest;
-                    _logger.LogError("LoadBalancerService 未能找到模型 '{ModelName}' 的可用配置", chatRequest.Model);
-                    var err = new { error = new { message = "未找到可用模型或 API Key 无效。" } };
+                    _logger.LogError("LoadBalancerService 未能找到 '{ModelName}' 的可用配置", chatRequest.Model);
+                    var err = new { error = new { message = $"未能找到 '{chatRequest.Model}' 的可用配置" } };
                     await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
                     return;
                 }
@@ -359,7 +359,7 @@ namespace LY.LlmPool.Web.Controllers
 
                     Response.StatusCode = (int)HttpStatusCode.BadRequest;
                     _logger.LogError("No available model found or invalid API key");
-                    var err = new { error = new { message = "未找到可用模型或 API Key 无效。" } };
+                    var err = new { error = new { message = $"未找到 '{chatRequest.Model}' 的可用配置。" } };
                     await Response.WriteAsync(JsonSerializer.Serialize(err, _jsonSerializerOptions));
                     return;
                 }
@@ -1028,9 +1028,12 @@ namespace LY.LlmPool.Web.Controllers
             // 转换消息
             var aiMessages = messages;
 
-            // 如果有系统提示，插入到开头
+            // 🎯 如果有系统提示，先移除已有的 system 消息（避免重复），然后插入新的
             if (!string.IsNullOrEmpty(systemPrompt))
             {
+                // 移除已有的 system 消息
+                aiMessages = aiMessages.Where(m => m.Role != ChatRole.System).ToList();
+                // 插入替换后的 system prompt
                 aiMessages.Insert(0, new AIChatMessage(ChatRole.System, systemPrompt));
             }
 
@@ -1062,11 +1065,12 @@ namespace LY.LlmPool.Web.Controllers
                 _logger.LogInformation("应用 Prompt 模型参数到 ChatOptions");
             }
 
-            // 设置响应头
+            // 设置 SSE 响应头
             Response.StatusCode = (int)HttpStatusCode.OK;
-            Response.ContentType = "text/event-stream";
-            Response.Headers.Append("Cache-Control", "no-cache");
-            Response.Headers.Append("Connection", "keep-alive");
+            Response.ContentType = "text/event-stream; charset=utf-8";
+            Response.Headers["Cache-Control"] = "no-cache";
+            Response.Headers["Connection"] = "keep-alive";
+            Response.Headers["X-Accel-Buffering"] = "no";  // 禁用 Nginx 缓冲
             
             // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
             var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
@@ -1102,37 +1106,37 @@ namespace LY.LlmPool.Web.Controllers
                     {
                         fullContent.Append(text);
 
-                    // 构建 SSE 格式的响应
-                    var delta = firstChunk 
-                        ? (object)new { role = "assistant", content = text }
-                        : new { content = text };
+                        // 构建 SSE 格式的响应
+                        var delta = firstChunk 
+                            ? (object)new { role = "assistant", content = text }
+                            : new { content = text };
 
-                    var chunk = new
-                    {
-                        id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                        Object = "chat.completion.chunk",
-                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                        model = modelName,
-                        choices = new[]
+                        var chunk = new
                         {
-                            new
+                            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                            Object = "chat.completion.chunk",
+                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            model = modelName,
+                            choices = new[]
                             {
-                                index = 0,
-                                delta = delta,
-                                finish_reason = (string?)null
+                                new
+                                {
+                                    index = 0,
+                                    delta = delta,
+                                    finish_reason = (string?)null
+                                }
                             }
-                        }
-                    };
+                        };
 
-                    var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
-                    await Response.WriteAsync($"data: {json}\n\n");
-                    await Response.Body.FlushAsync(cancellationToken);
+                        var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
+                        await Response.WriteAsync($"data: {json}\n\n");
+                        await Response.Body.FlushAsync(cancellationToken);
 
-                    firstChunk = false;
-                }
+                        firstChunk = false;
+                    }
 
-                // 处理工具调用 (FunctionCallContent)
-                if (update.Contents != null)
+                    // 处理工具调用 (FunctionCallContent)
+                    if (update.Contents != null)
                 {
                     foreach (var content in update.Contents)
                     {

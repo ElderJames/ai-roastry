@@ -40,6 +40,9 @@ public class LoadBalancerCacheWarmupService : IHostedService
 
         try
         {
+            // 🎯 设置 LoadBalancerService 的反向引用（避免循环依赖）
+            _loadBalancer.SetWarmupService(this);
+            
             // 延迟 2 秒确保数据库连接就绪
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
 

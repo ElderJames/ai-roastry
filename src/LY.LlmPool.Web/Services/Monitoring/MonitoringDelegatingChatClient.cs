@@ -145,7 +145,10 @@ namespace LY.LlmPool.Web.Services.Monitoring
                         _monitor.RequestId, update.Text);
                 }
 
-                // 处理内容项（工具调用和工具结果）
+                // 先 yield return update (立即返回给调用者,不阻塞流式输出)
+                yield return update;
+
+                // 然后处理持久化操作 (在后台异步执行,不阻塞下一个 update)
                 if (update.Contents != null)
                 {
                     foreach (var content in update.Contents)
@@ -234,8 +237,6 @@ namespace LY.LlmPool.Web.Services.Monitoring
                         }
                     }
                 }
-
-                yield return update;
             }
 
             // 刷新最后的文本缓冲区

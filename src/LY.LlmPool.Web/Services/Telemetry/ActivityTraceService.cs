@@ -240,18 +240,6 @@ public class ActivityTraceService : IDisposable
             // 🎯 触发事件通知
             ActivityStopped?.Invoke(this, node);
 
-            var durationMs = node.Duration.TotalMilliseconds;
-            var statusIcon = node.Status == "Success" ? "✅" : 
-                           node.Status == "Error" ? "❌" : "⏹️";
-
-            _logger.LogInformation(
-                "{StatusIcon} Activity Stopped: {OperationName} | Duration: {DurationMs}ms | Status: {Status}",
-                statusIcon,
-                node.OperationName,
-                durationMs.ToString("F2"),
-                node.Status
-            );
-
             // 记录 Token 使用情况
             if (node.InputTokens > 0 || node.OutputTokens > 0)
             {
@@ -383,12 +371,6 @@ public class ActivityTraceService : IDisposable
         
         // 🎯 新增: 从 Activity Events 中提取工具调用信息
         // Microsoft.Extensions.AI 使用 Events 记录 tool_call 和 tool_result
-        _logger.LogInformation(
-            "🔍 [ExtractEvents] Activity: {OperationName} | Events: {EventCount}",
-            activity.OperationName,
-            activity.Events.Count()
-        );
-        
         foreach (var activityEvent in activity.Events)
         {
             _logger.LogInformation(
@@ -463,13 +445,6 @@ public class ActivityTraceService : IDisposable
             }
         }
 
-        // 🔍 调试：记录所有 Tags
-        _logger.LogInformation(
-            "🔍 [ExtractTags] Activity: {OperationName} | Tags: {Tags}",
-            node.OperationName,
-            string.Join(", ", activity.Tags.Select(t => $"{t.Key}={t.Value}"))
-        );
-
         // 从 DisplayName 推断类型并尝试提取 AppName/ToolName
         // 只有在没有从 Tags 中提取到明确类型时才进行推断
         if (!node.IsAppCall && !node.IsToolCall)
@@ -534,13 +509,6 @@ public class ActivityTraceService : IDisposable
     /// </summary>
     private void UpdateFinalInformation(Activity activity, TraceNode node)
     {
-        // 🔍 调试：记录 Activity 停止时的所有 Tags
-        _logger.LogInformation(
-            "🔍 [UpdateFinal] Activity: {OperationName} | Tags: {Tags}",
-            activity.OperationName,
-            string.Join(", ", activity.Tags.Select(t => $"{t.Key}={t.Value}"))
-        );
-        
         foreach (var tag in activity.Tags)
         {
             switch (tag.Key)
@@ -654,22 +622,8 @@ public class ActivityTraceService : IDisposable
     {
         try
         {
-            // 🔍 调试：记录 Activity 中的所有 Events 和 Tags
-            _logger.LogInformation(
-                "🔍 [ExtractMessages] Activity: {ActivityName} | Events: {EventCount} | Tags: {TagCount}",
-                activity.OperationName,
-                activity.Events.Count(),
-                activity.Tags.Count()
-            );
-            
             foreach (var evt in activity.Events)
-            {
-                _logger.LogInformation(
-                    "  📌 Event: {EventName} | Tags: {Tags}",
-                    evt.Name,
-                    string.Join(", ", evt.Tags.Select(t => $"{t.Key}={t.Value}"))
-                );
-                
+            {    
                 // 提取输入消息（gen_ai.choice 事件通常包含消息）
                 if (evt.Name == "gen_ai.choice" || evt.Name.Contains("message", StringComparison.OrdinalIgnoreCase))
                 {
@@ -697,9 +651,7 @@ public class ActivityTraceService : IDisposable
                             Role = role,
                             Content = content
                         };
-                        
-                        _logger.LogInformation("  ✅ Extracted message: role={Role}, content={Content}", role, content.Substring(0, Math.Min(50, content.Length)));
-                        
+                                     
                         if (role.Equals("assistant", StringComparison.OrdinalIgnoreCase))
                         {
                             // 助手的输出
@@ -716,14 +668,10 @@ public class ActivityTraceService : IDisposable
             
             // 如果从 Events 中没有提取到，尝试从 Tags 中提取
             if (node.InputMessages.Count == 0 && string.IsNullOrEmpty(node.OutputContent))
-            {
-                _logger.LogInformation("  ⚠️ No messages from Events, trying to extract from Tags");
-                
+            {               
                 // 🎯 首先尝试从 gen_ai.prompt 和 gen_ai.completion Tags 提取 (我们自己添加的)
                 if (node.Tags.TryGetValue("gen_ai.prompt", out var promptJson))
-                {
-                    _logger.LogInformation("  📄 Found gen_ai.prompt tag: {Value}", promptJson.Substring(0, Math.Min(100, promptJson.Length)));
-                    
+                {                
                     try
                     {
                         var messages = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(promptJson);
@@ -734,7 +682,6 @@ public class ActivityTraceService : IDisposable
                                 if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
                                 {
                                     node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
-                                    _logger.LogInformation("  ✅ Extracted from gen_ai.prompt: role={Role}, content={Content}", role, content.Substring(0, Math.Min(50, content.Length)));
                                 }
                             }
                         }
@@ -748,14 +695,11 @@ public class ActivityTraceService : IDisposable
                 if (node.Tags.TryGetValue("gen_ai.completion", out var completionText))
                 {
                     node.OutputContent = completionText;
-                    _logger.LogInformation("  ✅ Extracted from gen_ai.completion: {Content}", completionText.Substring(0, Math.Min(50, completionText.Length)));
                 }
                 
                 // 兼容：也尝试旧的 input.messages 格式
                 if (node.InputMessages.Count == 0 && node.Tags.TryGetValue("input.messages", out var inputMsg))
-                {
-                    _logger.LogInformation("  📄 Found input.messages tag: {Value}", inputMsg.Substring(0, Math.Min(100, inputMsg.Length)));
-                    
+                {   
                     // 尝试解析 JSON
                     try
                     {
@@ -767,7 +711,6 @@ public class ActivityTraceService : IDisposable
                                 if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
                                 {
                                     node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
-                                    _logger.LogInformation("  ✅ Extracted from Tag: role={Role}, content={Content}", role, content.Substring(0, Math.Min(50, content.Length)));
                                 }
                             }
                         }
@@ -782,15 +725,8 @@ public class ActivityTraceService : IDisposable
                 if (string.IsNullOrEmpty(node.OutputContent) && node.Tags.TryGetValue("output.content", out var outputContent))
                 {
                     node.OutputContent = outputContent;
-                    _logger.LogInformation("  ✅ Extracted output.content from Tag: {Content}", outputContent.Substring(0, Math.Min(50, outputContent.Length)));
                 }
             }
-            
-            _logger.LogInformation(
-                "  📊 Final: InputMessages={InputCount}, OutputContent={HasOutput}",
-                node.InputMessages.Count,
-                !string.IsNullOrEmpty(node.OutputContent)
-            );
         }
         catch (Exception ex)
         {
@@ -1044,14 +980,6 @@ public class ActivityTraceService : IDisposable
             {
                 _completedTraces.TryDequeue(out _);
             }
-
-            _logger.LogInformation(
-                "📥 External Activity Added: {OperationName} | TraceId: {TraceId} | SpanId: {SpanId} | Source: {Source}",
-                node.OperationName,
-                node.TraceId,
-                node.SpanId,
-                activityDto.Source ?? "external"
-            );
 
             // 🎯 触发事件通知
             ActivityStopped?.Invoke(this, node);

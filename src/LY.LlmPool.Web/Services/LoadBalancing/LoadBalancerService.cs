@@ -15,6 +15,7 @@ public class LoadBalancerService
 {
     private readonly ILogger<LoadBalancerService> _logger;
     private readonly HybridCache _cache;
+    private LoadBalancerCacheWarmupService? _warmupService; // 🎯 延迟注入,避免循环依赖
     
     // 🎯 跟踪每个配置当前的请求数（用于负载均衡）
     private readonly ConcurrentDictionary<string, int> _configRequestCounts = new();
@@ -38,8 +39,17 @@ public class LoadBalancerService
     }
 
     /// <summary>
+    /// 设置缓存预热服务（避免构造函数循环依赖）
+    /// 🎯 由 LoadBalancerCacheWarmupService 在启动时调用
+    /// </summary>
+    internal void SetWarmupService(LoadBalancerCacheWarmupService warmupService)
+    {
+        _warmupService = warmupService;
+    }
+
+    /// <summary>
     /// 解析模型名称并返回配置选择结果
-    /// 🎯 纯粹从缓存读取，不进行数据库查询（缓存由 LoadBalancerCacheWarmupService 预热）
+    /// 🎯 优先从缓存读取，缓存未命中时自动降级到数据库查询
     /// </summary>
     /// <param name="modelName">模型名称（可以是 App 名称、Config 名称、Endpoint 名称或 ID）</param>
     /// <returns>配置选择结果</returns>
@@ -47,9 +57,7 @@ public class LoadBalancerService
     {
         _logger.LogDebug("从缓存解析模型名称: {ModelName}", modelName);
 
-        // 🎯 纯粹从缓存读取
-        // HybridCache 的设计是 "get-or-create"，没有纯读API
-        // 我们使用 factory 返回特殊标记值来表示缓存未命中
+        // 🎯 先尝试从缓存读取
         var cacheKey = $"{CacheKeyPrefix}{modelName}";
         var cacheNotFoundMarker = new ConfigSelectionResult { Success = false, Message = "__CACHE_NOT_FOUND__" };
         
@@ -63,21 +71,40 @@ public class LoadBalancerService
         _logger.LogDebug("🔍 [LoadBalancer] 缓存读取结果: Message={Message}, Success={Success}", 
             result.Message ?? "(null)", result.Success);
 
-        // 如果返回的是标记值，说明缓存未命中
-        if (result.Message == "__CACHE_NOT_FOUND__")
-        {
-            _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，请检查缓存预热是否完成 | CacheKey={CacheKey}", 
-                modelName, cacheKey);
-            return null;
-        }
-
-        if (result?.Success == true)
+        // 如果缓存命中，直接返回
+        if (result.Message != "__CACHE_NOT_FOUND__" && result.Success)
         {
             _logger.LogInformation("✅ 模型 '{ModelName}' 缓存命中: Strategy={Strategy}, Config={ConfigName}",
                 modelName, result.Strategy, result.Config?.Name);
+            return result;
         }
 
-        return result;
+        // 🎯 缓存未命中，如果设置了 WarmupService，则降级到数据库查询
+        if (_warmupService != null)
+        {
+            _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，降级到数据库查询 | CacheKey={CacheKey}", 
+                modelName, cacheKey);
+
+            var dbResult = await _warmupService.ResolveModelNameAsync(modelName);
+            
+            if (dbResult != null && dbResult.Success)
+            {
+                // 查询成功，写入缓存
+                await _cache.SetAsync(cacheKey, dbResult, new HybridCacheEntryOptions { Expiration = CacheExpiration });
+                _logger.LogInformation("✅ 模型 '{ModelName}' 从数据库解析成功并已缓存: Strategy={Strategy}, Config={ConfigName}",
+                    modelName, dbResult.Strategy, dbResult.Config?.Name);
+                return dbResult;
+            }
+            else
+            {
+                _logger.LogError("❌ 模型 '{ModelName}' 在数据库中也未找到", modelName);
+                return null;
+            }
+        }
+
+        // 🎯 WarmupService 未设置（程序启动初期），直接返回缓存未命中
+        _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，WarmupService 未就绪，无法降级查询", modelName);
+        return null;
     }
 
     /// <summary>
