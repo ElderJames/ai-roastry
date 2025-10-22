@@ -51,9 +51,11 @@ public interface IChatClientService
     /// <param name="appName">App 名称（用作 model 参数）</param>
     /// <param name="messages">消息列表</param>
     /// <param name="tools">可选工具列表</param>
+    /// <param name="parameters">可选参数字典（将通过 parameters 字段传递）</param>
     /// <returns>流式更新</returns>
     IAsyncEnumerable<Models.ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(
         string appName,
         List<Microsoft.Extensions.AI.ChatMessage> messages,
-        IEnumerable<AITool>? tools = null);
+        IEnumerable<AITool>? tools = null,
+        Dictionary<string, object>? parameters = null);
 }

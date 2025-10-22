@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Http;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
@@ -14,6 +14,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using AIResponse = Microsoft.Extensions.AI.ChatResponse;
 using ParameterUtils = LY.LlmPool.Web.Components.ChatHelpers.ParameterUtils;
+using LY.LlmPool.Web.Common;
 
 namespace LY.LlmPool.Web.Services;
 
@@ -1322,10 +1323,11 @@ public class ChatClientService : IChatClientService
     public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(
         string appName,
         List<Microsoft.Extensions.AI.ChatMessage> messages,
-        IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null,
+        Dictionary<string, object>? parameters = null)
     {
-        _logger.LogInformation("通过 Controller 发送流式消息，App: {AppName}, 消息数量: {MessageCount}", 
-            appName, messages.Count);
+        _logger.LogInformation("通过 Controller 发送流式消息，App: {AppName}, 消息数量: {MessageCount}, 参数数量: {ParamCount}", 
+            appName, messages.Count, parameters?.Count ?? 0);
 
         // 🔑 使用已注册的 LlmPoolApi HttpClient，它已经配置了正确的 BaseAddress
         // CreateClientWithHttpClient 会优先使用 HttpClient.BaseAddress
@@ -1336,12 +1338,13 @@ public class ChatClientService : IChatClientService
             Model = appName // 使用 App Name 作为 model
         };
 
-        // 使用 ChatClientFactory 创建 IChatClient，指定使用 LlmPoolApi HttpClient
-        // 这样会使用 Program.cs 中配置的本地地址
+        // 🎯 使用 ChatClientFactory 创建 IChatClient，传递 parameters
+        // 这样 ParameterInjectionHandler 会自动将参数注入到请求的 parameters 字段
         var chatClient = _chatClientFactory.CreateClientWithHttpClient(
             localConfig, 
             httpClientName: "LlmPoolApi", 
-            enableFunctionInvocation: true
+            enableFunctionInvocation: true,
+            parameters: parameters // ✅ 传递参数
         );
 
         var chatOptions = new Microsoft.Extensions.AI.ChatOptions();

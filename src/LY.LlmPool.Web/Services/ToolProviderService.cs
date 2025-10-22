@@ -1,4 +1,4 @@
-using LY.LlmPool.Web.Data.Entities;
+﻿using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Models;
 using LY.LlmPool.Web.Models.Tools;
@@ -11,6 +11,7 @@ using Microsoft.Extensions.AI;
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using LY.LlmPool.Web.Services.Aggregation;
 using LY.LlmPool.Web.Services.Telemetry;
+using LY.LlmPool.Web.Common;
 
 namespace LY.LlmPool.Web.Services;
 
@@ -330,7 +331,7 @@ public class ToolProviderService
 
         // 使用 PromptParameterService 提取参数信息(包含描述)并生成 JSON Schema
         var paramInfos = new List<ParameterInfo>();
-        string parameterSchemaJson = JsonSerializer.Serialize(new
+        string parameterSchemaJson = JsonHelper.Serialize(new
         {
             type = "object",
             properties = new { },
@@ -379,12 +380,15 @@ public class ToolProviderService
 
             // 构建消息列表
             var messages = new List<AIChatMessage>();
+            
+            // 🎯 准备参数字典(用于通过 parameters 字段传递)
+            Dictionary<string, object>? toolParameters = null;
 
             // 添加系统提示（来自 Prompt）
             if (toolPrompt != null && !string.IsNullOrWhiteSpace(toolPrompt.Content))
             {
                 // 将 AIFunctionArguments 转换为 Dictionary<string, object>
-                var toolParameters = new Dictionary<string, object>();
+                toolParameters = new Dictionary<string, object>();
                 foreach (var arg in arguments)
                 {
                     if (arg.Value != null)
@@ -393,21 +397,58 @@ public class ToolProviderService
                     }
                 }
                 
-                // 使用 PromptParameterService 替换参数
+                // 🎯 使用 PromptParameterService 替换参数
+                var originalPrompt = toolPrompt.Content;
                 var promptContent = _promptParameterService.ReplaceParameters(
-                    toolPrompt.Content, 
+                    originalPrompt, 
                     toolParameters
                 );
                 
+                _logger.LogInformation(
+                    "🔧 工具 Prompt 参数替换: {ToolName}\n  原始: {Original}\n  替换后: {Replaced}\n  参数数量: {ParamCount}",
+                    app.Name, originalPrompt, promptContent, toolParameters.Count);
+                
                 messages.Add(new AIChatMessage(ChatRole.System, promptContent));
             }
+            else if (arguments.Any())
+            {
+                // 🎯 没有 Prompt 但有参数: 准备参数字典并添加默认系统消息
+                toolParameters = new Dictionary<string, object>();
+                foreach (var arg in arguments)
+                {
+                    if (arg.Value != null)
+                    {
+                        toolParameters[arg.Key] = arg.Value;
+                    }
+                }
+                messages.Add(new AIChatMessage(ChatRole.System, "Execute the requested operation with the provided parameters."));
+                _logger.LogInformation("📝 工具 '{ToolName}' 没有 Prompt,将参数通过 parameters 字段传递: {ParamCount} 个参数", app.Name, toolParameters.Count);
+            }
+            else
+            {
+                // 🎯 既没有 Prompt 也没有参数,添加默认消息
+                messages.Add(new AIChatMessage(ChatRole.System, "Execute tool"));
+                _logger.LogInformation("📝 工具 '{ToolName}' 没有 Prompt 和参数,使用默认消息", app.Name);
+            }
 
-            // 将参数转换为用户消息
-            var userMessage = arguments.Any()
-                ? string.Join(", ", arguments.Select(a => $"{a.Key}: {a.Value}"))
-                : "Execute tool";
-
-            messages.Add(new AIChatMessage(ChatRole.User, userMessage));
+            // 🎯 在调用前,记录正确的消息到 Activity (覆盖可能的旧值)
+            var currentActivity = Activity.Current;
+            if (currentActivity != null && messages.Any())
+            {
+                var inputMessagesJson = JsonHelper.Serialize(
+                    messages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList()
+                );
+                currentActivity.SetTag("gen_ai.prompt", inputMessagesJson);
+                
+                // 🎯 同时记录参数
+                if (toolParameters != null && toolParameters.Any())
+                {
+                    var paramsJson = JsonHelper.Serialize(toolParameters);
+                    currentActivity.SetTag("tool.parameters", paramsJson);
+                }
+                
+                _logger.LogDebug("📝 记录工具调用的输入消息到 Activity: {MessageCount} messages", messages.Count);
+            }
 
             // 🔧 加载 Prompt 关联的工具（支持递归调用和并行执行）
             List<AITool>? nestedTools = null;
@@ -481,10 +522,12 @@ public class ToolProviderService
                 
                 // 🔥 使用新的 SendStreamingMessageViaControllerAsync 方法
                 // 这样会经过 OpenAI Controller，利用 Controller 层的 Activity 追踪
+                // 🎯 通过 parameters 字段传递工具参数(而非 user 消息)
                 var streamingUpdates = chatClientService.SendStreamingMessageViaControllerAsync(
                     app.Name, // 使用 App Name 作为 model 参数
                     messages,
-                    tools: nestedTools
+                    tools: nestedTools,
+                    parameters: toolParameters // 🎯 传递参数字典
                 );
 
                 // 🔥 使用 ConvertToSegmentsStreamAsync 将流式更新转换为 Segments
@@ -655,7 +698,7 @@ public class ToolProviderService
                 }
                 
                 _logger.LogInformation("Calling MCP Tool {ToolName} with arguments: {Args}", 
-                    toolName, System.Text.Json.JsonSerializer.Serialize(mcpArguments));
+                    toolName, JsonHelper.Serialize(mcpArguments));
                 
                 // 🔍 诊断: 检查当前的 Activity Context (MCP SDK 应该从这里读取 traceparent)
                 var currentActivity = Activity.Current;
@@ -711,7 +754,7 @@ public class ToolProviderService
                     {
                         ["mcp.server.id"] = serverId,
                         ["mcp.tool.name"] = toolName,
-                        ["mcp.tool.arguments"] = System.Text.Json.JsonSerializer.Serialize(mcpArguments),
+                        ["mcp.tool.arguments"] = JsonHelper.Serialize(mcpArguments),
                         ["mcp.tool.result"] = parsedResult,
                         ["mcp.result.length"] = parsedResult.Length,
                         ["tool.result"] = parsedResult // 🎯 统一的结果记录，与 App Tool 一致
@@ -728,7 +771,7 @@ public class ToolProviderService
                 {
                     ["mcp.server.id"] = serverId,
                     ["mcp.tool.name"] = toolName,
-                    ["mcp.tool.arguments"] = System.Text.Json.JsonSerializer.Serialize(mcpArguments),
+                    ["mcp.tool.arguments"] = JsonHelper.Serialize(mcpArguments),
                     ["mcp.result.is_null"] = true,
                     ["tool.result"] = nullResultMsg
                 });
@@ -853,22 +896,14 @@ public class ToolProviderService
             
             // Fallback: 返回格式化的 JSON
             _logger.LogDebug("Could not parse MCP result structure for {ToolName}, falling back to JSON", toolName);
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-            });
+            return JsonHelper.Serialize(result);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse MCP result for {ToolName}, returning JSON", toolName);
             
             // 发生任何异常，返回 JSON
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-            });
+            return JsonHelper.Serialize(result);
         }
     }
 }

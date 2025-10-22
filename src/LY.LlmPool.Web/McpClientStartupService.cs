@@ -29,8 +29,8 @@ public class McpClientStartupService : IHostedService
         if (activity != null)
         {
             // 为启动初始化生成一个特殊的 ConversationId
-            var startupConversationId = $"startup-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
-            activity.SetTag(ActivityExtensions.GenAIConversationId, startupConversationId);
+            // var startupConversationId = $"startup-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+            // activity.SetTag(ActivityExtensions.GenAIConversationId, startupConversationId);
             activity.SetTag("mcp.initialization.phase", "startup");
             activity.SetTag("mcp.initialization.timestamp", DateTime.UtcNow.ToString("O"));
         }

@@ -214,14 +214,32 @@
                 {
                     <Row Gutter="16">
                         <AntDesign.Col Span="12">
-                            <Card Title="调用树 (最近20条)" Bordered>
+                            <Card Bordered>
+                                <TitleTemplate>
+                                    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                                        <span>📋 调用树</span>
+                                        <Space Size="@("small")">
+                                            <SpaceItem>
+                                                <Button Size="@ButtonSize.Small" 
+                                                        Type="@ButtonType.Link" 
+                                                        OnClick="ExpandAllCompletedNodes">
+                                                    @(_completedTreeExpandAll ? "收起全部" : "展开全部")
+                                                </Button>
+                                            </SpaceItem>
+                                            <SpaceItem>
+                                                <Tag Color="@("blue")">共 @_completedRoots.Count 条</Tag>
+                                            </SpaceItem>
+                                        </Space>
+                                    </div>
+                                </TitleTemplate>
                                 <Body>
-                                    <Tree TItem="TraceNode"
+                                    <Tree @ref="_completedTreeRef"
+                                          TItem="TraceNode"
                                           DataSource="_completedRoots"
                                           ChildrenExpression="@(node => node.DataItem.Children)"
                                           TitleExpression="@(node => node.DataItem.DisplayName)"
                                           KeyExpression="@(node => node.DataItem.ActivityId)"
-                                          DefaultExpandAll="false"
+                                          DefaultExpandAll="true"
                                           ShowLine
                                           ShowIcon
                                           OnClick="@OnCompletedNodeClick">
@@ -314,6 +332,10 @@
     private TraceNode? _selectedActiveNode;
     private TraceNode? _selectedCompletedNode;
 
+    // 🎯 树组件的引用和展开状态
+    private Tree<TraceNode>? _completedTreeRef;
+    private bool _completedTreeExpandAll = false;
+
     protected override void OnInitialized()
     {
         // 订阅事件
@@ -378,15 +400,19 @@
         {
             // 显示所有会话
             var activeTraces = TraceService.GetActiveTraces();
-            var completedTraces = TraceService.GetCompletedTraces(100);
+            var completedTraces = TraceService.GetCompletedTraces(1000); // 🎯 增加到1000条,不限制在20条
+            
+            // 🎯 过滤:只保留包含 App 调用的 trace (保持调用链完整)
+            var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
+            var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
             
             // 获取活跃的根节点（没有父节点或父节点为空）
-            _activeRoots = BuildTraceTree(activeTraces.ToList())
+            _activeRoots = BuildTraceTree(filteredActiveTraces)
                 .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
                 .ToList();
 
             // 获取已完成的根节点
-            _completedRoots = BuildTraceTree(completedTraces.ToList())
+            _completedRoots = BuildTraceTree(filteredCompletedTraces)
                 .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
                 .ToList();
         }
@@ -470,6 +496,41 @@
         }
     }
 
+    /// <summary>
+    /// 过滤出包含 App 调用相关的 trace,保持调用链完整
+    /// </summary>
+    /// <param name="traces">所有 trace 节点</param>
+    /// <returns>过滤后的 trace 节点列表</returns>
+    private List<TraceNode> FilterAppRelatedTraces(List<TraceNode> traces)
+    {
+        if (!traces.Any()) return new List<TraceNode>();
+
+        // 按 TraceId 分组
+        var traceGroups = traces.GroupBy(t => t.TraceId);
+        var filteredTraces = new List<TraceNode>();
+
+        foreach (var group in traceGroups)
+        {
+            var nodesInTrace = group.ToList();
+            
+            // 🎯 判断这个 trace 是否包含 App 相关的调用
+            // 条件: 包含 IsAppCall=true 或 IsAppTool=true 的节点
+            bool hasAppRelatedCall = nodesInTrace.Any(n => 
+                n.IsAppCall ||      // App 调用
+                n.IsAppTool ||      // App Tool 调用
+                n.IsLlmPoolServer   // LlmPool Server 调用
+            );
+
+            // 如果包含 App 相关调用,则保留整个 trace 的所有节点(保持调用链完整)
+            if (hasAppRelatedCall)
+            {
+                filteredTraces.AddRange(nodesInTrace);
+            }
+        }
+
+        return filteredTraces;
+    }
+
     private void ToggleAutoRefresh()
     {
         _autoRefresh = !_autoRefresh;
@@ -480,6 +541,28 @@
         _activeRoots.Clear();
         _completedRoots.Clear();
         StateHasChanged();
+    }
+
+    /// <summary>
+    /// 展开或收起已完成调用树的所有节点
+    /// </summary>
+    private void ExpandAllCompletedNodes()
+    {
+        if (_completedTreeRef != null)
+        {
+            _completedTreeExpandAll = !_completedTreeExpandAll;
+            
+            if (_completedTreeExpandAll)
+            {
+                // 展开全部
+                _completedTreeRef.ExpandAll();
+            }
+            else
+            {
+                // 收起全部
+                _completedTreeRef.CollapseAll();
+            }
+        }
     }
 
     // 递归渲染追踪节点

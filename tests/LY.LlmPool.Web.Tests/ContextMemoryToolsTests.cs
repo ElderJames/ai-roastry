@@ -173,7 +173,7 @@ public class ContextMemoryToolsTests
             };
         }
 
-        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(string appName, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(string appName, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null, Dictionary<string, object>? parameters = null)
         {
             await Task.CompletedTask;
             yield return new ChatStreamingUpdate 

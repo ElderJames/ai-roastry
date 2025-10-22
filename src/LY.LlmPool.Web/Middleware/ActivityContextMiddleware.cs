@@ -23,6 +23,12 @@ public class ActivityContextMiddleware
     // 使用 AsyncLocal 存储当前请求的根 Activity
     private static readonly AsyncLocal<Activity?> _requestActivity = new();
 
+    private static readonly JsonSerializerOptions _jsonSerializerOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     public ActivityContextMiddleware(
         RequestDelegate next, 
         ILogger<ActivityContextMiddleware> logger,
@@ -332,7 +338,7 @@ public class ActivityContextMiddleware
                     messagesSummary.Add(new { role, content });
                 }
 
-                var messagesSummaryJson = JsonSerializer.Serialize(messagesSummary);
+                var messagesSummaryJson = JsonSerializer.Serialize(messagesSummary, _jsonSerializerOptions);
                 activity.SetTag("http.request.body.messages", messagesSummaryJson);
 
                 _logger.LogDebug("� 记录请求信息到 Activity: {Count} messages", messageCount);

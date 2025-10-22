@@ -8,6 +8,7 @@ using System.Text.Unicode;
 using System.Diagnostics;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Models.OpenAI;
 using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.Agents;
 using LY.LlmPool.Web.Services.Tools;
@@ -100,18 +101,18 @@ namespace LY.LlmPool.Web.Controllers
             // 🎯 从 HTTP Headers 中提取父 Activity Context（如果存在）
             ActivityContext parentContext = default;
             bool hasTraceparent = false;
-            
+
             if (Request.Headers.TryGetValue("traceparent", out var traceparentValue))
             {
                 hasTraceparent = true;
                 var traceparent = traceparentValue.ToString();
-                
+
                 _logger.LogInformation("📨 收到 traceparent header: {Traceparent}", traceparent);
-                
+
                 if (ActivityContext.TryParse(traceparent, null, out var parsedContext))
                 {
                     parentContext = parsedContext;
-                    _logger.LogInformation("✅ 成功解析 traceparent - TraceId={TraceId}, SpanId={SpanId}", 
+                    _logger.LogInformation("✅ 成功解析 traceparent - TraceId={TraceId}, SpanId={SpanId}",
                         parsedContext.TraceId, parsedContext.SpanId);
                 }
                 else
@@ -138,20 +139,20 @@ namespace LY.LlmPool.Web.Controllers
                 requestActivity.SetTag("http.method", "POST");
                 requestActivity.SetTag("http.has_traceparent", hasTraceparent);
                 requestActivity.SetTag("llmpool.is_root", parentContext == default);  // 🎯 标记是否为根节点
-                
+
                 _logger.LogInformation("🌐 LlmPool Server Activity 已启动: {OperationName}", requestActivity.OperationName);
                 _logger.LogInformation("   TraceId: {TraceId}", requestActivity.TraceId);
                 _logger.LogInformation("   SpanId: {SpanId}", requestActivity.SpanId);
-                _logger.LogInformation("   ParentSpanId: {ParentSpanId} (是否为根: {IsRoot})", 
+                _logger.LogInformation("   ParentSpanId: {ParentSpanId} (是否为根: {IsRoot})",
                     requestActivity.ParentSpanId, parentContext == default);
-                _logger.LogInformation("   Activity.Current == requestActivity: {IsCurrent}", 
+                _logger.LogInformation("   Activity.Current == requestActivity: {IsCurrent}",
                     Activity.Current == requestActivity);
             }
             else
             {
                 _logger.LogWarning("❌ 未能创建 Server Request Activity - ActivitySource 可能未启用");
             }
-            
+
             EndpointCallRecord? callRecord = null;
             var requestStartTime = DateTime.UtcNow;
             object? requestData = null;
@@ -204,6 +205,21 @@ namespace LY.LlmPool.Web.Controllers
                 try
                 {
                     chatRequest = JsonSerializer.Deserialize<ChatRequest>(requestBody ?? "{}", _jsonSerializerOptions) ?? throw new InvalidOperationException("Invalid chat request");
+                    
+                    // 🎯 日志记录解析后的 Parameters
+                    if (chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
+                    {
+                        _logger.LogInformation("📦 解析到的 Parameters 数量: {Count}", chatRequest.Parameters.Count);
+                        foreach (var kvp in chatRequest.Parameters)
+                        {
+                            _logger.LogInformation("  - {Key} = {Value} (Type: {Type})", 
+                                kvp.Key, kvp.Value, kvp.Value?.GetType().Name ?? "null");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ 未解析到任何 Parameters");
+                    }
                 }
                 catch (JsonException jsonEx)
                 {
@@ -288,7 +304,7 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity?.SetTag("app.type", app.AppType);
                     requestActivity?.SetTag("app.id", app.Id);
                     requestActivity?.SetTag("routing", "agent_group");
-                    
+
                     await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
                     return;
                 }
@@ -315,7 +331,7 @@ namespace LY.LlmPool.Web.Controllers
                         if (prompt != null)
                         {
                             promptContent = prompt.Content;
-                            
+
                             // 解析 Prompt 的 ModelParameters
                             if (!string.IsNullOrWhiteSpace(prompt.ModelParameters))
                             {
@@ -324,7 +340,7 @@ namespace LY.LlmPool.Web.Controllers
                             }
                         }
                     }
-                    
+
                     // 🔧 获取 App 关联的所有工具（包括 App Tool 和 MCP Tool）
                     _logger.LogInformation("加载 App {AppName} 的工具...", app.Name);
                     promptTools = await _toolProviderService.GetToolsForAppAsync(app);
@@ -396,45 +412,51 @@ namespace LY.LlmPool.Web.Controllers
                 }
 
                 // 参数替换（仅当存在应用 Prompt）
-                if (!string.IsNullOrEmpty(promptContent) && app != null && chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
+                if (!string.IsNullOrEmpty(promptContent) && app != null)
                 {
-                    var missingParams = _promptParameterService.ValidateParameters(promptContent, chatRequest.Parameters);
-                    if (missingParams.Count > 0)
+                    // 🎯 只有当参数不为空时才验证必填参数
+                    if (chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
                     {
-                        var errorMsg = $"Missing required parameters: {string.Join(", ", missingParams)}";
-
-                        if (executionRecord != null)
+                        var missingParams = _promptParameterService.ValidateParameters(promptContent, chatRequest.Parameters);
+                        if (missingParams.Count > 0)
                         {
-                            await _persistenceService.UpdateExecutionRecordErrorAsync(
-                                executionRecord.Id,
-                                errorMsg);
-                        }
+                            var errorMsg = $"Missing required parameters: {string.Join(", ", missingParams)}";
 
-                        if (callRecord != null)
-                        {
-                            callRecord.IsSuccessful = false;
-                            callRecord.ErrorMessage = errorMsg;
-                            await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                            if (executionRecord != null)
+                            {
+                                await _persistenceService.UpdateExecutionRecordErrorAsync(
+                                    executionRecord.Id,
+                                    errorMsg);
+                            }
+
+                            if (callRecord != null)
+                            {
+                                callRecord.IsSuccessful = false;
+                                callRecord.ErrorMessage = errorMsg;
+                                await _llmPoolService.UpdateCallRecordAsync(callRecord);
+                            }
+                            await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
+                            return;
                         }
-                        await WriteAssistantMessageAsync(chatRequest.Model, $"缺少必要参数: {string.Join(", ", missingParams)}");
-                        return;
                     }
 
+                    // 🎯 无论是否传参数,都执行替换(空参数会将占位符替换为空字符串)
                     var originalPromptContent = promptContent;
                     promptContent = _promptParameterService.ReplaceParameters(promptContent, chatRequest.Parameters);
-                    _logger.LogInformation("参数替换完成 - 原始长度: {OriginalLength}, 替换后长度: {NewLength}, 参数数量: {ParamCount}", originalPromptContent.Length, promptContent.Length, chatRequest.Parameters.Count);
+                    _logger.LogInformation("参数替换完成 - 原始长度: {OriginalLength}, 替换后长度: {NewLength}, 参数数量: {ParamCount}", 
+                        originalPromptContent.Length, promptContent.Length, chatRequest.Parameters?.Count ?? 0);
                 }
 
                 // 使用 Microsoft.Extensions.AI 处理请求
                 // 🎯 创建 App 执行 Activity（如果有 App）
-                using var appActivity = app != null 
+                using var appActivity = app != null
                     ? ActivityExtensions.StartAppExecutionActivity(
                         appName: app.Name,
                         appType: app.AppType,
                         modelId: actualModelName
                       )
                     : null;
-                
+
                 if (appActivity != null)
                 {
                     appActivity.SetTag("app.id", app!.Id);
@@ -447,15 +469,15 @@ namespace LY.LlmPool.Web.Controllers
                     {
                         appActivity.SetTag("app.tools_count", promptTools.Count);
                     }
-                    
+
                     _logger.LogInformation("📱 App Activity 已启动: {AppName}, TraceId={TraceId}, SpanId={SpanId}",
                         app.Name, appActivity.TraceId, appActivity.SpanId);
                 }
-                
+
                 try
                 {
                     var convertedMessages = ConvertToAIChatMessages(chatRequest.Messages);
-                    
+
                     if (chatRequest.Stream == true)
                     {
                         // 流式响应
@@ -490,10 +512,10 @@ namespace LY.LlmPool.Web.Controllers
                             var lastMessage = aiResponse.Messages.LastOrDefault();
                             var responseContent = lastMessage?.Text ?? string.Empty;
 
-                            reqActivity.SetTag("response.content", responseContent);  
+                            reqActivity.SetTag("response.content", responseContent);
                         }
                     }
-                    
+
                     // 🎯 记录 App 执行成功
                     if (appActivity != null)
                     {
@@ -507,7 +529,7 @@ namespace LY.LlmPool.Web.Controllers
                         callRecord.IsSuccessful = true;
                         callRecord.ModelResponseEndedAt = DateTime.UtcNow;
                         await _llmPoolService.UpdateCallRecordAsync(callRecord);
-                        
+
                         await _callRecordService.FinalizeAsync(
                             callRecord,
                             selectionStrategy,
@@ -522,7 +544,7 @@ namespace LY.LlmPool.Web.Controllers
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "使用 Extensions.AI 处理请求时出错");
-                    
+
                     // 🎯 记录 App 执行失败
                     if (appActivity != null)
                     {
@@ -531,7 +553,7 @@ namespace LY.LlmPool.Web.Controllers
                         appActivity.AddTag("error.message", ex.Message);
                         _logger.LogError("❌ App 执行失败: {AppName}, Error: {ErrorMessage}", app!.Name, ex.Message);
                     }
-                    
+
 
                     if (executionRecord != null)
                     {
@@ -578,7 +600,7 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     await _callRecordService.MarkErrorAsync(callRecord, ex.Message);
                 }
-                
+
                 // 🎯 记录异常状态
                 requestActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 requestActivity?.SetTag("error.type", ex.GetType().Name);
@@ -594,7 +616,7 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     requestActivity.SetStatus(ActivityStatusCode.Ok);
                 }
-                
+
                 // 🎯 使用 LoadBalancerService 释放配置（仅在需要时）
                 if (shouldReleaseConfig && !string.IsNullOrEmpty(config?.Id))
                 {
@@ -650,7 +672,7 @@ namespace LY.LlmPool.Web.Controllers
             if (requestActivity != null)
             {
                 requestActivity.SetTag("response.content", message);
-            } 
+            }
             // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
             var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
             if (!string.IsNullOrEmpty(conversationId))
@@ -704,7 +726,7 @@ namespace LY.LlmPool.Web.Controllers
                         Response.Headers.Append("X-Conversation-Id", conversationId);
                         _logger.LogDebug("📤 响应 Header (Stream): X-Conversation-Id={ConversationId}", conversationId);
                     }
-                    
+
                     Response.StatusCode = (int)HttpStatusCode.OK;
                     Response.ContentType = "text/event-stream";
                     Response.Headers.Append("Cache-Control", "no-cache");
@@ -746,7 +768,7 @@ namespace LY.LlmPool.Web.Controllers
                     // 🎯 记录 AgentGroup 流式响应数据到 requestActivity
                     if (reqActivity != null && !string.IsNullOrEmpty(result))
                     {
-                        reqActivity.SetTag("response.content", result); 
+                        reqActivity.SetTag("response.content", result);
                     }
 
                     // 在将结束标记写回客户端之前，先尝试更新调用记录，避免在写入完成后宿主可能已释放请求作用域导致的 ObjectDisposedException
@@ -773,6 +795,9 @@ namespace LY.LlmPool.Web.Controllers
                     {
                         await Response.WriteAsync("data: [DONE]\n\n");
                         await Response.Body.FlushAsync();
+
+                        // 🎯 显式完成响应,确保 SSE 连接正确关闭
+                        await Response.CompleteAsync();
                     }
                     catch { }
 
@@ -785,7 +810,7 @@ namespace LY.LlmPool.Web.Controllers
                 // 🎯 记录 AgentGroup 非流式响应数据到 requestActivity
                 if (reqActivity != null && !string.IsNullOrEmpty(nonStreamResult))
                 {
-                    reqActivity.SetTag("response.content", nonStreamResult); 
+                    reqActivity.SetTag("response.content", nonStreamResult);
                 }
 
                 // 记录响应时间（简化处理）
@@ -855,7 +880,7 @@ namespace LY.LlmPool.Web.Controllers
         private List<AIChatMessage> ConvertToAIChatMessages(List<AIChatMessage> messages)
         {
             var result = new List<AIChatMessage>();
-            
+
             foreach (var msg in messages)
             {
                 // msg.Role 已经是 ChatRole 类型，直接使用
@@ -1016,13 +1041,13 @@ namespace LY.LlmPool.Web.Controllers
             // 🎯 不再手动创建 llmpool.external_model Activity
             // Microsoft.Extensions.AI 的 UseOpenTelemetry() 已经创建了 "chat {model}" Activity
             // 并且会自动创建工具调用的 "execute_tool {toolName}" Activity 作为其子级
-            
+
             _logger.LogInformation("📡 开始非流式 AI 调用: Model={Model}", config.Model);
 
             try
             {
                 var response = await chatClient.GetResponseAsync(aiMessages, options, cancellationToken);
-                
+
                 // 🎯 记录输出内容到 Activity (用于追踪)
                 if (currentActivity != null)
                 {
@@ -1034,12 +1059,12 @@ namespace LY.LlmPool.Web.Controllers
                         _logger.LogDebug("📝 记录输出内容到 Activity: {Length} chars", outputText.Length);
                     }
                 }
-                
-                _logger.LogInformation("✅ 非流式 AI 调用完成: Model={ModelId}, Tokens={InputTokens}+{OutputTokens}", 
+
+                _logger.LogInformation("✅ 非流式 AI 调用完成: Model={ModelId}, Tokens={InputTokens}+{OutputTokens}",
                     response.ModelId,
                     response.Usage?.InputTokenCount ?? 0,
                     response.Usage?.OutputTokenCount ?? 0);
-                
+
                 return response;
             }
             catch (Exception ex)
@@ -1134,7 +1159,7 @@ namespace LY.LlmPool.Web.Controllers
             Response.Headers["Cache-Control"] = "no-cache";
             Response.Headers["Connection"] = "keep-alive";
             Response.Headers["X-Accel-Buffering"] = "no";  // 禁用 Nginx 缓冲
-            
+
             // 🎯 从当前 Activity 中获取 ConversationId 并添加到响应 header
             var conversationId = Activity.Current?.GetTagItem(ActivityExtensions.GenAIConversationId)?.ToString();
             if (!string.IsNullOrEmpty(conversationId))
@@ -1146,16 +1171,16 @@ namespace LY.LlmPool.Web.Controllers
             // 🎯 不再手动创建 llmpool.external_model Activity
             // Microsoft.Extensions.AI 的 UseOpenTelemetry() 已经创建了 "chat {model}" Activity
             // 并且会自动创建工具调用的 "execute_tool {toolName}" Activity 作为其子级
-            
+
             _logger.LogInformation("📡 开始流式 AI 调用: Model={Model}", config.Model);
 
             // 流式调用 AI
             var firstChunk = true;
             var fullContent = new StringBuilder();
-            
+
             // 🎯 AOP 优化: ActivityCaptureAttribute 已在 Action 执行前自动保存 Activity
             // 无需在 foreach 中手动捕获
-            
+
             try
             {
                 await foreach (var update in chatClient.GetStreamingResponseAsync(aiMessages, options, cancellationToken))
@@ -1169,30 +1194,30 @@ namespace LY.LlmPool.Web.Controllers
                     {
                         fullContent.Append(text);
 
-                        // 构建 SSE 格式的响应
-                        var delta = firstChunk 
-                            ? (object)new { role = "assistant", content = text }
-                            : new { content = text };
-
-                        var chunk = new
+                        // 🎯 使用强类型 OpenAI DTO
+                        var chunk = new ChatCompletionChunk
                         {
-                            id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                            Id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
                             Object = "chat.completion.chunk",
-                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                            model = modelName,
-                            choices = new[]
+                            Created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            Model = modelName ?? "unknown",
+                            Choices = new List<ChatCompletionChunkChoice>
                             {
-                                new
+                                new ChatCompletionChunkChoice
                                 {
-                                    index = 0,
-                                    delta = delta,
-                                    finish_reason = (string?)null
+                                    Index = 0,
+                                    Delta = new ChatCompletionChunkDelta
+                                    {
+                                        Role = firstChunk ? "assistant" : null,
+                                        Content = text
+                                    },
+                                    FinishReason = null
                                 }
                             }
                         };
 
                         var json = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
-                        await Response.WriteAsync($"data: {json}\n\n");
+                        await Response.WriteAsync($"data: {json}\n\n", cancellationToken: cancellationToken);
                         await Response.Body.FlushAsync(cancellationToken);
 
                         firstChunk = false;
@@ -1200,173 +1225,119 @@ namespace LY.LlmPool.Web.Controllers
 
                     // 处理工具调用 (FunctionCallContent)
                     if (update.Contents != null)
-                {
-                    foreach (var content in update.Contents)
                     {
-                        if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
+                        foreach (var content in update.Contents)
                         {
-                            // 🎯 AOP 优化: ActivityCaptureAttribute 已自动保存 Activity.Current
-                            // 无需手动检测和保存,直接处理 FunctionCall
-                            
-                            var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
-                            
-                            // 序列化工具参数
-                            string argumentsJson;
-                            if (functionCall.Arguments != null && functionCall.Arguments.Count > 0)
+                            if (content is Microsoft.Extensions.AI.FunctionCallContent functionCall)
                             {
-                                argumentsJson = JsonSerializer.Serialize(functionCall.Arguments, _jsonSerializerOptions);
-                            }
-                            else
-                            {
-                                argumentsJson = "{}";
-                            }
+                                // 🎯 AOP 优化: ActivityCaptureAttribute 已自动保存 Activity.Current
+                                // 无需手动检测和保存,直接处理 FunctionCall
 
-                            // 构建 OpenAI 格式的 tool_calls 更新
-                            var toolCallDelta = firstChunk
-                                ? (object)new
+                                var callId = functionCall.CallId ?? $"call_{Guid.NewGuid():N}";
+
+                                // 序列化工具参数
+                                string argumentsJson;
+                                if (functionCall.Arguments != null && functionCall.Arguments.Count > 0)
                                 {
-                                    role = "assistant",
-                                    tool_calls = new[]
-                                    {
-                                        new
-                                        {
-                                            index = 0,
-                                            id = callId,
-                                            type = "function",
-                                            function = new
-                                            {
-                                                name = functionCall.Name,
-                                                arguments = argumentsJson
-                                            }
-                                        }
-                                    }
+                                    argumentsJson = JsonSerializer.Serialize(functionCall.Arguments, _jsonSerializerOptions);
                                 }
-                                : new
+                                else
                                 {
-                                    tool_calls = new[]
+                                    argumentsJson = "{}";
+                                }
+
+                                // 🎯 使用强类型 OpenAI DTO 构建工具调用
+                                var chunk = new ChatCompletionChunk
+                                {
+                                    Id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                                    Object = "chat.completion.chunk",
+                                    Created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                    Model = modelName ?? "unknown",
+                                    Choices = new List<ChatCompletionChunkChoice>
                                     {
-                                        new
+                                        new ChatCompletionChunkChoice
                                         {
-                                            index = 0,
-                                            id = callId,
-                                            type = "function",
-                                            function = new
+                                            Index = 0,
+                                            Delta = new ChatCompletionChunkDelta
                                             {
-                                                name = functionCall.Name,
-                                                arguments = argumentsJson
-                                            }
+                                                Role = firstChunk ? "assistant" : null,
+                                                ToolCalls = new List<ChatCompletionChunkToolCall>
+                                                {
+                                                    new ChatCompletionChunkToolCall
+                                                    {
+                                                        Index = 0,
+                                                        Id = callId,
+                                                        Type = "function",
+                                                        Function = new ChatCompletionChunkToolCallFunction
+                                                        {
+                                                            Name = functionCall.Name,
+                                                            Arguments = argumentsJson
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            FinishReason = null
                                         }
                                     }
                                 };
 
-                            var toolCallChunk = new
-                            {
-                                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                                Object = "chat.completion.chunk",
-                                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                                model = modelName,
-                                choices = new[]
-                                {
-                                    new
-                                    {
-                                        index = 0,
-                                        delta = toolCallDelta,
-                                        finish_reason = (string?)null
-                                    }
-                                }
-                            };
+                                var toolCallJson = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
+                                await Response.WriteAsync($"data: {toolCallJson}\n\n");
+                                await Response.Body.FlushAsync(cancellationToken);
 
-                            var toolCallJson = JsonSerializer.Serialize(toolCallChunk, _jsonSerializerOptions);
-                            await Response.WriteAsync($"data: {toolCallJson}\n\n");
-                            await Response.Body.FlushAsync(cancellationToken);
-
-                            _logger.LogInformation("返回工具调用 SSE 更新: {ToolName}, CallId: {CallId}", functionCall.Name, callId);
-                            firstChunk = false;
-                        }
-                        // 处理工具结果 (FunctionResultContent)
-                        else if (content is Microsoft.Extensions.AI.FunctionResultContent functionResult)
-                        {
-                            var callId = functionResult.CallId ?? string.Empty;
-                            var result = functionResult.Result?.ToString() ?? string.Empty;
-                            var isSuccess = functionResult.Exception == null;
-                            var errorMessage = functionResult.Exception?.Message;
-
-                            // 构建工具结果更新（使用 content 字段传递结果）
-                            var resultDelta = new
-                            {
-                                content = isSuccess 
-                                    ? $"\n[Tool Result: {callId}]\n{result}\n" 
-                                    : $"\n[Tool Error: {callId}]\n{errorMessage}\n"
-                            };
-
-                            var resultChunk = new
-                            {
-                                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                                Object = "chat.completion.chunk",
-                                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                                model = modelName,
-                                choices = new[]
-                                {
-                                    new
-                                    {
-                                        index = 0,
-                                        delta = resultDelta,
-                                        finish_reason = (string?)null
-                                    }
-                                }
-                            };
-
-                            var resultJson = JsonSerializer.Serialize(resultChunk, _jsonSerializerOptions);
-                            await Response.WriteAsync($"data: {resultJson}\n\n");
-                            await Response.Body.FlushAsync(cancellationToken);
-
-                            _logger.LogInformation("返回工具结果 SSE 更新: CallId: {CallId}, Success: {Success}", callId, isSuccess);
+                                _logger.LogInformation("📤 返回工具调用 SSE 更新: {ToolName}, CallId: {CallId}", functionCall.Name, callId);
+                                firstChunk = false;
+                            }
+                            // ❌ 移除工具结果的流式返回 - OpenAI 不在流式响应中返回工具结果
+                            // FunctionResultContent 由 FunctionInvokingChatClient 内部处理,不应该出现在流式输出中
                         }
                     }
                 }
-            }
 
-            // 🎯 记录输出内容到 Activity (用于追踪)
-            var fullContentText = fullContent.ToString();
-            if (currentActivity != null && !string.IsNullOrEmpty(fullContentText))
-            {
-                currentActivity.SetTag("gen_ai.completion", fullContentText);
-                _logger.LogDebug("📝 记录输出内容到 Activity (Streaming): {Length} chars", fullContentText.Length);
-            }
-
-            // 🎯 记录流式响应数据到 requestActivity
-            var requestActivity = GetRequestActivity();
-            if (requestActivity != null && !string.IsNullOrEmpty(fullContentText))
-            {
-                requestActivity.SetTag("response.content", fullContentText); 
-            }
-
-            // 发送结束标记
-            var finalChunk = new
-            {
-                id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
-                Object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = modelName,
-                choices = new[]
+                // 🎯 记录输出内容到 Activity (用于追踪)
+                var fullContentText = fullContent.ToString();
+                if (currentActivity != null && !string.IsNullOrEmpty(fullContentText))
                 {
-                    new
+                    currentActivity.SetTag("gen_ai.completion", fullContentText);
+                    _logger.LogDebug("📝 记录输出内容到 Activity (Streaming): {Length} chars", fullContentText.Length);
+                }
+
+                // 🎯 记录流式响应数据到 requestActivity
+                var requestActivity = GetRequestActivity();
+                if (requestActivity != null && !string.IsNullOrEmpty(fullContentText))
+                {
+                    requestActivity.SetTag("response.content", fullContentText);
+                }
+
+                // 🎯 使用强类型发送结束标记
+                var finalChunk = new ChatCompletionChunk
+                {
+                    Id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                    Object = "chat.completion.chunk",
+                    Created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Model = modelName ?? "unknown",
+                    Choices = new List<ChatCompletionChunkChoice>
+                {
+                    new ChatCompletionChunkChoice
                     {
-                        index = 0,
-                        delta = new { },
-                        finish_reason = "stop"
+                        Index = 0,
+                        Delta = new ChatCompletionChunkDelta(),
+                        FinishReason = "stop"
                     }
                 }
-            };
+                };
 
-            var finalJson = JsonSerializer.Serialize(finalChunk, _jsonSerializerOptions);
-            await Response.WriteAsync($"data: {finalJson}\n\n");
-            await Response.WriteAsync("data: [DONE]\n\n");
-            await Response.Body.FlushAsync(cancellationToken);
-            
-            // ✅ 完成状态
-            // OpenTelemetryChatClient 已经自动记录了所有必要的信息
-            _logger.LogInformation("✅ 流式 AI 调用完成,总字符数: {Length}", fullContent.Length);
+                var finalJson = JsonSerializer.Serialize(finalChunk, _jsonSerializerOptions);
+                await Response.WriteAsync($"data: {finalJson}\n\n");
+                await Response.WriteAsync("data: [DONE]\n\n");
+                await Response.Body.FlushAsync(cancellationToken);
+
+                // 🎯 显式完成响应,确保 SSE 连接正确关闭
+                await Response.CompleteAsync();
+
+                // ✅ 完成状态
+                // OpenTelemetryChatClient 已经自动记录了所有必要的信息
+                _logger.LogInformation("✅ 流式 AI 调用完成,总字符数: {Length}", fullContent.Length);
             }
             catch (Exception ex)
             {
@@ -1382,8 +1353,24 @@ namespace LY.LlmPool.Web.Controllers
         {
             // ChatResponse.Messages 是完整的对话历史，最后一条是 AI 的回复
             var lastMessage = completion.Messages.LastOrDefault();
-            var content = lastMessage?.Text ?? string.Empty;
-            var role = lastMessage?.Role.Value.ToLowerInvariant() ?? "assistant";
+            if (lastMessage == null)
+            {
+                await Response.WriteAsync(JsonSerializer.Serialize(new
+                {
+                    id = "chatcmpl-" + Guid.NewGuid().ToString("N"),
+                    Object = "chat.completion",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = modelName,
+                    choices = Array.Empty<object>(),
+                    usage = new { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 }
+                }, _jsonSerializerOptions));
+                return;
+            }
+
+            var role = lastMessage.Role.Value.ToLowerInvariant();
+
+            // 🎯 构建 OpenAI 格式的 message 对象
+            var messageObj = BuildOpenAIMessage(lastMessage);
 
             var payload = new
             {
@@ -1395,20 +1382,16 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     new
                     {
-                        message = new 
-                        { 
-                            role = role, 
-                            content = content 
-                        },
+                        message = messageObj,
                         index = 0,
                         finish_reason = completion.FinishReason?.ToString()?.ToLowerInvariant() ?? "stop"
                     }
                 },
-                usage = new 
-                { 
-                    prompt_tokens = completion.Usage?.InputTokenCount ?? 0, 
-                    completion_tokens = completion.Usage?.OutputTokenCount ?? 0, 
-                    total_tokens = completion.Usage?.TotalTokenCount ?? 0 
+                usage = new
+                {
+                    prompt_tokens = completion.Usage?.InputTokenCount ?? 0,
+                    completion_tokens = completion.Usage?.OutputTokenCount ?? 0,
+                    total_tokens = completion.Usage?.TotalTokenCount ?? 0
                 }
             };
 
@@ -1416,6 +1399,141 @@ namespace LY.LlmPool.Web.Controllers
             Response.ContentType = "application/json";
             await Response.WriteAsync(JsonSerializer.Serialize(payload, _jsonSerializerOptions));
         }
+
+        /// <summary>
+        /// 将 ChatMessage 转换为 OpenAI 格式的 message 对象
+        /// 保留原始的 content 结构(text, tool_calls, images 等)
+        /// </summary>
+        private object BuildOpenAIMessage(AIChatMessage message)
+        {
+            var role = message.Role.Value.ToLowerInvariant();
+
+            // 如果没有 Contents，只返回文本
+            if (message.Contents == null || !message.Contents.Any())
+            {
+                return new
+                {
+                    role = role,
+                    content = message.Text ?? string.Empty
+                };
+            }
+
+            // 🎯 检查是否有工具调用
+            var functionCalls = message.Contents.OfType<Microsoft.Extensions.AI.FunctionCallContent>().ToList();
+            if (functionCalls.Any())
+            {
+                // 构建 tool_calls 数组
+                var toolCalls = functionCalls.Select(fc => new
+                {
+                    id = fc.CallId ?? $"call_{Guid.NewGuid():N}",
+                    type = "function",
+                    function = new
+                    {
+                        name = fc.Name,
+                        arguments = fc.Arguments != null && fc.Arguments.Count > 0
+                            ? JsonSerializer.Serialize(fc.Arguments, _jsonSerializerOptions)
+                            : "{}"
+                    }
+                }).ToArray();
+
+                // 提取文本内容(如果有)
+                var textContent = message.Contents
+                    .OfType<Microsoft.Extensions.AI.TextContent>()
+                    .Select(tc => tc.Text)
+                    .Where(t => !string.IsNullOrEmpty(t))
+                    .FirstOrDefault();
+
+                return new
+                {
+                    role = role,
+                    content = textContent ?? null,
+                    tool_calls = toolCalls
+                };
+            }
+
+            // 🎯 检查是否是工具结果消息(role=tool)
+            var functionResults = message.Contents.OfType<Microsoft.Extensions.AI.FunctionResultContent>().ToList();
+            if (role == "tool" && functionResults.Any())
+            {
+                // 工具结果消息格式
+                var firstResult = functionResults.First();
+                return new
+                {
+                    role = "tool",
+                    tool_call_id = firstResult.CallId ?? string.Empty,
+                    content = firstResult.Result?.ToString() ?? string.Empty
+                };
+            }
+
+            // 🎯 多模态内容(多个文本片段或其他内容类型)
+            var textContents = message.Contents.OfType<Microsoft.Extensions.AI.TextContent>().ToList();
+            if (textContents.Count > 1)
+            {
+                // 多个文本片段,构建 content 数组
+                var contentArray = textContents
+                    .Where(tc => !string.IsNullOrEmpty(tc.Text))
+                    .Select(tc => new
+                    {
+                        type = "text",
+                        text = tc.Text
+                    })
+                    .ToArray();
+
+                return new
+                {
+                    role = role,
+                    content = contentArray.Length > 0 ? (object)contentArray : string.Empty
+                };
+            }
+
+            // 🎯 其他未知的 Content 类型,尝试序列化
+            if (message.Contents.Count > 0)
+            {
+                var contentArray = new List<object>();
+
+                foreach (var content in message.Contents)
+                {
+                    if (content is Microsoft.Extensions.AI.TextContent textContent && !string.IsNullOrEmpty(textContent.Text))
+                    {
+                        contentArray.Add(new
+                        {
+                            type = "text",
+                            text = textContent.Text
+                        });
+                    }
+                    else
+                    {
+                        // 其他类型,转换为文本
+                        var contentStr = content.ToString();
+                        if (!string.IsNullOrEmpty(contentStr))
+                        {
+                            contentArray.Add(new
+                            {
+                                type = "text",
+                                text = contentStr
+                            });
+                        }
+                    }
+                }
+
+                if (contentArray.Count > 0)
+                {
+                    return new
+                    {
+                        role = role,
+                        content = contentArray.Count == 1 && contentArray[0].GetType().GetProperty("text") != null
+                            ? contentArray[0].GetType().GetProperty("text")?.GetValue(contentArray[0])
+                            : (object)contentArray.ToArray()
+                    };
+                }
+            }
+
+            // 🎯 单一文本内容(默认情况)
+            return new
+            {
+                role = role,
+                content = message.Text ?? string.Empty
+            };
+        }
     }
 }
-

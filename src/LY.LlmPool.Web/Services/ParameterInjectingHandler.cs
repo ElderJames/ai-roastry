@@ -49,25 +49,50 @@ public class ParameterInjectingHandler : DelegatingHandler
             using var jsonDoc = JsonDocument.Parse(originalContent);
             var root = jsonDoc.RootElement;
 
-            // 创建新的 JSON 对象，合并参数
+            // 🎯 创建新的 JSON 对象，将参数注入到 "parameters" 字段中
             using var stream = new MemoryStream();
             using (var writer = new Utf8JsonWriter(stream))
             {
                 writer.WriteStartObject();
 
-                // 复制所有现有属性
+                // 复制所有现有属性（除了 parameters，我们会特殊处理）
+                bool hasExistingParameters = false;
+                JsonElement existingParameters = default;
+                
                 foreach (var property in root.EnumerateObject())
                 {
+                    if (property.Name == "parameters")
+                    {
+                        hasExistingParameters = true;
+                        existingParameters = property.Value;
+                        continue; // 先不写入，稍后合并
+                    }
                     property.WriteTo(writer);
                 }
 
-                // 注入额外参数（如果不存在）
+                // 🎯 写入 parameters 字段（合并已有的和新注入的）
+                writer.WritePropertyName("parameters");
+                writer.WriteStartObject();
+                
+                // 先写入已存在的 parameters
+                if (hasExistingParameters && existingParameters.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in existingParameters.EnumerateObject())
+                    {
+                        property.WriteTo(writer);
+                        _logger?.LogDebug("保留已存在的 parameter: {ParamKey}", property.Name);
+                    }
+                }
+                
+                // 注入新参数（不覆盖已存在的）
                 foreach (var param in _parameters)
                 {
-                    // 跳过已存在的属性
-                    if (root.TryGetProperty(param.Key, out _))
+                    // 跳过已存在的 parameter
+                    if (hasExistingParameters && 
+                        existingParameters.ValueKind == JsonValueKind.Object &&
+                        existingParameters.TryGetProperty(param.Key, out _))
                     {
-                        _logger?.LogDebug("参数 {ParamKey} 已存在于请求中，跳过注入", param.Key);
+                        _logger?.LogDebug("参数 {ParamKey} 已存在于 parameters 中，跳过注入", param.Key);
                         continue;
                     }
 
@@ -99,9 +124,13 @@ public class ParameterInjectingHandler : DelegatingHandler
                             break;
                     }
 
-                    _logger?.LogDebug("注入参数: {ParamKey} = {ParamValue}", param.Key, param.Value);
+                    _logger?.LogDebug("注入参数到 parameters: {ParamKey} = {ParamValue}", param.Key, param.Value);
                 }
+                
+                // 🎯 结束 parameters 对象
+                writer.WriteEndObject();
 
+                // 🎯 结束根对象
                 writer.WriteEndObject();
             }
 
@@ -109,8 +138,8 @@ public class ParameterInjectingHandler : DelegatingHandler
             var modifiedContent = Encoding.UTF8.GetString(stream.ToArray());
             request.Content = new StringContent(modifiedContent, Encoding.UTF8, "application/json");
 
-            _logger?.LogInformation("成功注入 {Count} 个参数到请求中", 
-                _parameters.Count(p => !root.TryGetProperty(p.Key, out _)));
+            _logger?.LogInformation("成功注入 {Count} 个参数到 parameters 字段", _parameters.Count);
+            _logger?.LogDebug("修改后的请求体: {Content}", modifiedContent);
         }
         catch (Exception ex)
         {
