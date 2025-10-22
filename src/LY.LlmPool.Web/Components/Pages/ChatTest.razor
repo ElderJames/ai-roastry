@@ -144,7 +144,10 @@
                         <Alert Message="@_configSourceLabel" Type="@AlertType.Info" ShowIcon="true" />
                     }
                 }
-                <ChatBox ModelName="@GetCurrentModelName()" Parameters="_appParameters" />
+                <ChatBox @ref="_chatBoxRef" 
+                         ModelName="@GetCurrentModelName()" 
+                         Parameters="_appParameters" 
+                         ConversationId="@_currentConversationId" />
             </div>
         }
         else
@@ -176,9 +179,14 @@
     private string _activeTabKey = "apps";
     private string? _configSourceLabel;
     private string? _configWarning;
+    private ChatBox? _chatBoxRef;
 
     private string[]? _appParameters;
     private string systemPrompt = string.Empty;
+    
+    // 🎯 为每个配置维护独立的 ConversationId
+    private Dictionary<string, string?> _conversationIds = new();
+    private string? _currentConversationId = Guid.NewGuid().ToString("N");
 
     [Parameter]
     [SupplyParameterFromQuery]
@@ -250,6 +258,8 @@
             _appParameters = service.ExtractParameterNames(systemPrompt).ToArray();
         }
 
+        _currentConversationId = Guid.NewGuid().ToString("N");
+
         StateHasChanged();
     }
 
@@ -261,17 +271,24 @@
         _configSourceLabel = null;
         _configWarning = null;
         _appParameters = null;
+
+        _currentConversationId = Guid.NewGuid().ToString("N");
+        
         StateHasChanged();
     }
 
     private void SelectEndpoint(LlmEndpoint endpoint)
     {
+
+        
         _selectedEndpoint = endpoint;
         _selectedApp = null;
         _selectedConfig = null;
         _configSourceLabel = null;
         _configWarning = null;
         _appParameters = null;
+        _currentConversationId = Guid.NewGuid().ToString("N");
+        
         StateHasChanged();
     }
 
@@ -292,6 +309,17 @@
             return _selectedEndpoint.Name;
         }
 
+        return null;
+    }
+    
+    /// <summary>
+    /// 获取当前配置的唯一标识符
+    /// </summary>
+    private string? GetCurrentConfigKey()
+    {
+        if (_selectedApp != null) return $"app:{_selectedApp.Id}";
+        if (_selectedConfig != null) return $"config:{_selectedConfig.Id}";
+        if (_selectedEndpoint != null) return $"endpoint:{_selectedEndpoint.Id}";
         return null;
     }
 }

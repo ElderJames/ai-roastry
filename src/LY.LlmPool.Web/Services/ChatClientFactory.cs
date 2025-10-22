@@ -19,6 +19,7 @@ public class ChatClientFactory
     private readonly ILogger<ParameterInjectingHandler>? _parameterLogger;
     private readonly ILogger<MonitoringDelegatingChatClient>? _monitoringLogger;
     private readonly ChatExecutionPersistenceService? _persistenceService;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
 
     public ChatClientFactory(
         IHttpClientFactory httpClientFactory,
@@ -27,7 +28,8 @@ public class ChatClientFactory
         ILogger<LoggingHttpHandler>? loggingLogger = null,
         ILogger<ParameterInjectingHandler>? parameterLogger = null,
         ILogger<MonitoringDelegatingChatClient>? monitoringLogger = null,
-        ChatExecutionPersistenceService? persistenceService = null)
+        ChatExecutionPersistenceService? persistenceService = null,
+        IHttpContextAccessor? httpContextAccessor = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -36,6 +38,7 @@ public class ChatClientFactory
         _parameterLogger = parameterLogger;
         _monitoringLogger = monitoringLogger;
         _persistenceService = persistenceService;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     /// <summary>
@@ -83,6 +86,11 @@ public class ChatClientFactory
         // 如果启用函数调用，使用 ChatClientBuilder 添加 FunctionInvokingChatClient
         if (enableFunctionInvocation)
         {
+            // 🎯 构建 ChatClient 装饰器链:
+            // 1. ConversationIdInjectingChatClient - 在最开始注入 ConversationId
+            // 2. OpenTelemetry - 自动追踪
+            // 3. FunctionInvokingChatClient - 自动工具调用
+            // 4. ToolCallEventRecordingChatClient - 记录工具调用事件
             chatClient = new ChatClientBuilder(chatClient)
                 .UseOpenTelemetry() // 🎯 启用 OpenTelemetry 自动追踪
                 .UseFunctionInvocation(configure: functionClient =>
@@ -97,6 +105,34 @@ public class ChatClientFactory
                     innerClient, 
                     _loggerFactory.CreateLogger<Telemetry.ToolCallEventRecordingChatClient>()))
                 .Build();
+
+            // 🎯 在最外层添加 ConversationId 注入（这样会在整个调用链开始时执行）
+            if (_httpContextAccessor != null)
+            {
+                chatClient = new Decorators.ConversationIdInjectingChatClient(
+                    chatClient,
+                    _loggerFactory.CreateLogger<Decorators.ConversationIdInjectingChatClient>(),
+                    _httpContextAccessor);
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ IHttpContextAccessor not available, ConversationId injection disabled");
+            }
+        }
+        else
+        {
+            // 🎯 即使不启用函数调用，也要添加 ConversationId 注入
+            chatClient = new ChatClientBuilder(chatClient)
+                .UseOpenTelemetry()
+                .Build();
+
+            if (_httpContextAccessor != null)
+            {
+                chatClient = new Decorators.ConversationIdInjectingChatClient(
+                    chatClient,
+                    _loggerFactory.CreateLogger<Decorators.ConversationIdInjectingChatClient>(),
+                    _httpContextAccessor);
+            }
         }
 
         return chatClient;
@@ -158,23 +194,39 @@ public class ChatClientFactory
 
         var chatClient = openAiClient.GetChatClient(config.Model).AsIChatClient();
 
-        // 如果启用函数调用，使用 ChatClientBuilder 添加 FunctionInvokingChatClient
+        // 🎯 始终使用 ChatClientBuilder 添加中间件
+        var builder = new ChatClientBuilder(chatClient);
+        
+        // 🎯 始终启用 OpenTelemetry（保持完整的追踪链路）
+        builder = builder.UseOpenTelemetry();
+        _logger.LogDebug("启用了 OpenTelemetry 自动追踪");
+        
+        // 根据参数决定是否启用自动工具调用
         if (enableFunctionInvocation)
         {
-            chatClient = new ChatClientBuilder(chatClient)
-                .UseOpenTelemetry() // 🎯 启用 OpenTelemetry 自动追踪
-                .UseFunctionInvocation(configure: functionClient =>
-                {
-                    // 🔑 启用并行工具调用（提升性能）
-                    functionClient.AllowConcurrentInvocation = true;
+            builder = builder.UseFunctionInvocation(configure: functionClient =>
+            {
+                // 🔑 启用并行工具调用（提升性能）
+                functionClient.AllowConcurrentInvocation = true;
 
-                    _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）",
-                        functionClient.AllowConcurrentInvocation);
-                })
-                .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
-                    innerClient, 
-                    _loggerFactory.CreateLogger<Telemetry.ToolCallEventRecordingChatClient>()))
-                .Build();
+                _logger.LogDebug("启用了自动工具调用功能（并行执行: {Concurrent}）",
+                    functionClient.AllowConcurrentInvocation);
+            });
+        }
+        
+        chatClient = builder
+            .Use(innerClient => new Telemetry.ToolCallEventRecordingChatClient(
+                innerClient, 
+                _loggerFactory.CreateLogger<Telemetry.ToolCallEventRecordingChatClient>()))
+            .Build();
+
+        // 🎯 在最外层添加 ConversationId 注入
+        if (_httpContextAccessor != null)
+        {
+            chatClient = new Decorators.ConversationIdInjectingChatClient(
+                chatClient,
+                _loggerFactory.CreateLogger<Decorators.ConversationIdInjectingChatClient>(),
+                _httpContextAccessor);
         }
 
         return chatClient;

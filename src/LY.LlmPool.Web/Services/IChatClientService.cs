@@ -35,11 +35,13 @@ public interface IChatClientService
     /// </summary>
     /// <param name="config">端点配置</param>
     /// <param name="messages">消息列表（会被更新以包含工具调用和结果）</param>
+    /// <param name="parameters">可选参数（如 conversation_id）</param>
     /// <param name="tools">可选工具列表</param>
     /// <returns>流式更新</returns>
     IAsyncEnumerable<Models.ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(
         LlmEndpoint config, 
         List<Microsoft.Extensions.AI.ChatMessage> messages, 
+        Dictionary<string, object>? parameters = null,
         IEnumerable<AITool>? tools = null);
 
     /// <summary>

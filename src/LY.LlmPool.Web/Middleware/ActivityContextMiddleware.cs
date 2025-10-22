@@ -18,14 +18,19 @@ public class ActivityContextMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ActivityContextMiddleware> _logger;
+    private readonly ActivityTraceService _activityTraceService;
 
     // 使用 AsyncLocal 存储当前请求的根 Activity
     private static readonly AsyncLocal<Activity?> _requestActivity = new();
 
-    public ActivityContextMiddleware(RequestDelegate next, ILogger<ActivityContextMiddleware> logger)
+    public ActivityContextMiddleware(
+        RequestDelegate next, 
+        ILogger<ActivityContextMiddleware> logger,
+        ActivityTraceService activityTraceService)
     {
         _next = next;
         _logger = logger;
+        _activityTraceService = activityTraceService;
     }
 
     public static Activity? GetRequestActivity() => _requestActivity.Value;
@@ -41,7 +46,7 @@ public class ActivityContextMiddleware
             return;
         }
 
-        // 📝 读取请求体 (用于记录)
+        // 📝 读取请求体 (用于记录和提取 conversation_id)
         string? requestBody = null;
         if (context.Request.Method == "POST" && 
             context.Request.ContentType?.Contains("application/json") == true)
@@ -50,6 +55,42 @@ public class ActivityContextMiddleware
             using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
             requestBody = await reader.ReadToEndAsync();
             context.Request.Body.Position = 0;
+        }
+
+        // 🎯 提取 conversation_id 并存储到 HttpContext.Items（供 ChatClient 使用）
+        var conversationId = ExtractConversationId(context, requestBody);
+        
+        // 🎯 如果没有提取到 ConversationId，尝试从已有的追踪数据推断
+        if (string.IsNullOrEmpty(conversationId))
+        {
+            var currentActivity = Activity.Current;
+            if (currentActivity != null)
+            {
+                conversationId = InferConversationIdFromTraceId(currentActivity.TraceId.ToString());
+                if (!string.IsNullOrEmpty(conversationId))
+                {
+                    _logger.LogDebug("🔍 从 TraceId 推断出 ConversationId: {ConversationId}", conversationId);
+                }
+            }
+        }
+        
+        if (!string.IsNullOrEmpty(conversationId))
+        {
+            context.Items["ConversationId"] = conversationId;
+            
+            // 🎯 【关键修复】立即设置到当前 Activity (HttpRequestIn)
+            var currentActivity = Activity.Current;
+            if (currentActivity != null)
+            {
+                currentActivity.AddTag(ActivityExtensions.GenAIConversationId, conversationId);
+                _logger.LogInformation(
+                    "🔗 [ConversationId 设置] Middleware 设置到根 Activity: {ConversationId} | Activity: {Name} | SpanId: {SpanId}",
+                    conversationId,
+                    currentActivity.OperationName,
+                    currentActivity.SpanId);
+            }
+            
+            _logger.LogDebug("📥 提取到 ConversationId 并存储到 Items: {ConversationId}", conversationId);
         }
 
         try
@@ -61,19 +102,8 @@ public class ActivityContextMiddleware
             {
                 _requestActivity.Value = currentActivity;
                 
-                // 🎯 提取或生成 ConversationId (遵循 OpenTelemetry Semantic Conventions)
-                // 总是会返回一个有效的 ConversationId (自动生成或客户端提供)
-                var conversationId = await ExtractConversationIdAsync(context, requestBody);
-                currentActivity.AddTag(ActivityExtensions.GenAIConversationId, conversationId);
-                
-                // 🎯 记录请求信息到 Activity
+                // 🎯 记录请求信息到 Activity（不再在这里设置 ConversationId）
                 await RecordRequestInfoAsync(currentActivity, context, requestBody);
-                
-                _logger.LogDebug(
-                    "🔗 ActivityContextMiddleware: ConversationId={ConversationId} for {Path}",
-                    conversationId,
-                    path
-                );
                 
                 _logger.LogDebug(
                     "🔗 ActivityContextMiddleware: 捕获 Activity for {Path} | TraceId={TraceId}, SpanId={SpanId}, Name={Name}",
@@ -91,25 +121,38 @@ public class ActivityContextMiddleware
                 );
             }
 
-            // 📝 拦截响应 (用于记录响应内容)
-            var originalBodyStream = context.Response.Body;
-            using var responseBodyStream = new MemoryStream();
-            context.Response.Body = responseBodyStream;
+            // 🎯 检查是否需要拦截响应内容
+            // 对于流式响应(SSE)，不能使用 MemoryStream 缓冲，否则会破坏流式输出
+            var shouldInterceptResponse = !IsStreamingRequest(context);
 
-            try
+            if (shouldInterceptResponse)
             {
-                await _next(context);
+                // 📝 拦截响应 (用于记录响应内容)
+                var originalBodyStream = context.Response.Body;
+                using var responseBodyStream = new MemoryStream();
+                context.Response.Body = responseBodyStream;
 
-                // 🎯 记录响应信息到 Activity
-                await RecordResponseInfoAsync(currentActivity, context, responseBodyStream);
+                try
+                {
+                    await _next(context);
 
-                // 复制响应到原始流
-                responseBodyStream.Position = 0;
-                await responseBodyStream.CopyToAsync(originalBodyStream);
+                    // 🎯 记录响应信息到 Activity
+                    await RecordResponseInfoAsync(currentActivity, context, responseBodyStream);
+
+                    // 复制响应到原始流
+                    responseBodyStream.Position = 0;
+                    await responseBodyStream.CopyToAsync(originalBodyStream);
+                }
+                finally
+                {
+                    context.Response.Body = originalBodyStream;
+                }
             }
-            finally
+            else
             {
-                context.Response.Body = originalBodyStream;
+                // 🚀 流式响应：直接传递，不拦截
+                _logger.LogDebug("🚀 检测到流式请求，跳过响应拦截");
+                await _next(context);
             }
         }
         finally
@@ -125,13 +168,12 @@ public class ActivityContextMiddleware
     }
 
     /// <summary>
-    /// 提取或生成 ConversationId
+    /// 从请求中提取 ConversationId（只提取，不生成）
     /// 优先级: 
     /// 1. HTTP Header "X-Conversation-Id"  
     /// 2. 请求 Body 中的 "conversation_id"
-    /// 3. 自动生成 (格式: conv-{timestamp}-{guid})
     /// </summary>
-    private async Task<string> ExtractConversationIdAsync(HttpContext context, string? requestBody = null)
+    private string? ExtractConversationId(HttpContext context, string? requestBody = null)
     {
         // 1. 尝试从 HTTP Header 提取 (推荐方式,符合 OpenTelemetry 惯例)
         if (context.Request.Headers.TryGetValue("X-Conversation-Id", out var headerValue))
@@ -168,17 +210,87 @@ public class ActivityContextMiddleware
             }
         }
 
-        // 3. 自动生成 ConversationId (使用 TraceId 的一部分 + 短 GUID)
-        var traceId = Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N");
-        var shortGuid = Guid.NewGuid().ToString("N").Substring(0, 8);
-        var autoGeneratedId = $"conv-auto-{traceId.Substring(0, 8)}-{shortGuid}";
-        
-        _logger.LogDebug(
-            "🔧 Auto-generated ConversationId: {ConversationId} (no client-provided ID)",
-            autoGeneratedId
-        );
-        
-        return autoGeneratedId;
+        // 不在这里自动生成，让 ChatClient 生成
+        return null;
+    }
+
+    /// <summary>
+    /// 从 TraceId 推断 ConversationId
+    /// 查找同一 TraceId 下已有的 ConversationId（排除自动生成的）
+    /// </summary>
+    private string? InferConversationIdFromTraceId(string traceId)
+    {
+        if (string.IsNullOrEmpty(traceId))
+            return null;
+
+        try
+        {
+            // 🔍 从活跃和已完成的追踪中查找同一 TraceId 的节点
+            var allTraces = _activityTraceService.GetActiveTraces()
+                .Concat(_activityTraceService.GetCompletedTraces())
+                .ToList();
+
+            // 🎯 查找同一 TraceId 下有真实 ConversationId 的节点（排除自动生成的）
+            var nodeWithConvId = allTraces
+                .Where(n => n.TraceId == traceId && 
+                           !string.IsNullOrEmpty(n.ConversationId) &&
+                           !n.ConversationId.StartsWith("conv-auto-"))
+                .OrderBy(n => n.StartTime) // 取最早的节点的 ConversationId
+                .FirstOrDefault();
+
+            if (nodeWithConvId != null)
+            {
+                _logger.LogDebug(
+                    "🔍 从 TraceId {TraceId} 推断出 ConversationId: {ConversationId} (来自 SpanId: {SpanId})",
+                    traceId,
+                    nodeWithConvId.ConversationId,
+                    nodeWithConvId.SpanId
+                );
+                return nodeWithConvId.ConversationId;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "推断 ConversationId 时出错 (TraceId: {TraceId})", traceId);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 检查是否为流式请求
+    /// </summary>
+    private bool IsStreamingRequest(HttpContext context)
+    {
+        // 检查请求体中是否包含 "stream": true
+        if (context.Request.Method == "POST" &&
+            context.Request.ContentType?.Contains("application/json") == true)
+        {
+            try
+            {
+                context.Request.Body.Position = 0;
+                using var reader = new StreamReader(context.Request.Body, leaveOpen: true);
+                var body = reader.ReadToEnd();
+                context.Request.Body.Position = 0;
+
+                if (!string.IsNullOrWhiteSpace(body))
+                {
+                    var jsonDoc = JsonDocument.Parse(body);
+                    if (jsonDoc.RootElement.ValueKind == JsonValueKind.Object &&
+                        jsonDoc.RootElement.TryGetProperty("stream", out var streamElement) &&
+                        streamElement.ValueKind == JsonValueKind.True)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to check streaming request");
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

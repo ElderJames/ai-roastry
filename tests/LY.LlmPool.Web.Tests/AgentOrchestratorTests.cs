@@ -168,6 +168,15 @@ public class AgentOrchestratorTests
             };
         }
 
+        public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(LlmEndpoint endpoint, List<Microsoft.Extensions.AI.ChatMessage> messages, Dictionary<string, object>? parameters = null, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
+        {
+            await Task.CompletedTask;
+            yield return new ChatStreamingUpdate 
+            { 
+                Text = string.Empty
+            };
+        }
+
         public async IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageViaControllerAsync(string appName, List<Microsoft.Extensions.AI.ChatMessage> messages, IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
         {
             await Task.CompletedTask;

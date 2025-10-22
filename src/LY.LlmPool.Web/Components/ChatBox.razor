@@ -217,13 +217,18 @@
             </div>
             <div class="chat-input">
                 <div class="chat-input-info">
-                    @if (!string.IsNullOrEmpty(ModelName))
+                    @if (!string.IsNullOrWhiteSpace(ModelName))
                     {
                         <Tag Color="TagColor.Blue">model Name: @ModelName</Tag>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(ConversationId))
+                    {
+                        <Tag Color="TagColor.Green" Closable OnClose="ClearConversation">ConversationId: @ConversationId</Tag>
                     }
                     <Switch Checked="_useStreaming" CheckedChildren="流式响应" UnCheckedChildren="普通响应" OnChange="@(value => _useStreaming = value)" />
                     <Switch Checked="_useAnthropicApi" CheckedChildren="Anthropic API" UnCheckedChildren="直接调用" OnChange="@(value => _useAnthropicApi = value)" />
                     <Switch Checked="_simulateTools" CheckedChildren="模拟工具调用" UnCheckedChildren="无工具" OnChange="@(value => _simulateTools = value)" />
+                    <Button Type="@ButtonType.Default" Size="@ButtonSize.Small" Icon="delete" OnClick="ClearHistory">清空历史</Button>
                 </div>
                 
                 <!-- 图片预览区域 -->
@@ -291,6 +296,18 @@
     [Parameter]
     public string[]? Parameters { get; set; }
 
+    /// <summary>
+    /// 从父组件传入的 ConversationId（支持双向绑定）
+    /// </summary>
+    [Parameter]
+    public string? ConversationId { get; set; }
+
+    /// <summary>
+    /// ConversationId 变化时的回调
+    /// </summary>
+    [Parameter]
+    public EventCallback<string?> ConversationIdChanged { get; set; }
+
     private class UiMessage
     {
         public Microsoft.Extensions.AI.ChatRole Role { get; set; } = Microsoft.Extensions.AI.ChatRole.User;
@@ -315,8 +332,8 @@
     private HashSet<int> _expandedTools = new();
     private Dictionary<string, ToolCallUtils.ToolCallView> _toolCallIdToEvent = new();
     
-    // 🎯 会话级别的 ConversationId（从服务端响应中获取并缓存）
-    private string? _conversationId = null;
+    // 🎯 当前有效的 ConversationId（直接使用 Parameter，支持双向绑定
+
 
     // 使用 ToolCallUtils.ToolCallView
 
@@ -405,6 +422,8 @@
 
     protected override Task OnParametersSetAsync()
     {
+        Console.WriteLine($"📦 [ChatBox] OnParametersSetAsync: ConversationId = {ConversationId}");
+        
         if (Parameters?.Any() == true)
         {
             _appParameters = ParameterUtils.CreateParametersFromArray(Parameters);
@@ -527,24 +546,17 @@
         var http = HttpClientFactory.CreateClient("LlmPoolApi");
         
         // 🎯 创建 client 时传递当前的 ConversationId（如果有）
-        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk", _conversationId);
+        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk", ConversationId);
         var msgs = BuildClientMessages();
         var parms = ParameterUtils.GetValidParameters(_appParameters);
         var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
-                Temperature = 0.7,
-                MaxTokens = 10000,
+                Temperature = 0.7f,
+                MaxOutputTokens = 10000,
                 TopP = null
             };
 
         var text = await client.ChatAsync(model!, msgs, parms, toolObjects, chatOptions);
-        
-        // 🎯 尝试从 client 中获取服务端返回的 ConversationId（如果之前没有）
-        if (string.IsNullOrEmpty(_conversationId) && !string.IsNullOrEmpty(client.ConversationId))
-        {
-            _conversationId = client.ConversationId;
-            Console.WriteLine($"📥 从服务端获取 ConversationId: {_conversationId}");
-        }
         
         AddAssistantMessage(text);
     }
@@ -575,12 +587,12 @@
             var http = HttpClientFactory.CreateClient("LlmPoolApi");
             
             // 🎯 通过构造函数传递 ConversationId
-            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx", _conversationId);
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx", ConversationId);
 
             var chatOptions = new LY.LlmPool.Client.ChatOptions
             {
-                Temperature = 0.7,
-                MaxTokens = 10000,
+                Temperature = 0.7f,
+                MaxOutputTokens = 10000,
                 TopP = null
             };
 
@@ -757,6 +769,44 @@
     private void RemoveImage(ImageUtils.SelectedImage image)
     {
         _selectedImages.Remove(image);
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 清空聊天历史记录并重置会话
+    /// </summary>
+    public void ClearHistory()
+    {
+        _messages.Clear();
+        ConversationId = null;
+        _toolEvents.Clear();
+        _messageToolEvents.Clear();
+        _toolCallIdToEvent.Clear();
+        _expandedThinking.Clear();
+        _expandedTools.Clear();
+        
+        // 如果有 SystemPrompt，重新添加
+        if (!string.IsNullOrEmpty(SystemPrompt))
+        {
+            _messages.Add(new UiMessage
+            {
+                Role = Microsoft.Extensions.AI.ChatRole.System,
+                Text = SystemPrompt ?? string.Empty,
+                Timestamp = DateTime.Now
+            });
+        }
+        
+        MessageService.Success("✅ 历史记录已清空，新会话已开始");
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 清空当前会话 ID（保留历史记录）
+    /// </summary>
+    private void ClearConversation()
+    {
+        ConversationId = null;
+        MessageService.Info("🔄 会话 ID 已重置，下次发送将创建新会话");
         StateHasChanged();
     }
 

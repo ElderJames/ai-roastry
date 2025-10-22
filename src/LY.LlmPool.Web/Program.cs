@@ -1,3 +1,4 @@
+using System.IO;
 using LY.LlmPool.Web;
 using LY.LlmPool.Web.Components;
 using LY.LlmPool.Web.Components.Account;
@@ -9,6 +10,7 @@ using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.Aggregation;
 using LY.LlmPool.Web.Middleware;
 using LY.LlmPool.Web.Filters;
+using LY.LlmPool.Web.Logging;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -20,6 +22,11 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 将诊断日志写入本地文件，便于分析 Activity 链路
+var logsDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs");
+var activityLogPath = Path.Combine(logsDirectory, "activity-debug.log");
+builder.Logging.AddProvider(new FileLoggerProvider(activityLogPath, LogLevel.Debug));
 
 // Add services to the container.
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -154,6 +161,8 @@ builder.Services.AddOpenTelemetry()
             .AddSource("Experimental.Microsoft.Extensions.AI")
             // 监听 LlmPool 自定义 ActivitySource
             .AddSource("LlmPool.*")
+            // 🎯 监听 HttpClient 的 ActivitySource (用于追踪 HTTP 请求)
+            .AddSource("System.Net.Http")
             // 监听 ASP.NET Core 和 HttpClient
             .AddAspNetCoreInstrumentation(options =>
             {
@@ -273,7 +282,8 @@ builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
         http.DefaultRequestHeaders.Add("Accept-Charset", "utf-8");
     }
 })
-.AddHttpMessageHandler<ActivityPropagationHandler>() // 🔑 传播 Activity Context
+// 🔴 移除 ActivityPropagationHandler - HttpClient 已内置 Activity 传播
+// .AddHttpMessageHandler<ActivityPropagationHandler>() 
 .AddHttpMessageHandler<LoggingHttpHandler>();
 
 // Named HttpClient for upstream LLM calls (tests can override it)

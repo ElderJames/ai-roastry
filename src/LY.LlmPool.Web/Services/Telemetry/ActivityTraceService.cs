@@ -76,7 +76,11 @@ public class ActivityTraceService : IDisposable
                                   source.Name.StartsWith("Experimental.ModelContextProtocol") ||      // 🔑 MCP SDK ActivitySource
                                   source.Name.Contains("LlmPool") ||
                                   source.Name.StartsWith("OpenAI") ||  // 可能是 OpenAI.* 
-                                  source.Name.Contains("ChatClient"); // 可能是其他命名
+                                  source.Name.Contains("ChatClient") || // 可能是其他命名
+                                  source.Name == "System.Net.Http" || // 🔑 HttpClient Activity
+                                  source.Name == "OpenTelemetry.Instrumentation.Http.HttpClient" || // 🔑 HttpClient Instrumentation
+                                  source.Name == "Microsoft.AspNetCore" || // 🔑 ASP.NET Core Activity (HttpRequestIn)
+                                  source.Name == "OpenTelemetry.Instrumentation.AspNetCore"; // 🔑 ASP.NET Core Instrumentation
                 
                 // 🔍 记录所有 ActivitySource 的名称（用于调试）
                 _logger.LogInformation("ActivitySource 检测: {SourceName} - 监听: {ShouldListen}", 
@@ -158,8 +162,65 @@ public class ActivityTraceService : IDisposable
         // 提取关键信息
         ExtractKeyInformation(activity, node);
         
+        // 🎯 诊断日志：检查 ConversationId 是否从 Activity Tags 中提取到
+        _logger.LogInformation(
+            "🔍 [ConversationId 诊断] Activity: {OperationName} | SpanId: {SpanId} | Parent: {ParentSpanId}",
+            node.OperationName,
+            node.SpanId,
+            node.ParentSpanId);
+        
+        _logger.LogInformation(
+            "  📋 Activity Tags 中的 gen_ai.conversation.id: {ConvId}",
+            activity.Tags.FirstOrDefault(t => t.Key == "gen_ai.conversation.id").Value ?? "NULL");
+        
+        _logger.LogInformation(
+            "  📋 提取后 node.ConversationId: {ConvId}",
+            node.ConversationId ?? "NULL");
+        
         // 🎯 识别节点类型
         IdentifyNodeType(node);
+        
+        // 🎯 关键修复：从父 Activity 继承 ConversationId（如果当前没有）
+        if (string.IsNullOrEmpty(node.ConversationId) && node.ParentSpanId != "0000000000000000")
+        {
+            // 尝试从已记录的父节点中获取 ConversationId
+            var parentNode = _activeTraces.Values.FirstOrDefault(n => n.SpanId == node.ParentSpanId);
+            if (parentNode != null)
+            {
+                _logger.LogInformation(
+                    "  🔍 找到父节点: {ParentOp} | 父节点 ConversationId: {ParentConvId}",
+                    parentNode.OperationName,
+                    parentNode.ConversationId ?? "NULL");
+                
+                if (!string.IsNullOrEmpty(parentNode.ConversationId))
+                {
+                    node.ConversationId = parentNode.ConversationId;
+                    _logger.LogInformation(
+                        "  ✅ 继承父节点的 ConversationId: {ConversationId} (从 {ParentOp} 到 {CurrentOp})",
+                        node.ConversationId,
+                        parentNode.OperationName,
+                        node.OperationName);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "  ⚠️ 父节点 {ParentOp} 也没有 ConversationId",
+                        parentNode.OperationName);
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "  ⚠️ 未找到父节点 (ParentSpanId: {ParentSpanId})",
+                    node.ParentSpanId);
+            }
+        }
+        else if (!string.IsNullOrEmpty(node.ConversationId))
+        {
+            _logger.LogInformation(
+                "  ✅ Activity 已有 ConversationId: {ConversationId}",
+                node.ConversationId);
+        }
 
         _activeTraces.TryAdd(node.ActivityId, node);
 
@@ -225,6 +286,51 @@ public class ActivityTraceService : IDisposable
             // 🎯 重新提取 Tags（因为 OnActivityStarted 时 Tags 可能为空）
             ExtractKeyInformation(activity, node);
             
+            // 🎯 【CRITICAL FIX】在 OnActivityStopped 时再次尝试获取 ConversationId
+            // 原因：Middleware 可能在 OnActivityStarted 之后才设置 gen_ai.conversation.id Tag
+            var conversationIdFromTags = activity.Tags.FirstOrDefault(t => t.Key == ActivityExtensions.GenAIConversationId).Value;
+            if (!string.IsNullOrEmpty(conversationIdFromTags))
+            {
+                _logger.LogInformation(
+                    "  🔄 [ConversationId 更新] OnActivityStopped 时发现 ConversationId: {ConvId} | Activity: {Name}",
+                    conversationIdFromTags, node.OperationName);
+                node.ConversationId = conversationIdFromTags;
+                
+                // 🎯 【递归传播】传播到所有后代节点（不仅是直接子节点）
+                var totalUpdated = PropagateConversationIdRecursively(conversationIdFromTags, node.SpanId, 1);
+                
+                if (totalUpdated > 0)
+                {
+                    _logger.LogInformation(
+                        "  ✅ 已递归传播 ConversationId 到 {Count} 个后代节点",
+                        totalUpdated);
+                }
+            }
+            // 🎯 【FIX 2】如果当前节点没有 ConversationId，尝试从父节点获取
+            // 原因：子节点启动时父节点可能还没有 ConversationId，现在父节点已经停止并设置了
+            else if (string.IsNullOrEmpty(node.ConversationId) && !string.IsNullOrEmpty(node.ParentSpanId))
+            {
+                if (_activeTraces.TryGetValue(node.ParentSpanId, out var parentNode) && !string.IsNullOrEmpty(parentNode.ConversationId))
+                {
+                    node.ConversationId = parentNode.ConversationId;
+                    _logger.LogInformation(
+                        "  🔄 [ConversationId 继承] 从活跃父节点 {ParentName} 继承 ConversationId: {ConvId}",
+                        parentNode.OperationName, node.ConversationId);
+                }
+                // 如果父节点已经完成，从完成队列中查找
+                else if (_completedTraces.Any(n => n.SpanId == node.ParentSpanId))
+                {
+                    var completedParent = _completedTraces.FirstOrDefault(n => n.SpanId == node.ParentSpanId);
+                    if (completedParent != null && !string.IsNullOrEmpty(completedParent.ConversationId))
+                    {
+                        node.ConversationId = completedParent.ConversationId;
+                        _logger.LogInformation(
+                            "  🔄 [ConversationId 继承] 从已完成的父节点 {ParentName} 继承 ConversationId: {ConvId}",
+                            completedParent.OperationName, node.ConversationId);
+                    }
+                }
+            }
+            
             // 更新最终信息
             UpdateFinalInformation(activity, node);
             
@@ -282,6 +388,47 @@ public class ActivityTraceService : IDisposable
                 }
             }
         }
+    }
+    
+    /// <summary>
+    /// 递归传播 ConversationId 到所有后代节点
+    /// </summary>
+    /// <param name="conversationId">要传播的 ConversationId</param>
+    /// <param name="parentSpanId">父节点的 SpanId</param>
+    /// <param name="depth">当前递归深度（用于日志缩进）</param>
+    /// <returns>传播的节点数量</returns>
+    private int PropagateConversationIdRecursively(string conversationId, string parentSpanId, int depth)
+    {
+        var indent = new string(' ', depth * 2);
+        var count = 0;
+        
+        // 查找所有直接子节点（活跃 + 已完成）
+        var activeChildren = _activeTraces.Values
+            .Where(n => n.ParentSpanId == parentSpanId && string.IsNullOrEmpty(n.ConversationId))
+            .ToList();
+        
+        var completedChildren = _completedTraces
+            .Where(n => n.ParentSpanId == parentSpanId && string.IsNullOrEmpty(n.ConversationId))
+            .ToList();
+        
+        var allChildren = activeChildren.Concat(completedChildren).ToList();
+        
+        foreach (var child in allChildren)
+        {
+            // 设置 ConversationId
+            child.ConversationId = conversationId;
+            count++;
+            
+            _logger.LogInformation(
+                "  {Indent}⬇️ [递归传播 L{Depth}] {ChildName} (SpanId: {ChildSpanId})",
+                indent, depth, child.OperationName, child.SpanId);
+            
+            // 递归传播到子节点的子节点
+            var childCount = PropagateConversationIdRecursively(conversationId, child.SpanId, depth + 1);
+            count += childCount;
+        }
+        
+        return count;
     }
 
     /// <summary>
@@ -822,36 +969,40 @@ public class ActivityTraceService : IDisposable
     }
 
     /// <summary>
-    /// 获取所有 Conversation 列表（包括活跃和已完成的）
+    /// 获取所有 Conversation 列表（只返回有真实 ConversationId 的会话）
+    /// 排除自动生成的 conv-auto-* 条目
     /// </summary>
     public List<ConversationInfo> GetConversationList()
     {
         var allTraces = _completedTraces.Concat(_activeTraces.Values).ToList();
         
-        // 为没有 ConversationId 的 traces 分配默认 ID（使用 TraceId）
-        var tracesWithConvId = allTraces.Select(t => new
-        {
-            Trace = t,
-            ConvId = string.IsNullOrEmpty(t.ConversationId) 
-                ? $"trace-{t.TraceId.Substring(0, 8)}" 
-                : t.ConversationId
-        }).ToList();
+        // 🎯 只筛选出有真实 ConversationId 的 traces（排除 null、空字符串、conv-auto-*）
+        var tracesWithRealConvId = allTraces
+            .Where(t => !string.IsNullOrEmpty(t.ConversationId) &&
+                       !t.ConversationId.StartsWith("conv-auto-"))
+            .ToList();
         
-        var conversations = tracesWithConvId
-            .GroupBy(t => t.ConvId)
+        // 如果没有任何真实的 ConversationId，返回空列表
+        if (!tracesWithRealConvId.Any())
+        {
+            return new List<ConversationInfo>();
+        }
+        
+        var conversations = tracesWithRealConvId
+            .GroupBy(t => t.ConversationId!)
             .Select(g => new ConversationInfo
             {
                 ConversationId = g.Key,
                 RequestCount = g.Count(),
-                FirstRequestTime = g.Min(t => t.Trace.StartTime),
-                LastRequestTime = g.Max(t => t.Trace.StartTime),
-                TotalInputTokens = g.Sum(t => t.Trace.InputTokens),
-                TotalOutputTokens = g.Sum(t => t.Trace.OutputTokens),
-                IsActive = g.Any(t => !t.Trace.EndTime.HasValue),
-                SuccessCount = g.Count(t => t.Trace.Status == "Success"),
-                ErrorCount = g.Count(t => t.Trace.Status == "Error"),
-                Models = g.Where(t => !string.IsNullOrEmpty(t.Trace.ModelId))
-                         .Select(t => t.Trace.ModelId!)
+                FirstRequestTime = g.Min(t => t.StartTime),
+                LastRequestTime = g.Max(t => t.StartTime),
+                TotalInputTokens = g.Sum(t => t.InputTokens),
+                TotalOutputTokens = g.Sum(t => t.OutputTokens),
+                IsActive = g.Any(t => !t.EndTime.HasValue),
+                SuccessCount = g.Count(t => t.Status == "Success"),
+                ErrorCount = g.Count(t => t.Status == "Error"),
+                Models = g.Where(t => !string.IsNullOrEmpty(t.ModelId))
+                         .Select(t => t.ModelId!)
                          .Distinct()
                          .ToList()
             })
@@ -870,24 +1021,30 @@ public class ActivityTraceService : IDisposable
             .Concat(_activeTraces.Values)
             .ToList();
 
-        // 如果 conversationId 是临时生成的（以 trace- 开头），则按 TraceId 匹配
-        List<TraceNode> filteredTraces;
-        if (conversationId.StartsWith("trace-"))
+        // 🎯 第一步: 找到所有包含该 ConversationId 的 Activity
+        var activitiesWithConversationId = allTraces
+            .Where(t => t.ConversationId == conversationId)
+            .ToList();
+
+        if (!activitiesWithConversationId.Any())
         {
-            var traceIdPrefix = conversationId.Substring(6); // 去掉 "trace-" 前缀
-            filteredTraces = allTraces
-                .Where(t => t.TraceId.StartsWith(traceIdPrefix))
-                .ToList();
-        }
-        else
-        {
-            filteredTraces = allTraces
-                .Where(t => t.ConversationId == conversationId)
-                .ToList();
+            _logger.LogInformation("未找到 ConversationId={ConversationId} 的 Activity", conversationId);
+            return new List<TraceNode>();
         }
 
-        // 按 TraceId 分组，构建多个调用树
-        var traceGroups = filteredTraces.GroupBy(t => t.TraceId);
+        // 🎯 第二步: 提取所有相关的 TraceId
+        var relatedTraceIds = activitiesWithConversationId
+            .Select(t => t.TraceId)
+            .Distinct()
+            .ToHashSet();
+
+        // 🎯 第三步: 查询所有这些 TraceId 下的 Activity (包括没有 ConversationId 的工具调用)
+        var allRelatedTraces = allTraces
+            .Where(t => relatedTraceIds.Contains(t.TraceId))
+            .ToList();
+
+        // 🎯 第四步: 按 TraceId 分组，构建多个调用树
+        var traceGroups = allRelatedTraces.GroupBy(t => t.TraceId);
         var allRootNodes = new List<TraceNode>();
 
         foreach (var group in traceGroups)

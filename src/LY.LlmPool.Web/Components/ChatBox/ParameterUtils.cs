@@ -139,6 +139,12 @@ public static class ParameterUtils
         {
             chatOptions.TopP = Convert.ToSingle(topP);
         }
+        
+        // 🎯 支持 ConversationId 参数
+        if (parameters.TryGetValue("conversation_id", out var conversationId))
+        {
+            chatOptions.ConversationId = conversationId?.ToString();
+        }
     }
 
     /// <summary>

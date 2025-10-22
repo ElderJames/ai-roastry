@@ -10,6 +10,11 @@ namespace LY.LlmPool.Web.Models
         public PromptTestResult? TestResult { get; set; }
         public bool IsStreaming { get; set; }
         public List<Microsoft.Extensions.AI.ChatMessage> ChatHistory { get; set; } = new();
+        
+        /// <summary>
+        /// 🎯 此测试配置的 ConversationId（独立维护）
+        /// </summary>
+        public string? ConversationId { get; set; }
 
         public static PromptTestConfig FromTestConfigRecord(TestConfigRecord record)
         {

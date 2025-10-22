@@ -30,7 +30,15 @@
     <Row Gutter="16">
         <!-- 左侧：Conversation 列表 -->
         <AntDesign.Col Span="5">
-            <Card Title="会话列表" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+            <Card Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
+                <TitleTemplate>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span>💬 会话列表</span>
+                        <Tooltip Title="基于 gen_ai.conversation.id 分组">
+                            <Icon Type="@IconType.Outline.InfoCircle" Style="color: #999; font-size: 14px;" />
+                        </Tooltip>
+                    </div>
+                </TitleTemplate>
                 <Extra>
                     <Badge Count="@_conversations.Count" ShowZero="true" />
                 </Extra>
@@ -54,17 +62,34 @@
                             <div class="conversation-item @(conv.ConversationId == _selectedConversationId ? "selected" : "")"
                                  @onclick="() => SelectConversation(conv.ConversationId)">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <div>
+                                    <div style="flex: 1; min-width: 0;">
                                         @if (conv.IsActive)
                                         {
                                             <Badge Status="@BadgeStatus.Processing" />
                                         }
-                                        <Text Strong Ellipsis Style="max-width: 150px;">
-                                            @(conv.ConversationId.Length > 20 
-                                                ? conv.ConversationId.Substring(0, 20) + "..." 
-                                                : conv.ConversationId)
-                                        </Text>
+                                        <Tooltip Title="@conv.ConversationId">
+                                            <Text Strong Ellipsis Style="max-width: 150px;">
+                                                @if (conv.ConversationId.StartsWith("conv-auto-"))
+                                                {
+                                                    <span style="color: #999;">🔄 自动生成</span>
+                                                }
+                                                else
+                                                {
+                                                    <span>💬 @(conv.ConversationId.Length > 15 
+                                                        ? conv.ConversationId.Substring(0, 15) + "..." 
+                                                        : conv.ConversationId)</span>
+                                                }
+                                            </Text>
+                                        </Tooltip>
                                     </div>
+                                    @if (conv.Models.Any())
+                                    {
+                                        <Tooltip Title="@string.Join(", ", conv.Models)">
+                                            <Tag Color="@("geekblue")" Style="font-size: 10px; margin-left: 4px;">
+                                                🤖 @conv.Models.Count
+                                            </Tag>
+                                        </Tooltip>
+                                    }
                                 </div>
                                 <div style="margin-top: 4px; font-size: 12px; color: #999;">
                                     <Space Size="@("small")">
@@ -74,6 +99,10 @@
                                 </div>
                                 <div style="margin-top: 2px; font-size: 11px; color: #999;">
                                     🕐 @conv.LastRequestTime.ToLocalTime().ToString("HH:mm:ss")
+                                    @if (conv.SuccessCount > 0)
+                                    {
+                                        <span style="color: #52c41a; margin-left: 8px;">✓ @conv.SuccessCount</span>
+                                    }
                                 </div>
                                 @if (conv.ErrorCount > 0)
                                 {
@@ -328,60 +357,51 @@
 
     private void RefreshData()
     {
-        // 获取会话列表
+        // 获取会话列表 (基于 gen_ai.conversation.id 分组)
         _conversations = TraceService.GetConversationList();
         
-        // 如果有选中的会话,只显示该会话的traces
-        IEnumerable<TraceNode> activeTraces;
-        IEnumerable<TraceNode> completedTraces;
-        
+        // 如果有选中的会话,使用 GetTracesByConversation 获取完整调用树
         if (!string.IsNullOrEmpty(_selectedConversationId))
         {
-            // 如果是临时生成的 trace- ID，需要特殊处理
-            if (_selectedConversationId.StartsWith("trace-"))
-            {
-                var traceIdPrefix = _selectedConversationId.Substring(6); // 去掉 "trace-" 前缀
-                activeTraces = TraceService.GetActiveTraces()
-                    .Where(t => t.TraceId.StartsWith(traceIdPrefix));
-                completedTraces = TraceService.GetCompletedTraces(100)
-                    .Where(t => t.TraceId.StartsWith(traceIdPrefix));
-            }
-            else
-            {
-                // 正常的 ConversationId 匹配
-                activeTraces = TraceService.GetActiveTraces()
-                    .Where(t => t.ConversationId == _selectedConversationId);
-                completedTraces = TraceService.GetCompletedTraces(100)
-                    .Where(t => t.ConversationId == _selectedConversationId);
-            }
+            // 🎯 使用 GetTracesByConversation 方法获取完整的调用树(包括关联的 TraceId)
+            var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
+            
+            // 分离活跃和已完成的节点
+            var activeTraces = traceNodes.Where(t => t.Status == "InProgress").ToList();
+            var completedTraces = traceNodes.Where(t => t.Status != "InProgress").ToList();
+            
+            // 直接使用返回的根节点
+            _activeRoots = activeTraces.OrderBy(r => r.StartTime).ToList();
+            _completedRoots = completedTraces.OrderByDescending(r => r.StartTime).ToList();
         }
         else
         {
-            activeTraces = TraceService.GetActiveTraces();
-            completedTraces = TraceService.GetCompletedTraces(100);
-        }
-        
-        // 获取活跃的根节点（没有父节点或父节点为空）
-        _activeRoots = BuildTraceTree(activeTraces.ToList())
-            .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
-            .ToList();
+            // 显示所有会话
+            var activeTraces = TraceService.GetActiveTraces();
+            var completedTraces = TraceService.GetCompletedTraces(100);
+            
+            // 获取活跃的根节点（没有父节点或父节点为空）
+            _activeRoots = BuildTraceTree(activeTraces.ToList())
+                .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
+                .ToList();
 
-        // 获取已完成的根节点
-        _completedRoots = BuildTraceTree(completedTraces.ToList())
-            .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
-            .ToList();
+            // 获取已完成的根节点
+            _completedRoots = BuildTraceTree(completedTraces.ToList())
+                .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
+                .ToList();
+        }
     }
     
     private void SelectConversation(string? conversationId)
     {
-        Console.WriteLine($"🎯 SelectConversation called: {conversationId}");
+        Console.WriteLine($"🎯 选择会话 (gen_ai.conversation.id): {conversationId ?? "全部"}");
         _selectedConversationId = conversationId;
         _selectedActiveNode = null;      // 清除之前选中的节点
         _selectedCompletedNode = null;   // 清除之前选中的节点
         
-        Console.WriteLine($"📊 Before RefreshData - Active: {_activeRoots.Count}, Completed: {_completedRoots.Count}");
+        Console.WriteLine($"📊 筛选前 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
         RefreshData();
-        Console.WriteLine($"📊 After RefreshData - Active: {_activeRoots.Count}, Completed: {_completedRoots.Count}");
+        Console.WriteLine($"📊 筛选后 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
         
         StateHasChanged();  // 强制 UI 更新
     }

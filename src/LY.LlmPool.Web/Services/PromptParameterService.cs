@@ -86,9 +86,14 @@ public class PromptParameterService
                     return value?.ToString() ?? string.Empty;
                 }
 
-                // 如果参数不存在，保留原始占位符
-                return match.Value;
+                // 如果参数不存在，替换为空白字符串
+                return string.Empty;
             });
+        }
+        else
+        {
+            // 如果没有提供参数字典，将所有占位符替换为空白字符串
+            result = ParameterPattern.Replace(result, string.Empty);
         }
 
         // 第二步: 替换环境变量 @variable

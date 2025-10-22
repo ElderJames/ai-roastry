@@ -157,11 +157,14 @@ public class LlmPoolClient
         ChatOptions? options,
         Dictionary<string, object>? parameters)
     {
+        // 🎯 ConversationId 优先级: options.ConversationId > this.ConversationId > null (从响应提取)
+        string? effectiveConversationId = options?.ConversationId ?? this.ConversationId;
+        
         HttpClient httpClient;
 
         // 🎯 只在真正需要参数注入或 ConversationId 提取时才创建新的 handler 链
         bool needsParameterInjection = parameters?.Count > 0;
-        bool needsConversationIdExtraction = string.IsNullOrEmpty(this.ConversationId);
+        bool needsConversationIdExtraction = string.IsNullOrEmpty(effectiveConversationId);
         
         if (needsParameterInjection || needsConversationIdExtraction)
         {
@@ -173,7 +176,8 @@ public class LlmPoolClient
                 onConversationIdReceived: (convId) => 
                 {
                     // 🎯 从响应中接收到 ConversationId 后，更新客户端的 ConversationId
-                    if (string.IsNullOrEmpty(this.ConversationId))
+                    // 但不覆盖 options 中显式设置的值
+                    if (string.IsNullOrEmpty(options?.ConversationId) && string.IsNullOrEmpty(this.ConversationId))
                     {
                         this.ConversationId = convId;
                     }
@@ -192,6 +196,13 @@ public class LlmPoolClient
             foreach (var header in _httpClient.DefaultRequestHeaders)
             {
                 httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
+            }
+            
+            // 🎯 如果有 effectiveConversationId，添加到请求头
+            if (!string.IsNullOrEmpty(effectiveConversationId))
+            {
+                httpClient.DefaultRequestHeaders.Remove("X-Conversation-Id");
+                httpClient.DefaultRequestHeaders.Add("X-Conversation-Id", effectiveConversationId);
             }
         }
         else
@@ -269,13 +280,21 @@ public class LlmPoolClient
                 .Build();
         }
 
-        var chatOptions = new Microsoft.Extensions.AI.ChatOptions
+        // 如果传入了 options，使用它（它已经是 ChatOptions，继承自 Microsoft.Extensions.AI.ChatOptions）
+        // 否则创建默认的
+        var chatOptions = options ?? new ChatOptions();
+        
+        // 确保 Tools 被设置
+        if (tools.Count > 0 && chatOptions.Tools == null)
         {
-            Temperature = options?.Temperature.HasValue == true ? (float)options.Temperature.Value : null,
-            TopP = options?.TopP.HasValue == true ? (float)options.TopP.Value : null,
-            MaxOutputTokens = options?.MaxTokens,
-            Tools = tools.Count > 0 ? tools : null
-        };
+            chatOptions.Tools = tools;
+        }
+        
+        // 🎯 确保 ConversationId 被设置到 options 中（使用优先级后的值）
+        if (!string.IsNullOrEmpty(effectiveConversationId))
+        {
+            chatOptions.ConversationId = effectiveConversationId;
+        }
 
         return (chatClient, chatOptions);
     }
@@ -353,11 +372,19 @@ public class ClientMessage
     public IList<AIContent>? ContentItems { get; set; }
 }
 
-public class ChatOptions
+/// <summary>
+/// Chat options - directly use Microsoft.Extensions.AI.ChatOptions
+/// Note: Microsoft.Extensions.AI.ChatOptions already has ConversationId property
+/// </summary>
+public class ChatOptions : Microsoft.Extensions.AI.ChatOptions
 {
-    public double? Temperature { get; set; }
-    public double? TopP { get; set; }
-    public int? MaxTokens { get; set; }
+    // Inherits all properties from Microsoft.Extensions.AI.ChatOptions including:
+    // - Temperature
+    // - TopP
+    // - MaxOutputTokens (use this instead of MaxTokens)
+    // - ConversationId
+    // - ModelId
+    // - etc.
 }
 
 public class StreamingChatUpdate

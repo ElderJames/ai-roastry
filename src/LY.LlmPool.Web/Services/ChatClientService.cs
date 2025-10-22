@@ -901,6 +901,7 @@ public class ChatClientService : IChatClientService
     public IAsyncEnumerable<ChatStreamingUpdate> SendStreamingMessageWithDetailsAsync(
         LlmEndpoint config, 
         List<Microsoft.Extensions.AI.ChatMessage> messages, 
+        Dictionary<string, object>? parameters = null,
         IEnumerable<Microsoft.Extensions.AI.AITool>? tools = null)
     {
         return SendStreamingMessageWithDetailsInternalAsync(
@@ -908,7 +909,7 @@ public class ChatClientService : IChatClientService
             string.Empty, 
             config.Name, 
             messages, 
-            null, 
+            parameters, 
             tools);
     }
 

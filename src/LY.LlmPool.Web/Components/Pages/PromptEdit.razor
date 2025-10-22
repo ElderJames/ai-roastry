@@ -314,6 +314,14 @@
                                                     Disabled="@_testLoading" />
                                         }
                                     </SpaceItem>
+                                    @if (!string.IsNullOrWhiteSpace(config.ConversationId))
+                                    {
+                                        <SpaceItem>
+                                            <Tag Color="TagColor.Green">
+                                                🔗 ConversationId: @config.ConversationId
+                                            </Tag>
+                                        </SpaceItem>
+                                    }
                                     <SpaceItem>
                                         @if (config.ChatHistory.Any())
                                         {
@@ -369,6 +377,12 @@
                                             <Tag Color="TagColor.Blue">
                                                 <Icon Type="history" /> 对话历史 (@config.ChatHistory.Count 条消息)
                                             </Tag>
+                                            @if (!string.IsNullOrWhiteSpace(config.ConversationId))
+                                            {
+                                                <Tag Color="TagColor.Green">
+                                                    🔗 @config.ConversationId
+                                                </Tag>
+                                            }
                                         </div>
                                         
                                         @{
@@ -2401,6 +2415,17 @@
             {
                 try
                 {
+                    // 🎯 如果 ConversationId 为空，生成一个新的（用于关联多轮对话）
+                    if (string.IsNullOrWhiteSpace(config.ConversationId))
+                    {
+                        config.ConversationId = Guid.NewGuid().ToString("N");
+                        Console.WriteLine($"🆕 [PromptEdit] 生成新的 ConversationId: {config.ConversationId}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"♻️ [PromptEdit] 复用现有 ConversationId: {config.ConversationId}");
+                    }
+                    
                     config.IsStreaming = true;
                     config.TestResult = new PromptTestResult { Success = true };
                     StateHasChanged();
@@ -2518,6 +2543,17 @@
                         {
                             parameters = ParameterUtils.ParseParametersToDict(_editingPrompt.ModelParameters);
                         }
+                        else
+                        {
+                            parameters = new Dictionary<string, object>();
+                        }
+
+                        // 🎯 如果此配置有 ConversationId，通过参数传递（在请求头中发送）
+                        if (!string.IsNullOrWhiteSpace(config.ConversationId))
+                        {
+                            parameters["conversation_id"] = config.ConversationId;
+                            Console.WriteLine($"📤 [PromptEdit] 传递 ConversationId 参数: {config.ConversationId}");
+                        }
 
                         // 使用新的 SendStreamingMessageWithDetailsAsync API 以获取工具调用详情
                         streamingResponse = ChatClientService.SendStreamingMessageWithDetailsAsync(
@@ -2534,9 +2570,23 @@
                             throw new Exception("Selected endpoint not found.");
                         }
 
+                        // 准备参数
+                        Dictionary<string, object>? parameters = null;
+                        
+                        // 🎯 如果此配置有 ConversationId，通过参数传递（在请求头中发送）
+                        if (!string.IsNullOrWhiteSpace(config.ConversationId))
+                        {
+                            parameters = new Dictionary<string, object>
+                            {
+                                ["conversation_id"] = config.ConversationId
+                            };
+                            Console.WriteLine($"📤 [PromptEdit] 传递 ConversationId 参数: {config.ConversationId}");
+                        }
+
                         streamingResponse = ChatClientService.SendStreamingMessageWithDetailsAsync(
                             endpoint,
                             messages,
+                            parameters,
                             tools);
                     }
 
@@ -2795,7 +2845,9 @@
     private void ClearChatHistory(PromptTestConfig config)
     {
         config.ChatHistory.Clear();
-        _message.Success($"{GetConfigName(config)} 的聊天历史已清空");
+        // 🎯 清空历史时同时重置 ConversationId
+        config.ConversationId = null;
+        _message.Success($"{GetConfigName(config)} 的聊天历史已清空，新会话已开始");
         StateHasChanged();
     }
 
