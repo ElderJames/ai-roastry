@@ -139,14 +139,6 @@ namespace LY.LlmPool.Web.Controllers
                 requestActivity.SetTag("http.method", "POST");
                 requestActivity.SetTag("http.has_traceparent", hasTraceparent);
                 requestActivity.SetTag("llmpool.is_root", parentContext == default);  // 🎯 标记是否为根节点
-
-                _logger.LogInformation("🌐 LlmPool Server Activity 已启动: {OperationName}", requestActivity.OperationName);
-                _logger.LogInformation("   TraceId: {TraceId}", requestActivity.TraceId);
-                _logger.LogInformation("   SpanId: {SpanId}", requestActivity.SpanId);
-                _logger.LogInformation("   ParentSpanId: {ParentSpanId} (是否为根: {IsRoot})",
-                    requestActivity.ParentSpanId, parentContext == default);
-                _logger.LogInformation("   Activity.Current == requestActivity: {IsCurrent}",
-                    Activity.Current == requestActivity);
             }
             else
             {
@@ -468,6 +460,28 @@ namespace LY.LlmPool.Web.Controllers
                     if (promptTools != null && promptTools.Count > 0)
                     {
                         appActivity.SetTag("app.tools_count", promptTools.Count);
+                    }
+                    
+                    // 🎯 记录输入参数
+                    if (chatRequest.Parameters != null && chatRequest.Parameters.Count > 0)
+                    {
+                        var parametersJson = JsonSerializer.Serialize(chatRequest.Parameters, _jsonSerializerOptions);
+                        appActivity.SetTag("app.input.parameters", parametersJson);
+                        _logger.LogDebug("📝 记录输入参数到 App Activity: {ParamCount} parameters", chatRequest.Parameters.Count);
+                    }
+                    
+                    // 🎯 记录输入消息(包括替换后的 prompt)
+                    if (chatRequest.Messages != null && chatRequest.Messages.Count > 0)
+                    {
+                        var inputMessagesJson = JsonSerializer.Serialize(
+                            chatRequest.Messages.Select(m => new { 
+                                role = ExtractRole(m), 
+                                content = ExtractContent(m) 
+                            }).ToList(),
+                            _jsonSerializerOptions
+                        );
+                        appActivity.SetTag("app.input.messages", inputMessagesJson);
+                        _logger.LogDebug("📝 记录输入消息到 App Activity: {MessageCount} messages", chatRequest.Messages.Count);
                     }
 
                     _logger.LogInformation("📱 App Activity 已启动: {AppName}, TraceId={TraceId}, SpanId={SpanId}",
@@ -1177,6 +1191,10 @@ namespace LY.LlmPool.Web.Controllers
             // 流式调用 AI
             var firstChunk = true;
             var fullContent = new StringBuilder();
+            
+            // 🎯 记录流式响应的交互序列 (text-tool-text-tool-text)
+            // 支持表达一个 chunk 中的多个并行工具调用
+            var interactionSequence = new List<object>();
 
             // 🎯 AOP 优化: ActivityCaptureAttribute 已在 Action 执行前自动保存 Activity
             // 无需在 foreach 中手动捕获
@@ -1187,12 +1205,18 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     if (cancellationToken.IsCancellationRequested)
                         break;
-
+                    
+                    // 🎯 收集当前 chunk 的所有工具调用
+                    var currentChunkToolCalls = new List<object>();
+                    
                     // 处理文本内容
                     var text = update.Text ?? string.Empty;
                     if (!string.IsNullOrEmpty(text))
                     {
                         fullContent.Append(text);
+                        
+                        // 🎯 记录文本片段到交互序列
+                        interactionSequence.Add(new { type = "text", content = text });
 
                         // 🎯 使用强类型 OpenAI DTO
                         var chunk = new ChatCompletionChunk
@@ -1245,6 +1269,13 @@ namespace LY.LlmPool.Web.Controllers
                                 {
                                     argumentsJson = "{}";
                                 }
+                                
+                                // 🎯 收集到当前 chunk 的工具调用列表
+                                currentChunkToolCalls.Add(new { 
+                                    name = functionCall.Name,
+                                    call_id = callId,
+                                    arguments = argumentsJson
+                                });
 
                                 // 🎯 使用强类型 OpenAI DTO 构建工具调用
                                 var chunk = new ChatCompletionChunk
@@ -1282,14 +1313,34 @@ namespace LY.LlmPool.Web.Controllers
                                 };
 
                                 var toolCallJson = JsonSerializer.Serialize(chunk, _jsonSerializerOptions);
-                                await Response.WriteAsync($"data: {toolCallJson}\n\n");
+                                await Response.WriteAsync($"data: {toolCallJson}\n\n", cancellationToken: cancellationToken);
                                 await Response.Body.FlushAsync(cancellationToken);
 
-                                _logger.LogInformation("📤 返回工具调用 SSE 更新: {ToolName}, CallId: {CallId}", functionCall.Name, callId);
                                 firstChunk = false;
                             }
-                            // ❌ 移除工具结果的流式返回 - OpenAI 不在流式响应中返回工具结果
-                            // FunctionResultContent 由 FunctionInvokingChatClient 内部处理,不应该出现在流式输出中
+                        }
+                    }
+                    
+                    // 🎯 如果当前 chunk 有工具调用,将它们作为一组添加到交互序列
+                    if (currentChunkToolCalls.Count > 0)
+                    {
+                        if (currentChunkToolCalls.Count == 1)
+                        {
+                            // 单个工具调用,直接添加
+                            var singleTool = currentChunkToolCalls[0];
+                            interactionSequence.Add(new { 
+                                type = "tool_call",
+                                tool = singleTool
+                            });
+                        }
+                        else
+                        {
+                            // 多个工具调用,表示并行执行
+                            interactionSequence.Add(new { 
+                                type = "parallel_tool_calls",
+                                count = currentChunkToolCalls.Count,
+                                tools = currentChunkToolCalls.ToArray()
+                            });
                         }
                     }
                 }
@@ -1300,6 +1351,21 @@ namespace LY.LlmPool.Web.Controllers
                 {
                     currentActivity.SetTag("gen_ai.completion", fullContentText);
                     _logger.LogDebug("📝 记录输出内容到 Activity (Streaming): {Length} chars", fullContentText.Length);
+                }
+                
+                // 🎯 记录完整的交互序列到 Activity (展示 text-tool-text 的穿插顺序)
+                if (currentActivity != null && interactionSequence.Count > 0)
+                {
+                    var interactionJson = JsonSerializer.Serialize(interactionSequence, _jsonSerializerOptions);
+                    currentActivity.SetTag("gen_ai.interaction_sequence", interactionJson);
+                    _logger.LogDebug("📝 记录交互序列到 Activity: {Count} items", interactionSequence.Count);
+                    
+                    // 🎯 同时记录到父 Activity (如果是 app 调用,父级就是 appActivity)
+                    if (currentActivity.Parent != null)
+                    {
+                        currentActivity.Parent.SetTag("app.output.interaction_sequence", interactionJson);
+                        _logger.LogDebug("📝 记录交互序列到父 Activity: {Count} items", interactionSequence.Count);
+                    }
                 }
 
                 // 🎯 记录流式响应数据到 requestActivity

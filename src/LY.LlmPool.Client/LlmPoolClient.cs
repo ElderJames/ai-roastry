@@ -95,7 +95,10 @@ internal class ParameterInjectionHandler : DelegatingHandler
     }
 }
 
-public class LlmPoolClient
+/// <summary>
+/// LlmPool 客户端,用于与 LlmPool 服务端通信
+/// </summary>
+public class LlmPoolClient : ILlmPoolClient
 {
     private readonly HttpClient _httpClient;
     private readonly HttpMessageHandler? _customHandler; // 🎯 保存自定义 handler（用于测试 Mock）

@@ -101,7 +101,7 @@ public static class ServiceCollectionExtensions
                     });
             });
 
-        // 注册 LlmPoolClient
+        // 注册 LlmPoolClient (同时注册接口和实现类)
         services.AddSingleton<LlmPoolClient>(sp =>
         {
             // 使用 IHttpClientFactory 创建 HttpClient，它已配置了 OpenTelemetry instrumentation
@@ -112,6 +112,9 @@ public static class ServiceCollectionExtensions
             
             return new LlmPoolClient(httpClient, apiKey);
         });
+        
+        // 🎯 注册接口,指向同一个单例实例
+        services.AddSingleton<ILlmPoolClient>(sp => sp.GetRequiredService<LlmPoolClient>());
 
         return services;
     }

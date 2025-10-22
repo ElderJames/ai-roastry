@@ -4,8 +4,21 @@
     <Nullable>annotations</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
+    
+    <!-- NuGet 包信息 -->
+    <PackageId>LY.LlmPool.Client</PackageId>
+    <Version>1.0.1</Version>
+    <Authors>LynGen AI</Authors>
+    <Company>LynGen AI</Company>
+    <Product>LlmPool Client</Product>
+    <Description>LlmPool 客户端 SDK，提供统一的 LLM 调用接口，支持参数注入、工具插件、流式响应等功能。</Description>
+    <PackageTags>llm;ai;chatgpt;openai;semantic-kernel;client;sdk</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://git.liany.com.cn/lianyuan/llm-pool</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://git.liany.com.cn/lianyuan/llm-pool</PackageProjectUrl>
+    <Copyright>Copyright © Lianyuan 2025</Copyright>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.SemanticKernel" Version="1.53.0" />
