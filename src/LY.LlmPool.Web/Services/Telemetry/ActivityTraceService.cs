@@ -2,22 +2,28 @@ using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace LY.LlmPool.Web.Services.Telemetry;
 
 /// <summary>
 /// Activity 跟踪服务，用于监听和记录 App 调用及嵌套工具调用链路
+/// 🎯 使用 HybridCache 持久化追踪数据
 /// </summary>
 public class ActivityTraceService : IDisposable
 {
     private readonly ILogger<ActivityTraceService> _logger;
+    private readonly HybridCache _cache;
     private readonly ConcurrentDictionary<string, TraceNode> _activeTraces = new();
     private readonly ConcurrentQueue<TraceNode> _completedTraces = new();
+    private readonly ConcurrentDictionary<string, Activity> _activeActivities = new();  // 🎯 缓存真实的 Activity 对象
     private ActivityListener? _activityListener;
-    private const int MaxCompletedTraces = 100; // 保留最近 100 条完成的追踪
-
-    // 🎯 维护 TraceId 到 chat Activity 的映射,供工具调用时查找父级
-    private readonly ConcurrentDictionary<string, Activity> _traceToChatActivity = new();
+    private const int MaxCompletedTraces = 100000; // 保留最近 100000 条完成的追踪
+    
+    // 🎯 HybridCache 键名常量
+    private const string CacheKeyCompletedTraces = "ActivityTrace:CompletedTraces";
+    private const string CacheKeyConversations = "ActivityTrace:Conversations";
+    private const int CacheExpirationDays = 7; // 缓存保留7天
 
     // 🎯 实时事件通知
     public event EventHandler<TraceNode>? ActivityStarted;
@@ -26,39 +32,172 @@ public class ActivityTraceService : IDisposable
     
     /// <summary>
     /// 根据 TraceId 查找对应的 chat Activity
+    /// 🎯 直接从 _activeTraces 和 _completedTraces 中查询,不使用单独的缓存
     /// </summary>
     public Activity? GetChatActivityByTraceId(string traceId)
     {
-        _traceToChatActivity.TryGetValue(traceId, out var chatActivity);
-        Console.WriteLine($"🔍 GetChatActivityByTraceId({traceId}): {chatActivity?.OperationName ?? "NULL"}");
-        return chatActivity;
+        try
+        {
+            // 🎯 从活跃追踪中查找第一个 chat Activity
+            var chatNode = _activeTraces.Values
+                .FirstOrDefault(n => n.TraceId == traceId && n.OperationName.StartsWith("chat "));
+            
+            if (chatNode != null)
+            {
+                Console.WriteLine($"🔍 GetChatActivityByTraceId({traceId}): 找到活跃的 chat Activity: {chatNode.OperationName}");
+                // 注意: 无法返回真实的 Activity 对象,返回 null
+                return null;
+            }
+            
+            // 🎯 从已完成的追踪中查找第一个 chat Activity
+            chatNode = _completedTraces
+                .FirstOrDefault(n => n.TraceId == traceId && n.OperationName.StartsWith("chat "));
+            
+            if (chatNode != null)
+            {
+                Console.WriteLine($"🔍 GetChatActivityByTraceId({traceId}): 找到已完成的 chat Activity: {chatNode.OperationName}");
+                // 注意: 无法返回真实的 Activity 对象,返回 null
+                return null;
+            }
+
+            Console.WriteLine($"🔍 GetChatActivityByTraceId({traceId}): 未找到 chat Activity");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "查找 chat Activity 失败: {TraceId}", traceId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 获取最近的 chat TraceNode（用于并发工具调用时 AsyncLocal 丢失的场景）
+    /// 🎯 返回 TraceNode 而不是 Activity,因为无法重建 Activity 对象
+    /// </summary>
+    public TraceNode? GetLatestChatTraceNode()
+    {
+        try
+        {
+            // 🎯 从 _activeTraces 中查找最新的 chat Activity
+            var latestChatNode = _activeTraces.Values
+                .Where(n => n.OperationName.StartsWith("chat "))
+                .OrderByDescending(n => n.StartTime)
+                .FirstOrDefault();
+
+            if (latestChatNode == null)
+            {
+                Console.WriteLine("🔍 GetLatestChatTraceNode: 没有活跃的 chat Activity");
+                return null;
+            }
+
+            Console.WriteLine($"🔍 GetLatestChatTraceNode: {latestChatNode.OperationName} | TraceId: {latestChatNode.TraceId} | SpanId: {latestChatNode.SpanId}");
+            
+            return latestChatNode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取最新 chat TraceNode 失败");
+            return null;
+        }
     }
 
     /// <summary>
     /// 获取最近的 chat Activity（用于并发工具调用时 AsyncLocal 丢失的场景）
-    /// 按 StartTime 倒序,返回最新的 chat Activity
+    /// 🎯 从缓存的 Activity 对象中返回
     /// </summary>
     public Activity? GetLatestChatActivity()
     {
-        if (_traceToChatActivity.IsEmpty)
+        try
         {
-            Console.WriteLine("🔍 GetLatestChatActivity: 没有活跃的 chat Activity");
+            // 🎯 从 _activeActivities 中查找最新的 chat Activity
+            var latestChatActivity = _activeActivities.Values
+                .Where(a => a.OperationName.StartsWith("chat "))
+                .OrderByDescending(a => a.StartTimeUtc)
+                .FirstOrDefault();
+
+            if (latestChatActivity == null)
+            {
+                Console.WriteLine("🔍 GetLatestChatActivity: 没有活跃的 chat Activity");
+                return null;
+            }
+
+            Console.WriteLine($"🔍 GetLatestChatActivity: {latestChatActivity.OperationName} | TraceId: {latestChatActivity.TraceId} | SpanId: {latestChatActivity.SpanId}");
+            
+            return latestChatActivity;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取最新 chat Activity 失败");
             return null;
         }
-
-        // 按 StartTime 倒序排序,取最新的
-        var latestActivity = _traceToChatActivity.Values
-            .OrderByDescending(a => a.StartTimeUtc)
-            .FirstOrDefault();
-
-        Console.WriteLine($"🔍 GetLatestChatActivity: {latestActivity?.OperationName ?? "NULL"} | TraceId: {latestActivity?.TraceId.ToString() ?? "NULL"}");
-        return latestActivity;
     }
 
-    public ActivityTraceService(ILogger<ActivityTraceService> logger)
+    public ActivityTraceService(ILogger<ActivityTraceService> logger, HybridCache cache)
     {
         _logger = logger;
+        _cache = cache;
+        
+        // 🎯 从缓存中恢复已完成的追踪数据
+        _ = LoadCompletedTracesFromCacheAsync();
+        
         InitializeActivityListener();
+    }
+    
+    /// <summary>
+    /// 从 HybridCache 加载已完成的追踪数据
+    /// </summary>
+    private async Task LoadCompletedTracesFromCacheAsync()
+    {
+        try
+        {
+            var cachedTraces = await _cache.GetOrCreateAsync<List<TraceNode>>(
+                CacheKeyCompletedTraces,
+                async _ => await ValueTask.FromResult(new List<TraceNode>()),
+                new HybridCacheEntryOptions
+                {
+                    Expiration = TimeSpan.FromDays(CacheExpirationDays),
+                    LocalCacheExpiration = TimeSpan.FromHours(1)
+                });
+
+            if (cachedTraces != null && cachedTraces.Any())
+            {
+                foreach (var trace in cachedTraces.Take(MaxCompletedTraces))
+                {
+                    _completedTraces.Enqueue(trace);
+                }
+                _logger.LogInformation("📥 从缓存中恢复了 {Count} 条已完成的追踪记录", cachedTraces.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "从缓存加载追踪数据失败");
+        }
+    }
+    
+    /// <summary>
+    /// 保存已完成的追踪数据到 HybridCache
+    /// </summary>
+    private async Task SaveCompletedTracesToCacheAsync()
+    {
+        try
+        {
+            var tracesList = _completedTraces.ToList();
+            
+            await _cache.SetAsync(
+                CacheKeyCompletedTraces,
+                tracesList,
+                new HybridCacheEntryOptions
+                {
+                    Expiration = TimeSpan.FromDays(CacheExpirationDays),
+                    LocalCacheExpiration = TimeSpan.FromDays(2)
+                });
+            
+            _logger.LogDebug("💾 已保存 {Count} 条追踪记录到缓存", tracesList.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "保存追踪数据到缓存失败");
+        }
     }
 
     /// <summary>
@@ -128,22 +267,8 @@ public class ActivityTraceService : IDisposable
     /// </summary>
     private void OnActivityStarted(Activity activity)
     {
-        // 🎯 如果是 chat Activity,保存到映射中供工具调用时查找
-        // 关键:只保存每个 trace 中的第一个 chat Activity (即模型调用,非递归工具调用)
-        if (activity.OperationName.StartsWith("chat "))
-        {
-            var traceId = activity.TraceId.ToString();
-            
-            // 只在映射中不存在时才保存 (保留第一个 chat Activity)
-            if (_traceToChatActivity.TryAdd(traceId, activity))
-            {
-                Console.WriteLine($"📌 保存 chat Activity (第一个): TraceId={traceId}, SpanId={activity.SpanId}, Name={activity.OperationName}");
-            }
-            else
-            {
-                Console.WriteLine($"⏭️ 跳过 chat Activity (已存在): TraceId={traceId}, SpanId={activity.SpanId}, Name={activity.OperationName}");
-            }
-        }
+        // 🎯 缓存真实的 Activity 对象
+        _activeActivities.TryAdd(activity.SpanId.ToString(), activity);
         
         var node = new TraceNode
         {
@@ -270,6 +395,9 @@ public class ActivityTraceService : IDisposable
     /// </summary>
     private void OnActivityStopped(Activity activity)
     {
+        // 🎯 从缓存中移除 Activity 对象
+        _activeActivities.TryRemove(activity.SpanId.ToString(), out _);
+        
         var activityId = activity.Id ?? activity.TraceId.ToString();
         
         if (_activeTraces.TryRemove(activityId, out var node))
@@ -345,6 +473,9 @@ public class ActivityTraceService : IDisposable
             {
                 _completedTraces.TryDequeue(out _);
             }
+            
+            // 🎯 异步保存到 HybridCache
+            _ = SaveCompletedTracesToCacheAsync();
 
             // 🎯 触发事件通知
             ActivityStopped?.Invoke(this, node);

@@ -1,4 +1,4 @@
-using LY.LlmPool.Web.Data;
+﻿using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Tools;
 using LY.LlmPool.Web.Services.LoadBalancing;
@@ -10,7 +10,7 @@ public class AppService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
     private readonly ToolMetadataService _toolMetadataService;
-    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LlmPoolCacheService? _cacheService;
     private readonly LoadBalancerService? _loadBalancer;
     private readonly ILogger<AppService> _logger;
 
@@ -18,13 +18,13 @@ public class AppService
         IDbContextFactory<LlmDbContext> dbContextFactory,
         ToolMetadataService toolMetadataService,
         ILogger<AppService> logger,
-        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LlmPoolCacheService? cacheService = null,
         LoadBalancerService? loadBalancer = null)
     {
         _dbContextFactory = dbContextFactory;
         _toolMetadataService = toolMetadataService;
         _logger = logger;
-        _cacheWarmup = cacheWarmup;
+        _cacheService = cacheService;
         _loadBalancer = loadBalancer;
     }
 
@@ -73,9 +73,9 @@ public class AppService
     public async Task<LlmApp> AddAppAsync(LlmApp app)
     {
         // 检查名称全局唯一性
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(app.Name, "App");
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App");
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -110,9 +110,9 @@ public class AppService
     public async Task<LlmApp> UpdateAppAsync(LlmApp app)
     {
         // 检查名称全局唯一性（排除自身）
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(app.Name, "App", app.Id);
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App", app.Id);
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -163,14 +163,14 @@ public class AppService
         await dbContext.SaveChangesAsync();
 
         // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称）
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
             if (oldName != app.Name && _loadBalancer != null)
             {
                 _logger.LogInformation("App 名称变更: {OldName} -> {NewName}, 清除旧缓存", oldName, app.Name);
                 await _loadBalancer.InvalidateModelCacheAsync(oldName);
             }
-            await _cacheWarmup.OnAppChangedAsync(app.Name);
+            await _cacheService.RefreshModelCacheAsync(app.Name);
         }
 
         // 如果是 Tool 类型的 App,刷新缓存
@@ -208,9 +208,9 @@ public class AppService
         await dbContext.SaveChangesAsync();
 
         // 🎯 清除 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.RefreshModelCacheAsync(appName);
+            await _cacheService.RefreshModelCacheAsync(appName);
         }
 
         // 如果删除的是 Tool 类型的 App,刷新缓存
@@ -309,3 +309,4 @@ public class AppService
         return prompt;
     }
 }
+

@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
@@ -17,7 +17,7 @@ public class LlmPoolService
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
     private readonly IChatClientService _chatClientService;
     private readonly McpServerConfigService? _mcpService;
-    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LlmPoolCacheService? _cacheService;
     private readonly LoadBalancerService? _loadBalancer;
 
     public LlmPoolService(
@@ -25,14 +25,14 @@ public class LlmPoolService
         ILogger<LlmPoolService> logger,
         IChatClientService chatClientService,
         McpServerConfigService? mcpService = null,
-        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LlmPoolCacheService? cacheWarmup = null,
         LoadBalancerService? loadBalancer = null) // Optional to avoid circular dependency
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
         _chatClientService = chatClientService;
         _mcpService = mcpService;
-        _cacheWarmup = cacheWarmup;
+        _cacheService = cacheWarmup;
         _loadBalancer = loadBalancer;
     }
 
@@ -270,9 +270,10 @@ public class LlmPoolService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnEndpointChangedAsync(endpoint.Name, endpoint.Id);
+            await _cacheService.RefreshModelCacheAsync(endpoint.Name);
+            await _cacheService.RefreshModelCacheAsync(endpoint.Id);
         }
         
         return endpoint;
@@ -347,9 +348,10 @@ public class LlmPoolService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnEndpointChangedAsync(existing.Name, existing.Id);
+            await _cacheService.RefreshModelCacheAsync(existing.Name);
+            await _cacheService.RefreshModelCacheAsync(existing.Id);
         }
         
         return existing;
@@ -950,9 +952,9 @@ public class LlmPoolService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnAppChangedAsync(app.Name);
+            await _cacheService.RefreshModelCacheAsync(app.Name);
         }
         
         return app;
@@ -1012,9 +1014,9 @@ public class LlmPoolService
         {
             await _loadBalancer.InvalidateModelCacheAsync(oldName);
         }
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnAppChangedAsync(app.Name);
+            await _cacheService.RefreshModelCacheAsync(app.Name);
         }
         
         return existing;
@@ -1188,4 +1190,6 @@ public class LlmPoolService
 
     #endregion
 }
+
+
 

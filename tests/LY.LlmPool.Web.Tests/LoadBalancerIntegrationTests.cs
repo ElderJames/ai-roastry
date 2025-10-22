@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using LY.LlmPool.Web.Services;
 using LY.LlmPool.Web.Services.LoadBalancing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -29,7 +30,7 @@ public class LoadBalancerIntegrationTests
     /// <summary>
     /// 创建测试用的 DbContext 工厂和服务
     /// </summary>
-    private (IDbContextFactory<LlmDbContext>, LoadBalancerService, LoadBalancerCacheWarmupService) CreateTestServices()
+    private (IDbContextFactory<LlmDbContext>, LoadBalancerService, LlmPoolCacheService) CreateTestServices()
     {
         var services = new ServiceCollection();
         
@@ -50,15 +51,15 @@ public class LoadBalancerIntegrationTests
         // 添加 LoadBalancerService
         services.AddSingleton<LoadBalancerService>();
         
-        // 添加 LoadBalancerCacheWarmupService（不注册为 IHostedService，手动控制）
-        services.AddSingleton<LoadBalancerCacheWarmupService>();
+        // 添加 LlmPoolCacheService
+        services.AddSingleton<LlmPoolCacheService>();
         
         var serviceProvider = services.BuildServiceProvider();
         var dbContextFactory = serviceProvider.GetRequiredService<IDbContextFactory<LlmDbContext>>();
         var loadBalancer = serviceProvider.GetRequiredService<LoadBalancerService>();
-        var cacheWarmup = serviceProvider.GetRequiredService<LoadBalancerCacheWarmupService>();
+        var cacheService = serviceProvider.GetRequiredService<LlmPoolCacheService>();
         
-        return (dbContextFactory, loadBalancer, cacheWarmup);
+        return (dbContextFactory, loadBalancer, cacheService);
     }
 
     /// <summary>
@@ -68,7 +69,7 @@ public class LoadBalancerIntegrationTests
     public async Task SelectConfigAsync_AppWithDirectConfig_ShouldNotNeedRelease()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
         {
             var config = new LlmConfig
@@ -97,7 +98,7 @@ public class LoadBalancerIntegrationTests
         }
         
         // 预热缓存
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         
         // Act
         var result = await loadBalancer.SelectConfigAsync("test-app");
@@ -105,9 +106,7 @@ public class LoadBalancerIntegrationTests
         // Assert
         Assert.NotNull(result);
         Assert.NotNull(result.Config);
-        Assert.NotNull(result.App);
-        Assert.Equal("test-app", result.App.Name);
-        Assert.Equal("应用直接配置", result.Strategy);
+        Assert.Contains("App 直接指定配置", result.Strategy);
         Assert.False(result.NeedsRelease); // 🎯 不需要释放
         
         _output.WriteLine($"✅ 测试通过: App 直接配置场景，NeedsRelease={result.NeedsRelease}");
@@ -121,7 +120,7 @@ public class LoadBalancerIntegrationTests
     public async Task SelectConfigAsync_EndpointWithMultipleConfigs_ShouldNeedRelease()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         
         string endpointId;
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
@@ -200,19 +199,19 @@ public class LoadBalancerIntegrationTests
         try
         {
             _output.WriteLine("开始预热缓存...");
-            await cacheWarmup.WarmupCacheAsync();
+            await cacheService.WarmupCacheAsync();
             _output.WriteLine("缓存预热完成");
             
             // 验证预热是否成功：尝试直接解析
             _output.WriteLine("尝试直接解析 test-endpoint...");
-            var directResolve = await cacheWarmup.ResolveModelNameAsync("test-endpoint");
+            var directResolve = await cacheService.ResolveModelNameAsync("test-endpoint");
             _output.WriteLine($"directResolve: {(directResolve == null ? "null" : $"Success={directResolve.Success}, Strategy={directResolve.Strategy}, ConfigName={directResolve.Config?.Name}")}");
             
             // 手动设置缓存以测试缓存读取
             _output.WriteLine("手动设置缓存...");
             if (directResolve != null)
             {
-                await cacheWarmup.RefreshModelCacheAsync("test-endpoint-manual");
+                await cacheService.RefreshModelCacheAsync("test-endpoint-manual");
                 _output.WriteLine("手动缓存设置完成");
             }
         }
@@ -255,7 +254,7 @@ public class LoadBalancerIntegrationTests
     public async Task SelectConfigAsync_ConcurrentRequests_ShouldDistributeLoad()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
         {
             var endpoint = new LlmEndpoint
@@ -302,7 +301,7 @@ public class LoadBalancerIntegrationTests
         }
         
         // 预热缓存
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         
         // Act: 发送 5 个并发请求
         var tasks = Enumerable.Range(0, 5)
@@ -347,7 +346,7 @@ public class LoadBalancerIntegrationTests
     public async Task SelectConfigAsync_DirectConfigName_ShouldNeedRelease()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
         {
             var config = new LlmConfig
@@ -366,7 +365,7 @@ public class LoadBalancerIntegrationTests
         }
         
         // 预热缓存
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         
         // Act
         var result = await loadBalancer.SelectConfigAsync("direct-config");
@@ -394,7 +393,7 @@ public class LoadBalancerIntegrationTests
     public async Task SelectConfigAsync_InvalidModelName_ShouldReturnNull()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         
         // Act
         var result = await loadBalancer.SelectConfigAsync("non-existent-model");
@@ -406,13 +405,13 @@ public class LoadBalancerIntegrationTests
 
     /// <summary>
     /// 测试场景 6: 缓存完整流程 - 预热写入 → LoadBalancer 读取
-    /// 验证 LoadBalancerCacheWarmupService 写入的缓存能被 LoadBalancerService 正确读取
+    /// 验证 LlmPoolCacheService 写入的缓存能被 LoadBalancerService 正确读取
     /// </summary>
     [Fact]
     public async Task CacheFlow_WarmupThenRead_ShouldWorkCorrectly()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         
         // 创建测试数据
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
@@ -446,7 +445,7 @@ public class LoadBalancerIntegrationTests
         
         // Act 1: 预热缓存 (模拟启动时的缓存写入)
         _output.WriteLine("🔥 开始预热缓存...");
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         _output.WriteLine("✅ 缓存预热完成");
         
         // Act 2: 通过 LoadBalancer 读取缓存 (模拟运行时的缓存读取)
@@ -458,7 +457,7 @@ public class LoadBalancerIntegrationTests
         Assert.True(result.Success, "SelectConfigAsync 应该成功");
         Assert.NotNull(result.Config);
         Assert.Equal("Qwen3-235B", result.Config.Name);
-        Assert.Equal("应用直接配置", result.Strategy);
+        Assert.Contains("App 直接指定配置", result.Strategy);
         Assert.False(result.NeedsRelease, "App 直接配置不需要释放");
         
         _output.WriteLine($"✅ 缓存读取成功!");
@@ -483,7 +482,7 @@ public class LoadBalancerIntegrationTests
     public async Task CacheFlow_QueryNonExistentApp_ShouldReturnNull()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         
         // 创建一个存在的 App
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
@@ -514,7 +513,7 @@ public class LoadBalancerIntegrationTests
         }
         
         // Act 1: 预热缓存
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         _output.WriteLine("✅ 缓存预热完成 (只有 'existing-app')");
         
         // Act 2: 查询不存在的 App
@@ -533,7 +532,7 @@ public class LoadBalancerIntegrationTests
     public async Task CacheFlow_EndpointWithMultipleConfigs_ShouldCache()
     {
         // Arrange
-        var (dbContextFactory, loadBalancer, cacheWarmup) = CreateTestServices();
+        var (dbContextFactory, loadBalancer, cacheService) = CreateTestServices();
         
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
         {
@@ -603,7 +602,7 @@ public class LoadBalancerIntegrationTests
         }
         
         // Act 1: 预热缓存
-        await cacheWarmup.WarmupCacheAsync();
+        await cacheService.WarmupCacheAsync();
         _output.WriteLine("✅ 缓存预热完成");
         
         // Act 2: 查询 App

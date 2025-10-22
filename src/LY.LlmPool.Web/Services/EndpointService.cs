@@ -1,4 +1,4 @@
-using LY.LlmPool.Web.Data;
+﻿using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.LoadBalancing;
 using Microsoft.EntityFrameworkCore;
@@ -8,16 +8,16 @@ namespace LY.LlmPool.Web.Services;
 public class EndpointService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
-    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
+    private readonly LlmPoolCacheService? _cacheService;
     private readonly LoadBalancerService? _loadBalancer;
 
     public EndpointService(
         IDbContextFactory<LlmDbContext> dbContextFactory,
-        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LlmPoolCacheService? cacheWarmup = null,
         LoadBalancerService? loadBalancer = null)
     {
         _dbContextFactory = dbContextFactory;
-        _cacheWarmup = cacheWarmup;
+        _cacheService = cacheWarmup;
         _loadBalancer = loadBalancer;
     }
 
@@ -44,9 +44,9 @@ public class EndpointService
     public async Task<LlmEndpoint> AddEndpointAsync(LlmEndpoint endpoint)
     {
         // 检查名称全局唯一性
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint");
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint");
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -59,9 +59,10 @@ public class EndpointService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnEndpointChangedAsync(endpoint.Name, endpoint.Id);
+            await _cacheService.RefreshModelCacheAsync(endpoint.Name);
+            await _cacheService.RefreshModelCacheAsync(endpoint.Id);
         }
         
         return endpoint;
@@ -70,9 +71,9 @@ public class EndpointService
     public async Task<LlmEndpoint> UpdateEndpointAsync(LlmEndpoint endpoint)
     {
         // 检查名称全局唯一性（排除自身）
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint", endpoint.Id);
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(endpoint.Name, "Endpoint", endpoint.Id);
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -139,7 +140,7 @@ public class EndpointService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称和旧 ID）
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
             if (oldName != existing.Name && _loadBalancer != null)
             {
@@ -147,7 +148,8 @@ public class EndpointService
                 // 也需要清除 ID 映射的旧缓存（因为 Endpoint 可以通过 ID 访问）
                 await _loadBalancer.InvalidateModelCacheAsync(existing.Id);
             }
-            await _cacheWarmup.OnEndpointChangedAsync(existing.Name, existing.Id);
+            await _cacheService.RefreshModelCacheAsync(existing.Name);
+            await _cacheService.RefreshModelCacheAsync(existing.Id);
         }
         
         return existing;
@@ -167,10 +169,10 @@ public class EndpointService
         await dbContext.SaveChangesAsync();
         
         // 🎯 清除 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.RefreshModelCacheAsync(endpointName);
-            await _cacheWarmup.RefreshModelCacheAsync(id);
+            await _cacheService.RefreshModelCacheAsync(endpointName);
+            await _cacheService.RefreshModelCacheAsync(id);
         }
     }
 
@@ -208,3 +210,4 @@ public class EndpointService
         return best;
     }
 }
+

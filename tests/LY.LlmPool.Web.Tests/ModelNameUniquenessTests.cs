@@ -32,7 +32,7 @@ public class ModelNameUniquenessTests
     /// <summary>
     /// 创建测试用的服务
     /// </summary>
-    private async Task<(IDbContextFactory<LlmDbContext>, AppService, ConfigService, EndpointService, LoadBalancerCacheWarmupService)> CreateTestServicesAsync()
+    private async Task<(IDbContextFactory<LlmDbContext>, AppService, ConfigService, EndpointService, LlmPoolCacheService)> CreateTestServicesAsync()
     {
         var services = new ServiceCollection();
         
@@ -53,7 +53,7 @@ public class ModelNameUniquenessTests
         // 添加服务
         services.AddSingleton<McpClientsFactory>();
         services.AddSingleton<LoadBalancerService>();
-        services.AddSingleton<LoadBalancerCacheWarmupService>();
+        services.AddSingleton<LlmPoolCacheService>();
         services.AddTransient<AppService>();
         services.AddTransient<ConfigService>();
         services.AddTransient<EndpointService>();
@@ -65,7 +65,7 @@ public class ModelNameUniquenessTests
         var appService = serviceProvider.GetRequiredService<AppService>();
         var configService = serviceProvider.GetRequiredService<ConfigService>();
         var endpointService = serviceProvider.GetRequiredService<EndpointService>();
-        var cacheWarmup = serviceProvider.GetRequiredService<LoadBalancerCacheWarmupService>();
+        var cacheService = serviceProvider.GetRequiredService<LlmPoolCacheService>();
         
         // 初始化数据库
         await using (var dbContext = await dbContextFactory.CreateDbContextAsync())
@@ -83,14 +83,14 @@ public class ModelNameUniquenessTests
             await dbContext.SaveChangesAsync();
         }
         
-        return (dbContextFactory, appService, configService, endpointService, cacheWarmup);
+        return (dbContextFactory, appService, configService, endpointService, cacheService);
     }
 
     [Fact]
     public async Task CheckModelNameUniqueness_SameName_DifferentEntities_ShouldFail()
     {
         // Arrange
-        var (dbContextFactory, appService, configService, endpointService, cacheWarmup) = await CreateTestServicesAsync();
+        var (dbContextFactory, appService, configService, endpointService, cacheService) = await CreateTestServicesAsync();
         const string duplicateName = "duplicate-model";
 
         await using var dbContext = await dbContextFactory.CreateDbContextAsync();
@@ -352,7 +352,7 @@ public class ModelNameUniquenessTests
     public async Task CheckModelNameUniqueness_DirectMethod_ShouldDetectConflicts()
     {
         // Arrange
-        var (dbContextFactory, _, configService, _, cacheWarmup) = await CreateTestServicesAsync();
+        var (dbContextFactory, _, configService, _, cacheService) = await CreateTestServicesAsync();
 
         await using var dbContext = await dbContextFactory.CreateDbContextAsync();
         var modelTypeId = dbContext.ModelTypes.First().Id;
@@ -369,12 +369,12 @@ public class ModelNameUniquenessTests
         await configService.AddConfigAsync(config);
 
         // Act & Assert
-        var error = await cacheWarmup.CheckModelNameUniquenessAsync("direct-test", "App");
+        var error = await cacheService.CheckModelNameUniquenessAsync("direct-test", "App");
         Assert.NotNull(error);
         Assert.Contains("Config", error);
         _output.WriteLine($"✅ 直接方法检测冲突成功: {error}");
 
-        error = await cacheWarmup.CheckModelNameUniquenessAsync("non-existent", "App");
+        error = await cacheService.CheckModelNameUniquenessAsync("non-existent", "App");
         Assert.Null(error);
         _output.WriteLine("✅ 直接方法检测唯一名称成功");
     }

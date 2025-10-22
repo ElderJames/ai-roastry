@@ -126,7 +126,7 @@ internal class AppToolActivityScope : IActivityScope
             var activityTraceService = serviceProvider.GetService<ActivityTraceService>();
             if (activityTraceService != null)
             {
-                // 获取最近的 chat Activity（按开始时间倒序）
+                // 🎯 获取最近的 chat Activity（从缓存的 Activity 对象中）
                 parentActivity = activityTraceService.GetLatestChatActivity();
                 
                 if (parentActivity != null)

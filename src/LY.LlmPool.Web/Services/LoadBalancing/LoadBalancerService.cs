@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data.Entities;
-using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Logging;
 
 namespace LY.LlmPool.Web.Services.LoadBalancing;
@@ -9,13 +8,12 @@ namespace LY.LlmPool.Web.Services.LoadBalancing;
 /// 负载均衡服务
 /// 负责为 Endpoint 选择最优的 LlmConfig
 /// 支持进程内部调用和 HTTP API 调用
-/// 使用 HybridCache 缓存模型名称解析结果
+/// 🎯 统一使用 LlmPoolCacheService 进行缓存管理
 /// </summary>
 public class LoadBalancerService
 {
     private readonly ILogger<LoadBalancerService> _logger;
-    private readonly HybridCache _cache;
-    private LoadBalancerCacheWarmupService? _warmupService; // 🎯 延迟注入,避免循环依赖
+    private readonly IServiceProvider _serviceProvider; // 🎯 用于延迟获取 LlmPoolCacheService
     
     // 🎯 跟踪每个配置当前的请求数（用于负载均衡）
     private readonly ConcurrentDictionary<string, int> _configRequestCounts = new();
@@ -25,86 +23,87 @@ public class LoadBalancerService
     
     // 配置：等待空闲配置的最大时间（秒）
     private const int MaxWaitForIdleSeconds = 3;
-    
-    // 🎯 统一缓存键前缀（modelName -> ConfigSelectionResult）
-    internal const string CacheKeyPrefix = "lb:model:";
-    internal static readonly TimeSpan CacheExpiration = TimeSpan.FromMinutes(5);
 
     public LoadBalancerService(
         ILogger<LoadBalancerService> logger,
-        HybridCache cache)
+        IServiceProvider serviceProvider) // 🎯 注入 IServiceProvider
     {
         _logger = logger;
-        _cache = cache;
-    }
-
-    /// <summary>
-    /// 设置缓存预热服务（避免构造函数循环依赖）
-    /// 🎯 由 LoadBalancerCacheWarmupService 在启动时调用
-    /// </summary>
-    internal void SetWarmupService(LoadBalancerCacheWarmupService warmupService)
-    {
-        _warmupService = warmupService;
+        _serviceProvider = serviceProvider;
     }
 
     /// <summary>
     /// 解析模型名称并返回配置选择结果
-    /// 🎯 优先从缓存读取，缓存未命中时自动降级到数据库查询
+    /// 🎯 统一使用 LlmPoolCacheService 进行缓存管理
     /// </summary>
     /// <param name="modelName">模型名称（可以是 App 名称、Config 名称、Endpoint 名称或 ID）</param>
     /// <returns>配置选择结果</returns>
     public async Task<ConfigSelectionResult?> SelectConfigAsync(string modelName)
     {
-        _logger.LogDebug("从缓存解析模型名称: {ModelName}", modelName);
+        _logger.LogDebug("从 LlmPoolCacheService 解析模型名称: {ModelName}", modelName);
 
-        // 🎯 先尝试从缓存读取
-        var cacheKey = $"{CacheKeyPrefix}{modelName}";
-        var cacheNotFoundMarker = new ConfigSelectionResult { Success = false, Message = "__CACHE_NOT_FOUND__" };
-        
-        _logger.LogDebug("🔍 [LoadBalancer] 尝试从缓存读取: Key={CacheKey}", cacheKey);
-        
-        var result = await _cache.GetOrCreateAsync<ConfigSelectionResult>(
-            cacheKey,
-            cancel => new ValueTask<ConfigSelectionResult>(cacheNotFoundMarker)
-        );
-
-        _logger.LogDebug("🔍 [LoadBalancer] 缓存读取结果: Message={Message}, Success={Success}", 
-            result.Message ?? "(null)", result.Success);
-
-        // 如果缓存命中，直接返回
-        if (result.Message != "__CACHE_NOT_FOUND__" && result.Success)
+        // 🎯 统一使用 LlmPoolCacheService 进行缓存管理（避免两个 _cache 不同步）
+        var cacheService = _serviceProvider.GetService<LlmPoolCacheService>();
+        if (cacheService == null)
         {
-            _logger.LogInformation("✅ 模型 '{ModelName}' 缓存命中: Strategy={Strategy}, Config={ConfigName}",
-                modelName, result.Strategy, result.Config?.Name);
+            _logger.LogError("❌ LlmPoolCacheService 未就绪，无法解析模型名称: {ModelName}", modelName);
+            return null;
+        }
+
+        // 🎯 调用 LlmPoolCacheService 的统一方法（内部会先查缓存，再查数据库）
+        var result = await cacheService.ResolveModelNameAsync(modelName);
+        
+        if (result == null || !result.Success)
+        {
+            _logger.LogError("❌ 模型 '{ModelName}' 解析失败", modelName);
+            return null;
+        }
+
+        // 🎯 AgentGroup 直接返回，不进行配置选择
+        if (result.IsAgentGroup)
+        {
+            _logger.LogInformation("✅ 模型 '{ModelName}' 是 AgentGroup: {AppName}",
+                modelName, result.App?.Name);
             return result;
         }
-
-        // 🎯 缓存未命中，如果设置了 WarmupService，则降级到数据库查询
-        if (_warmupService != null)
+        
+        // 🎯 如果缓存的结果包含多个可用配置,根据并发数选择最优配置
+        if (result.AvailableConfigs != null && result.AvailableConfigs.Count > 1)
         {
-            _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，降级到数据库查询 | CacheKey={CacheKey}", 
-                modelName, cacheKey);
-
-            var dbResult = await _warmupService.ResolveModelNameAsync(modelName);
+            _logger.LogInformation("🎯 Endpoint 有 {Count} 个可用配置，根据并发数选择最优配置...", 
+                result.AvailableConfigs.Count);
             
-            if (dbResult != null && dbResult.Success)
-            {
-                // 查询成功，写入缓存
-                await _cache.SetAsync(cacheKey, dbResult, new HybridCacheEntryOptions { Expiration = CacheExpiration });
-                _logger.LogInformation("✅ 模型 '{ModelName}' 从数据库解析成功并已缓存: Strategy={Strategy}, Config={ConfigName}",
-                    modelName, dbResult.Strategy, dbResult.Config?.Name);
-                return dbResult;
-            }
-            else
-            {
-                _logger.LogError("❌ 模型 '{ModelName}' 在数据库中也未找到", modelName);
-                return null;
-            }
+            // 🎯 选择当前并发数最少的配置（优先）,然后按 Priority 排序
+            var selectedConfig = result.AvailableConfigs
+                .Select(c => new
+                {
+                    Config = c,
+                    RequestCount = _configRequestCounts.GetOrAdd(c.Id!, 0)
+                })
+                .OrderBy(x => x.RequestCount)
+                .ThenBy(x => result.AvailableConfigs.IndexOf(x.Config)) // 保持 Priority 顺序
+                .First()
+                .Config;
+            
+            _logger.LogInformation("✅ 从 {Count} 个配置中选择: {ConfigName} (当前并发: {Concurrent})",
+                result.AvailableConfigs.Count, 
+                selectedConfig.Name, 
+                _configRequestCounts.GetOrAdd(selectedConfig.Id!, 0));
+            
+            // 🎯 更新选择结果
+            result.Config = selectedConfig;
+            result.Strategy = $"{result.Strategy} (并发优化选择)";
+            result.NeedsRelease = true; // 🎯 多配置选择需要释放
+            
+            // 🎯 立即增加请求计数,确保下一次请求能看到最新状态
+            IncrementRequestCount(selectedConfig.Id!);
+            _logger.LogDebug("📈 配置 {ConfigName} 被选中,立即更新请求计数: {Count}",
+                selectedConfig.Name, _configRequestCounts[selectedConfig.Id!]);
         }
-
-        // 🎯 WarmupService 未设置（程序启动初期），直接返回缓存未命中
-        _logger.LogWarning("❌ 模型 '{ModelName}' 缓存未命中，WarmupService 未就绪，无法降级查询", modelName);
-        return null;
+        
+        _logger.LogInformation("✅ 模型 '{ModelName}' 解析成功: Strategy={Strategy}, Config={ConfigName}",
+            modelName, result.Strategy, result.Config?.Name);
+        return result;
     }
 
     /// <summary>
@@ -373,11 +372,20 @@ public class LoadBalancerService
 
     /// <summary>
     /// 清除指定模型名称的缓存
+    /// 🎯 委托给 LlmPoolCacheService 进行统一管理
     /// </summary>
     public async Task InvalidateModelCacheAsync(string modelName)
     {
-        await _cache.RemoveAsync($"{CacheKeyPrefix}{modelName}");
-        _logger.LogDebug("🗑️ 已清除模型缓存: {ModelName}", modelName);
+        var cacheService = _serviceProvider.GetService<LlmPoolCacheService>();
+        if (cacheService != null)
+        {
+            await cacheService.InvalidateModelCacheAsync(modelName);
+            _logger.LogDebug("🗑️ 已清除模型缓存: {ModelName}", modelName);
+        }
+        else
+        {
+            _logger.LogWarning("⚠️ LlmPoolCacheService 未就绪，无法清除缓存: {ModelName}", modelName);
+        }
     }
 }
 
@@ -420,6 +428,12 @@ public class ConfigSelectionResult
     /// 是否是 AgentGroup 应用
     /// </summary>
     public bool IsAgentGroup { get; set; }
+
+    /// <summary>
+    /// 所有可用配置列表（用于 Endpoint 多配置场景）
+    /// 🎯 缓存时保存所有配置,使用时再进行负载均衡选择
+    /// </summary>
+    public List<LlmConfig>? AvailableConfigs { get; set; }
 
     /// <summary>
     /// 消息

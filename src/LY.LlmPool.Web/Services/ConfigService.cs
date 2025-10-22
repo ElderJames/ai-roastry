@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
@@ -10,17 +10,17 @@ namespace LY.LlmPool.Web.Services;
 public class ConfigService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
-    private readonly LoadBalancerCacheWarmupService? _cacheWarmup;
     private readonly LoadBalancerService? _loadBalancer;
+    private readonly LlmPoolCacheService _cacheService; // 🎯 统一缓存管理
     private readonly Dictionary<string, SemaphoreSlim> _configLocks = new();
 
     public ConfigService(
         IDbContextFactory<LlmDbContext> dbContextFactory,
-        LoadBalancerCacheWarmupService? cacheWarmup = null,
+        LlmPoolCacheService cacheService, // 🎯 注入缓存服务
         LoadBalancerService? loadBalancer = null) // Optional to avoid circular dependency
     {
         _dbContextFactory = dbContextFactory;
-        _cacheWarmup = cacheWarmup;
+        _cacheService = cacheService;
         _loadBalancer = loadBalancer;
     }
 
@@ -63,9 +63,9 @@ public class ConfigService
     public async Task<LlmConfig> AddConfigAsync(LlmConfig config)
     {
         // 检查名称全局唯一性
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(config.Name, "Config");
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(config.Name, "Config");
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -80,9 +80,9 @@ public class ConfigService
         await dbContext.SaveChangesAsync();
         
         // 🎯 刷新 LoadBalancer 缓存
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            await _cacheWarmup.OnConfigChangedAsync(config.Name, config.Id);
+            await _cacheService.RefreshModelCacheAsync(config.Name);
         }
         
         return config;
@@ -91,9 +91,9 @@ public class ConfigService
     public async Task<LlmConfig> UpdateConfigAsync(LlmConfig config)
     {
         // 检查名称全局唯一性（排除自身）
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
-            var uniquenessError = await _cacheWarmup.CheckModelNameUniquenessAsync(config.Name, "Config", config.Id);
+            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(config.Name, "Config", config.Id);
             if (uniquenessError != null)
             {
                 throw new InvalidOperationException(uniquenessError);
@@ -120,14 +120,16 @@ public class ConfigService
 
         await dbContext.SaveChangesAsync();
         
-        // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称）
-        if (_cacheWarmup != null)
+        // 🎯 使用统一缓存服务清理缓存（会自动触发 LoadBalancer 缓存预热）
+        if (!string.IsNullOrEmpty(config.Id))
         {
-            if (oldName != config.Name && _loadBalancer != null)
-            {
-                await _loadBalancer.InvalidateModelCacheAsync(oldName);
-            }
-            await _cacheWarmup.OnConfigChangedAsync(config.Name, config.Id);
+            await _cacheService.InvalidateConfigRelatedCachesAsync(config.Id);
+        }
+        
+        // 🎯 如果名称变更，清除旧名称的 LoadBalancer 缓存
+        if (oldName != config.Name && _loadBalancer != null)
+        {
+            await _loadBalancer.InvalidateModelCacheAsync(oldName);
         }
         
         return existing;
@@ -151,10 +153,10 @@ public class ConfigService
         {
             await _loadBalancer.InvalidateModelCacheAsync(configName);
         }
-        if (_cacheWarmup != null)
+        if (_cacheService != null)
         {
             // 清除所有引用此 Config 的实体缓存
-            await _cacheWarmup.OnConfigChangedAsync(configName, id);
+            await _cacheService.RefreshModelCacheAsync(configName);
         }
     }
 
@@ -214,3 +216,6 @@ public class ConfigService
             .ToList();
     }
 }
+
+
+

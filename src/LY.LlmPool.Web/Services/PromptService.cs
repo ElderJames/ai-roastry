@@ -13,15 +13,18 @@ public class PromptService
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
     private readonly IChatClientService _chatClientService;
     private readonly ILogger<PromptService> _logger;
+    private readonly LlmPoolCacheService _cacheService; // 🎯 缓存服务
 
     public PromptService(
         IDbContextFactory<LlmDbContext> dbContextFactory, 
         IChatClientService chatClientService,
-        ILogger<PromptService> logger)
+        ILogger<PromptService> logger,
+        LlmPoolCacheService cacheService) // 🎯 注入缓存服务
     {
         _dbContextFactory = dbContextFactory;
         _chatClientService = chatClientService;
         _logger = logger;
+        _cacheService = cacheService;
     }
 
     public async Task<List<LlmPrompt>> GetPromptsAsync()
@@ -153,7 +156,8 @@ public class PromptService
             throw new KeyNotFoundException($"Prompt with ID {promptId} not found.");
         }
 
-        var configService = new ConfigService(_dbContextFactory);
+        // 🎯 使用注入的缓存服务创建 ConfigService
+        var configService = new ConfigService(_dbContextFactory, _cacheService);
         var config = await configService.GetConfigByIdAsync(configId);
         if (config == null)
         {

@@ -76,6 +76,9 @@ builder.Services.AddScoped<IChatClientService, ChatClientService>();
 builder.Services.AddScoped(sp => (ChatClientService)sp.GetRequiredService<IChatClientService>());
 builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状态服务,可被 Singleton 依赖(包含环境变量替换功能)
 builder.Services.AddScoped<CallRecordService>();
+
+// 🎯 添加统一的缓存管理服务（Singleton - 管理全局缓存）
+builder.Services.AddSingleton<LlmPoolCacheService>();
 builder.Services.AddScoped<LY.LlmPool.Web.Services.Agents.AgentOrchestratorService>();
 builder.Services.AddScoped<McpServerConfigService>();
 
