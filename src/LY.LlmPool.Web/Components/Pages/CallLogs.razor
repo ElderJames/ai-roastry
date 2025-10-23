@@ -5,13 +5,29 @@
 @inject ChatExecutionPersistenceService PersistenceService
 @inject NavigationManager NavigationManager
 @inject MessageService _message
+@implements IDisposable
 
 <PageTitle>调用记录</PageTitle>
 
 <div style="padding: 24px;">
     <PageHeader Title="调用记录" Subtitle="@_pageSubtitle">
         <PageHeaderExtra>
-            <Button OnClick="GoBack"><Icon Type="arrow-left" /> 返回</Button>
+            <Space>
+                <SpaceItem>
+                    <Tag Color="@(_autoRefresh ? "green" : "default")">
+                        @(_autoRefresh ? "实时刷新中" : "已暂停")
+                    </Tag>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@(_autoRefresh ? ButtonType.Default : ButtonType.Primary)" 
+                            OnClick="ToggleAutoRefresh">
+                        @(_autoRefresh ? "暂停" : "恢复")
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button OnClick="GoBack"><Icon Type="arrow-left" /> 返回</Button>
+                </SpaceItem>
+            </Space>
         </PageHeaderExtra>
     </PageHeader>
 
@@ -350,6 +366,11 @@
     private bool _loading = true;
     private bool _loadingNodes = false;
     private string _pageSubtitle = "";
+    
+    // 🎯 自动刷新相关
+    private bool _autoRefresh = true;
+    private System.Threading.Timer? _timer;
+    private bool _selectedRecordCompleted = false; // 标记选中的记录是否已完成
 
     // 工具调用展示数据
     private class ToolCallDisplayData
@@ -408,6 +429,19 @@
 
         _pageSubtitle = $"App: {AppName}";
         await LoadRecordsAsync();
+        
+        // 🎯 启动定时器（2秒刷新一次）
+        _timer = new System.Threading.Timer(async _ =>
+        {
+            if (_autoRefresh)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshDataAsync();
+                    StateHasChanged();
+                });
+            }
+        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
     }
 
     private async Task LoadRecordsAsync()
@@ -426,6 +460,51 @@
             _loading = false;
         }
     }
+    
+    // 🎯 自动刷新数据
+    private async Task RefreshDataAsync()
+    {
+        try
+        {
+            // 刷新记录列表
+            var newRecords = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, 100);
+            _records = newRecords;
+            
+            // 🎯 如果有选中的记录且该记录未完成,则刷新时间线节点
+            if (!string.IsNullOrEmpty(_selectedRecordId) && !_selectedRecordCompleted)
+            {
+                var selectedRecord = _records.FirstOrDefault(r => r.Id == _selectedRecordId);
+                if (selectedRecord != null)
+                {
+                    // 检查记录是否已完成
+                    _selectedRecordCompleted = selectedRecord.IsSuccessful || 
+                                               (selectedRecord.EndTime.HasValue && selectedRecord.EndTime.Value < DateTime.UtcNow.AddSeconds(-5));
+                    
+                    // 只有未完成的记录才刷新时间线
+                    if (!_selectedRecordCompleted)
+                    {
+                        var newNodes = await PersistenceService.GetTimelineNodesAsync(_selectedRecordId);
+                        if (newNodes.Count != _timelineNodes.Count)
+                        {
+                            _timelineNodes = newNodes;
+                            MergeToolCallNodes();
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 静默处理刷新错误,避免干扰用户
+            Console.WriteLine($"刷新失败: {ex.Message}");
+        }
+    }
+    
+    // 🎯 切换自动刷新
+    private void ToggleAutoRefresh()
+    {
+        _autoRefresh = !_autoRefresh;
+    }
 
     private async Task SelectRecord(string recordId)
     {
@@ -435,6 +514,14 @@
         _selectedToolCallData = null; // 清除之前选中的工具调用数据
         _selectedStartNodeData = null; // 清除之前选中的 Start 节点数据
         _loadingNodes = true;
+        
+        // 🎯 检查记录是否已完成
+        var selectedRecord = _records.FirstOrDefault(r => r.Id == recordId);
+        if (selectedRecord != null)
+        {
+            _selectedRecordCompleted = selectedRecord.IsSuccessful || 
+                                      (selectedRecord.EndTime.HasValue && selectedRecord.EndTime.Value < DateTime.UtcNow.AddSeconds(-5));
+        }
 
         try
         {
@@ -747,6 +834,11 @@
     private void GoBack()
     {
         NavigationManager.NavigateTo("/app-list");
+    }
+    
+    public void Dispose()
+    {
+        _timer?.Dispose();
     }
 }
 
