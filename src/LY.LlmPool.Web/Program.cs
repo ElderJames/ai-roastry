@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Http.Resilience;
 using Scalar.AspNetCore;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -304,7 +305,26 @@ builder.Services.AddHttpClient("LlmPoolApi", (sp, http) =>
 
 // Named HttpClient for upstream LLM calls (tests can override it)
 builder.Services.AddHttpClient("UpstreamLlm")
-    .AddHttpMessageHandler<LoggingHttpHandler>();
+    .AddHttpMessageHandler<LoggingHttpHandler>()
+    // 🎯 添加 Polly 重试策略
+    .AddStandardResilienceHandler(options =>
+    {
+        // 重试策略配置
+        options.Retry.MaxRetryAttempts = 3;  // 最多重试 3 次
+        options.Retry.Delay = TimeSpan.FromSeconds(1);  // 基础延迟 1 秒
+        options.Retry.BackoffType = Polly.DelayBackoffType.Exponential;  // 指数退避 (1s, 2s, 4s)
+        options.Retry.UseJitter = true;  // 添加抖动，避免雷鸣群效应
+        
+        // 超时配置 (必须先配置，因为熔断器采样窗口要 >= 2倍的单次超时)
+        options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(120);  // 单次尝试超时 120 秒
+        options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(300);  // 总超时 300 秒 (包括重试)
+        
+        // 熔断器配置 (采样窗口必须 >= 2倍的 AttemptTimeout)
+        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);  // 采样窗口 240 秒 (>= 2 * 120)
+        options.CircuitBreaker.FailureRatio = 0.5;  // 失败率 >= 50% 时熔断
+        options.CircuitBreaker.MinimumThroughput = 10;  // 最少 10 个请求才触发熔断
+        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);  // 熔断持续 30 秒
+    });
 
 // Add Ant Design
 builder.Services.AddAntDesign();

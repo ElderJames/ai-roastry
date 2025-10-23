@@ -604,7 +604,13 @@
         // 仅显示错误
         if (_filterErrorOnly)
         {
-            filtered = filtered.Where(n => n.Status == "Error" || !string.IsNullOrEmpty(n.ErrorType));
+            // 🎯 修复: 活跃节点可能还未停止,但 error.type 标签已设置
+            // 检查: Status == "Error" 或 有 ErrorType 标签 或 Tags 中包含 "error.type"
+            filtered = filtered.Where(n => 
+                n.Status == "Error" || 
+                !string.IsNullOrEmpty(n.ErrorType) ||
+                (n.Tags != null && n.Tags.ContainsKey("error.type"))
+            );
         }
         
         return filtered.ToList();

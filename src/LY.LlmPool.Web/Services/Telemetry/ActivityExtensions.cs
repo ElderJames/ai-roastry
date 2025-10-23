@@ -242,9 +242,25 @@ public static class ActivityExtensions
             activity.AddEvent(new ActivityEvent($"tool_call: {toolCall.Name}", tags: eventTags));
         }
 
-        // 方式2: 也在 Tag 中记录工具调用数量(方便查询和统计)
-        activity.AddTag("gen_ai.tool.call.count", toolCalls.Count());
-        activity.AddTag("gen_ai.tool.names", string.Join(", ", toolCalls.Select(t => t.Name)));
+        // 方式2: 累积记录工具调用到 Tag 中(避免覆盖,使用追加模式)
+        var existingToolNames = activity.GetTagItem("gen_ai.tool.names") as string;
+        var existingToolNamesList = string.IsNullOrEmpty(existingToolNames) 
+            ? new List<string>() 
+            : existingToolNames.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries).ToList();
+        
+        // 追加新的工具名称(去重)
+        var newToolNames = toolCalls.Select(t => t.Name).Where(n => !string.IsNullOrEmpty(n));
+        foreach (var toolName in newToolNames)
+        {
+            if (!existingToolNamesList.Contains(toolName))
+            {
+                existingToolNamesList.Add(toolName);
+            }
+        }
+        
+        // 更新标签
+        activity.SetTag("gen_ai.tool.call.count", existingToolNamesList.Count);
+        activity.SetTag("gen_ai.tool.names", string.Join(", ", existingToolNamesList));
     }
 
     /// <summary>
@@ -256,10 +272,28 @@ public static class ActivityExtensions
 
         foreach (var result in toolResults)
         {
+            // 🔍 尝试从之前的 tool_call Events 中找到对应的工具名称
+            string? toolName = null;
+            foreach (var evt in activity.Events)
+            {
+                if (evt.Name.StartsWith("tool_call:") && 
+                    evt.Tags.FirstOrDefault(t => t.Key == "gen_ai.tool.call.id").Value?.ToString() == result.CallId)
+                {
+                    toolName = evt.Tags.FirstOrDefault(t => t.Key == "gen_ai.tool.call.name").Value?.ToString();
+                    break;
+                }
+            }
+            
             var eventTags = new ActivityTagsCollection
             {
                 { "gen_ai.tool.call.id", result.CallId }
             };
+            
+            // 添加工具名称(如果找到)
+            if (!string.IsNullOrEmpty(toolName))
+            {
+                eventTags.Add("gen_ai.tool.call.name", toolName);
+            }
 
             if (result.Result != null)
             {
@@ -277,10 +311,15 @@ public static class ActivityExtensions
             if (result.Exception != null)
             {
                 eventTags.Add("gen_ai.tool.call.error", result.Exception.Message);
-                activity.SetStatus(ActivityStatusCode.Error, $"Tool {result.CallId} failed: {result.Exception.Message}");
+                activity.SetStatus(ActivityStatusCode.Error, $"Tool {toolName ?? result.CallId} failed: {result.Exception.Message}");
             }
 
-            activity.AddEvent(new ActivityEvent($"tool_result: {result.CallId}", tags: eventTags));
+            // 使用工具名称作为 Event 名称(如果有),否则使用 CallId
+            var eventName = !string.IsNullOrEmpty(toolName) 
+                ? $"tool_result: {toolName}" 
+                : $"tool_result: {result.CallId}";
+            
+            activity.AddEvent(new ActivityEvent(eventName, tags: eventTags));
         }
     }
 

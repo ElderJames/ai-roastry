@@ -608,6 +608,47 @@ namespace LY.LlmPool.Web.Controllers
                 requestActivity?.SetTag("error.type", "IOException");
                 return;
             }
+            catch (System.Net.Http.HttpRequestException httpEx)
+            {
+                // 🎯 处理 LLM API 服务的网络连接错误（如 Connection reset by peer）
+                var errorMessage = "LLM API 服务连接失败";
+                var isConnectionReset = httpEx.InnerException is System.Net.Sockets.SocketException socketEx 
+                    && socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset;
+                
+                if (isConnectionReset)
+                {
+                    errorMessage = "LLM API 服务连接被重置，请稍后重试";
+                    _logger.LogWarning(httpEx, "LLM API 连接被重置 (Connection reset by peer), Config: {ConfigName}, BaseUrl: {BaseUrl}", 
+                        config?.Name, config?.BaseUrl);
+                }
+                else
+                {
+                    _logger.LogError(httpEx, "LLM API HTTP 请求失败, Config: {ConfigName}, BaseUrl: {BaseUrl}", 
+                        config?.Name, config?.BaseUrl);
+                }
+
+                if (callRecord != null)
+                {
+                    await _callRecordService.MarkErrorAsync(callRecord, errorMessage);
+                }
+
+                // 🎯 记录网络异常状态
+                requestActivity?.SetStatus(ActivityStatusCode.Error, errorMessage);
+                requestActivity?.SetTag("error.type", "HttpRequestException");
+                requestActivity?.SetTag("error.message", httpEx.Message);
+                requestActivity?.SetTag("error.is_connection_reset", isConnectionReset);
+                requestActivity?.SetTag("llm_api.base_url", config?.BaseUrl); // 🎯 记录出错的 API 地址
+                if (httpEx.InnerException != null)
+                {
+                    requestActivity?.SetTag("error.inner_type", httpEx.InnerException.GetType().Name);
+                    if (httpEx.InnerException is System.Net.Sockets.SocketException sockEx)
+                    {
+                        requestActivity?.SetTag("error.socket_error_code", sockEx.SocketErrorCode.ToString());
+                    }
+                }
+
+                await WriteAssistantMessageAsync(null, $"网络错误: {errorMessage}");
+            }
             catch (Exception ex)
             {
                 if (callRecord != null)
