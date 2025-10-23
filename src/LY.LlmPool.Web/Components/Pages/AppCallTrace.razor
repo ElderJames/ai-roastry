@@ -144,17 +144,6 @@
                         <SpaceItem>
                             <Select TItem="string" 
                                     TItemValue="string"
-                                    DataSource="@_statusOptions"
-                                    @bind-Value="@_filterStatus"
-                                    Style="width: 150px;"
-                                    Placeholder="选择状态"
-                                    AllowClear
-                                    OnSelectedItemChanged="@(_ => OnFilterChanged())">
-                            </Select>
-                        </SpaceItem>
-                        <SpaceItem>
-                            <Select TItem="string" 
-                                    TItemValue="string"
                                     DataSource="@_typeOptions"
                                     @bind-Value="@_filterType"
                                     Style="width: 150px;"
@@ -420,7 +409,7 @@
         TraceService.ActivityStopped += OnActivityStopped;
 
         // 初始加载数据
-        RefreshData();
+        RefreshData(showLoading: true);
 
         // 🎯 启动定时器（2秒刷新一次,降低频率）
         _timer = new System.Threading.Timer(_ =>
@@ -430,7 +419,7 @@
             {
                 InvokeAsync(() =>
                 {
-                    RefreshData();
+                    RefreshData(showLoading: false); // 🎯 自动刷新不显示 loading
                     StateHasChanged();
                 });
             }
@@ -444,7 +433,7 @@
         {
             InvokeAsync(() =>
             {
-                RefreshData();
+                RefreshData(showLoading: false); // 🎯 事件推送不显示 loading
                 StateHasChanged();
             });
         }
@@ -457,16 +446,20 @@
         {
             InvokeAsync(() =>
             {
-                RefreshData();
+                RefreshData(showLoading: false); // 🎯 事件推送不显示 loading
                 StateHasChanged();
             });
         }
     }
 
-    private void RefreshData()
+    private void RefreshData(bool showLoading = true)
     {
-        _isLoading = true;
-        StateHasChanged(); // 立即显示 loading
+        // 🎯 只在手动刷新时显示 loading，自动刷新时静默更新
+        if (showLoading)
+        {
+            _isLoading = true;
+            StateHasChanged(); // 立即显示 loading
+        }
         
         try
         {
@@ -496,7 +489,7 @@
             }
             else
             {
-                // 显示所有会话
+                // 🎯 显示所有会话（不按 conversationId 筛选）
                 var activeTraces = TraceService.GetActiveTraces();
                 var completedTraces = TraceService.GetCompletedTraces(1000); // 🎯 增加到1000条,不限制在20条
                 
@@ -504,24 +497,32 @@
                 var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
                 var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
                 
-                // 🎯 应用用户筛选(在扁平列表上筛选)
-                filteredActiveTraces = ApplyFilters(filteredActiveTraces);
-                filteredCompletedTraces = ApplyFilters(filteredCompletedTraces);
+                // 🎯 展平树形结构为节点列表
+                var activeNodes = FlattenTraceNodes(BuildTraceTree(filteredActiveTraces));
+                var completedNodes = FlattenTraceNodes(BuildTraceTree(filteredCompletedTraces));
                 
-                // 获取活跃的根节点（没有父节点或父节点为空）
-                _activeRoots = BuildTraceTree(filteredActiveTraces)
+                // 🎯 应用用户筛选(在扁平列表上筛选)
+                activeNodes = ApplyFilters(activeNodes);
+                completedNodes = ApplyFilters(completedNodes);
+                
+                // 🎯 重新构建树形结构
+                _activeRoots = BuildTraceTree(activeNodes)
                     .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
                     .ToList();
 
                 // 获取已完成的根节点
-                _completedRoots = BuildTraceTree(filteredCompletedTraces)
+                _completedRoots = BuildTraceTree(completedNodes)
                     .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
                     .ToList();
             }
         }
         finally
         {
-            _isLoading = false;
+            // 🎯 只在显示了 loading 时才重置
+            if (showLoading)
+            {
+                _isLoading = false;
+            }
         }
     }
     
@@ -612,7 +613,7 @@
     // 🎯 筛选器变更事件
     private void OnFilterChanged()
     {
-        RefreshData();
+        RefreshData(showLoading: true); // 🎯 用户手动筛选，显示 loading
         StateHasChanged();
     }
     
@@ -623,7 +624,7 @@
         _filterStatus = null;
         _filterType = null;
         _filterErrorOnly = false;
-        RefreshData();
+        RefreshData(showLoading: true); // 🎯 用户手动清除筛选，显示 loading
         StateHasChanged();
     }
     
@@ -639,7 +640,7 @@
         _selectedCompletedNode = null;   // 清除之前选中的节点
         
         Console.WriteLine($"📊 筛选前 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
-        RefreshData();
+        RefreshData(showLoading: true); // 🎯 用户手动选择会话，显示 loading
         Console.WriteLine($"📊 筛选后 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
         
         StateHasChanged();  // 强制 UI 更新
