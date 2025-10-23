@@ -30,10 +30,11 @@ public class ActivityTraceCachingTests : IDisposable
         
         // 配置日志
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
-        
+
         // 注册 ActivityTraceService
+        services.AddSingleton<ActivityTracePersistenceService>();
         services.AddSingleton<ActivityTraceService>();
-        
+       
         _serviceProvider = services.BuildServiceProvider();
         _activityTraceService = _serviceProvider.GetRequiredService<ActivityTraceService>();
         

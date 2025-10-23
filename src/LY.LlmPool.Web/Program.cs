@@ -141,6 +141,19 @@ builder.Services.AddScoped<IMcpServerService, McpServerService>();
 // Register MCP inspector service
 builder.Services.AddScoped<IMcpInspectorService, McpInspectorService>();
 
+// 🎯 注册 Activity 追踪配置
+builder.Services.Configure<LY.LlmPool.Web.Services.Telemetry.ActivityTracingOptions>(
+    builder.Configuration.GetSection("ActivityTracing"));
+ 
+// 🎯 注册 Activity 追踪数据仓储
+builder.Services.AddScoped<LY.LlmPool.Web.Repositories.IActivityTraceRepository,
+    LY.LlmPool.Web.Repositories.ActivityTraceRepository>();
+
+// 🎯 注册 Activity 追踪持久化后台服务
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.ActivityTracePersistenceService>();
+builder.Services.AddHostedService<LY.LlmPool.Web.Services.Telemetry.ActivityTracePersistenceService>(
+    sp => sp.GetRequiredService<LY.LlmPool.Web.Services.Telemetry.ActivityTracePersistenceService>());
+
 // 🎯 注册 OpenTelemetry Activity 追踪服务
 builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.ActivityTraceService>();
 builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.OtlpTraceParser>();

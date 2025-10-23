@@ -1,8 +1,9 @@
-using System;
+using LY.LlmPool.Web.Services.Telemetry;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System;
 
 namespace LY.LlmPool.Web.Tests;
 
@@ -15,6 +16,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
+            services.AddSingleton<ActivityTracePersistenceService>(); 
             // Override the named HttpClient used for upstream LLM calls
             services.AddHttpClient("UpstreamLlm")
                 .AddHttpMessageHandler(() => new FakeUpstreamMessageHandler());

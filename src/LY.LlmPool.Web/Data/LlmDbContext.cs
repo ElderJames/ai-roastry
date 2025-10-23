@@ -26,6 +26,8 @@ public class LlmDbContext : DbContext
     public DbSet<ChatExecutionRecord> ChatExecutionRecords { get; set; } = null!;
     public DbSet<ChatExecutionTimelineNode> ChatExecutionTimelineNodes { get; set; } = null!;
 
+    public DbSet<ActivityTrace> ActivityTraces { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -187,6 +189,23 @@ public class LlmDbContext : DbContext
                 .WithMany(e => e.TimelineNodes)
                 .HasForeignKey(e => e.ExecutionRecordId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ActivityTrace>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+
+            // 唯一索引：ActivityId 是唯一标识
+            entity.HasIndex(e => e.ActivityId).IsUnique();
+
+            // 查询优化索引
+            entity.HasIndex(e => e.TraceId);
+            entity.HasIndex(e => e.ConversationId);
+            entity.HasIndex(e => e.StartTime);
+            entity.HasIndex(e => new { e.ConversationId, e.StartTime });
+
+            // 默认值
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
 }

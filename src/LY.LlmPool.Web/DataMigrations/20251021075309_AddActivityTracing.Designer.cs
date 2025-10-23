@@ -3,17 +3,20 @@ using System;
 using LY.LlmPool.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace LY.LlmPool.Web.Data.Migrations
+namespace LY.LlmPool.Web.DataMigrations
 {
     [DbContext(typeof(LlmDbContext))]
-    partial class LlmDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251021075309_AddActivityTracing")]
+    partial class AddActivityTracing
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -30,6 +33,10 @@ namespace LY.LlmPool.Web.Data.Migrations
 
                     b.Property<string>("ActivityId")
                         .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("AppName")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
@@ -76,6 +83,18 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Property<bool>("IsAppCall")
                         .HasColumnType("boolean");
 
+                    b.Property<bool>("IsAppTool")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsLlmPoolServer")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsMcpServer")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsMcpTool")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsToolCall")
                         .HasColumnType("boolean");
 
@@ -92,10 +111,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                         .HasColumnType("character varying(256)");
 
                     b.Property<string>("ModelId")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("Name")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
@@ -138,9 +153,6 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Property<int?>("ServerPort")
                         .HasColumnType("integer");
 
-                    b.Property<int>("ServerType")
-                        .HasColumnType("integer");
-
                     b.Property<string>("SpanId")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -163,11 +175,15 @@ namespace LY.LlmPool.Web.Data.Migrations
                     b.Property<float?>("Temperature")
                         .HasColumnType("real");
 
-                    b.Property<string>("ToolDataJson")
-                        .HasColumnType("jsonb");
+                    b.Property<string>("ToolArguments")
+                        .HasColumnType("text");
 
-                    b.Property<int>("ToolType")
-                        .HasColumnType("integer");
+                    b.Property<string>("ToolName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ToolResult")
+                        .HasColumnType("text");
 
                     b.Property<string>("TraceId")
                         .IsRequired()

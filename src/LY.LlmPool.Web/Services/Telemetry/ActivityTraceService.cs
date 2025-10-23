@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using LY.LlmPool.Web.Repositories;
 using Microsoft.Extensions.Caching.Hybrid;
+using LY.LlmPool.Web.Data.Entities;
 
 namespace LY.LlmPool.Web.Services.Telemetry;
 
@@ -12,6 +14,8 @@ namespace LY.LlmPool.Web.Services.Telemetry;
 /// </summary>
 public class ActivityTraceService : IDisposable
 {
+    private readonly ActivityTracePersistenceService _persistenceService;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ActivityTraceService> _logger;
     private readonly HybridCache _cache;
     private readonly ConcurrentDictionary<string, TraceNode> _activeTraces = new();
@@ -132,9 +136,15 @@ public class ActivityTraceService : IDisposable
         }
     }
 
-    public ActivityTraceService(ILogger<ActivityTraceService> logger, HybridCache cache)
+    public ActivityTraceService(
+    ILogger<ActivityTraceService> logger,
+    HybridCache cache,
+    ActivityTracePersistenceService persistenceService,
+    IServiceProvider serviceProvider)
     {
         _logger = logger;
+        _persistenceService = persistenceService;
+        _serviceProvider = serviceProvider;
         _cache = cache;
         
         // 🎯 从缓存中恢复已完成的追踪数据
@@ -465,6 +475,8 @@ public class ActivityTraceService : IDisposable
             // 提取消息内容（从 Events 中）
             ExtractMessagesFromEvents(activity, node);
 
+            // 🎯 异步持久化到数据库（通过后台服务）
+            _ = _persistenceService.EnqueueAsync(node);
             // 添加到完成队列
             _completedTraces.Enqueue(node);
             
@@ -610,7 +622,7 @@ public class ActivityTraceService : IDisposable
 
                 // 工具调用相关 (llmpool 自定义 tags)
                 case "tool.name":
-                    node.ToolName = tag.Value;
+                    node.Name = tag.Value;
                     node.IsToolCall = true;
                     _logger.LogInformation("  ✅ Extracted ToolName from Tag: {ToolName}", tag.Value);
                     break;
@@ -619,14 +631,14 @@ public class ActivityTraceService : IDisposable
                     node.ToolArguments = tag.Value;
                     _logger.LogInformation("  ✅ Extracted ToolArguments from Tag: {Args}", tag.Value?.Substring(0, Math.Min(100, tag.Value?.Length ?? 0)));
                     break;
-                
+
                 case "tool.result":
                     node.ToolResult = tag.Value;
                     _logger.LogInformation("  ✅ Extracted ToolResult from Tag: {Result}", tag.Value?.Substring(0, Math.Min(100, tag.Value?.Length ?? 0)));
                     break;
 
                 case "app.name":
-                    node.AppName = tag.Value;
+                    node.Name = tag.Value;
                     node.IsAppCall = true;
                     _logger.LogInformation("  ✅ Extracted AppName from Tag: {AppName}", tag.Value);
                     break;
@@ -638,12 +650,12 @@ public class ActivityTraceService : IDisposable
                         node.IsToolCall = true;
                     }
                     break;
-                    
+
                 case "gen_ai.tool.names":
                     // 多个工具名称,逗号分隔
                     if (!string.IsNullOrEmpty(tag.Value))
                     {
-                        node.ToolName = tag.Value;
+                        node.Name = tag.Value;
                         node.IsToolCall = true;
                     }
                     break;
@@ -680,13 +692,13 @@ public class ActivityTraceService : IDisposable
                     switch (tag.Key)
                     {
                         case "gen_ai.tool.call.name":
-                            if (string.IsNullOrEmpty(node.ToolName))
+                            if (string.IsNullOrEmpty(node.Name))
                             {
-                                node.ToolName = tag.Value?.ToString();
+                                node.Name = tag.Value?.ToString();
                             }
                             else
                             {
-                                node.ToolName += ", " + tag.Value;
+                                node.Name += ", " + tag.Value;
                             }
                             _logger.LogInformation("    ✅ Extracted ToolName from Event: {ToolName}", tag.Value);
                             break;
@@ -726,30 +738,30 @@ public class ActivityTraceService : IDisposable
             }
         }
 
-        // 从 DisplayName 推断类型并尝试提取 AppName/ToolName
+        // 从 DisplayName 推断类型并尝试提取 Name (AppName/ToolName)
         // 只有在没有从 Tags 中提取到明确类型时才进行推断
         if (!node.IsAppCall && !node.IsToolCall)
         {
             if (node.OperationName.Contains("chat", StringComparison.OrdinalIgnoreCase))
             {
                 node.IsAppCall = true;
-                
-                // 🎯 从 OperationName 提取模型名称作为 AppName
+
+                // 🎯 从 OperationName 提取模型名称作为 Name (AppName)
                 // OperationName 格式: "chat {model}" 或 "chat"
-                if (string.IsNullOrEmpty(node.AppName))
+                if (string.IsNullOrEmpty(node.Name))
                 {
                     // 尝试从 "chat gpt-4" 提取 "gpt-4"
                     var parts = node.OperationName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length > 1 && !parts[1].StartsWith("/")) // 排除 "/v1/chat/completions" 这种情况
                     {
-                        node.AppName = string.Join(" ", parts.Skip(1));
-                        _logger.LogInformation("  ✅ Extracted AppName from OperationName: {AppName}", node.AppName);
+                        node.Name = string.Join(" ", parts.Skip(1));
+                        _logger.LogInformation("  ✅ Extracted AppName from OperationName: {AppName}", node.Name);
                     }
                     // 如果没有模型名，尝试从 gen_ai.request.model tag 获取
                     else if (node.Tags.TryGetValue("gen_ai.request.model", out var modelFromTag))
                     {
-                        node.AppName = modelFromTag;
-                        _logger.LogInformation("  ✅ Extracted AppName from gen_ai.request.model tag: {AppName}", node.AppName);
+                        node.Name = modelFromTag;
+                        _logger.LogInformation("  ✅ Extracted AppName from gen_ai.request.model tag: {AppName}", node.Name);
                     }
                 }
             }
@@ -757,18 +769,18 @@ public class ActivityTraceService : IDisposable
                      node.OperationName.Contains("function", StringComparison.OrdinalIgnoreCase))
             {
                 node.IsToolCall = true;
-                
-                // 🎯 从 OperationName 提取工具名称作为 ToolName
+
+                // 🎯 从 OperationName 提取工具名称作为 Name (ToolName)
                 // OperationName 格式: "llmpool.tool {toolName}" 或 "tool {toolName}"
-                if (string.IsNullOrEmpty(node.ToolName))
+                if (string.IsNullOrEmpty(node.Name))
                 {
                     // 尝试从 "llmpool.tool calc" 或 "tool calc" 提取 "calc"
                     var parts = node.OperationName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length > 1)
                     {
                         // 最后一部分就是工具名
-                        node.ToolName = parts[^1]; // 等同于 parts[parts.Length - 1]
-                        _logger.LogInformation("  ✅ Extracted ToolName from OperationName: {ToolName}", node.ToolName);
+                        node.Name = parts[^1]; // 等同于 parts[parts.Length - 1]
+                        _logger.LogInformation("  ✅ Extracted ToolName from OperationName: {ToolName}", node.Name);
                     }
                     else
                     {
@@ -776,8 +788,8 @@ public class ActivityTraceService : IDisposable
                         var dotParts = node.OperationName.Split('.', StringSplitOptions.RemoveEmptyEntries);
                         if (dotParts.Length > 2 && dotParts[^2].Equals("tool", StringComparison.OrdinalIgnoreCase))
                         {
-                            node.ToolName = dotParts[^1];
-                            _logger.LogInformation("  ✅ Extracted ToolName from dot-separated OperationName: {ToolName}", node.ToolName);
+                            node.Name = dotParts[^1];
+                            _logger.LogInformation("  ✅ Extracted ToolName from dot-separated OperationName: {ToolName}", node.Name);
                         }
                     }
                 }
@@ -830,12 +842,12 @@ public class ActivityTraceService : IDisposable
                     
                 // MCP Server 相关
                 case "mcp.session.id":
-                    node.IsMcpServer = true;
+                    node.ServerType = ActivityServerType.McpServer;
                     break;
-                    
+
                 case "mcp.server.name":
                     node.McpServerName = tag.Value;
-                    node.IsMcpServer = true;
+                    node.ServerType = ActivityServerType.McpServer;
                     break;
             }
         }
@@ -849,9 +861,9 @@ public class ActivityTraceService : IDisposable
         // 1. 识别 MCP Tool (tools/call)
         if (node.OperationName.Contains("tools/call", StringComparison.OrdinalIgnoreCase))
         {
-            node.IsMcpTool = true;
+            node.ToolType = ActivityToolType.McpTool;
             node.IsToolCall = true;
-            
+
             // 尝试从 Tags 中获取 MCP Server 名称
             if (node.Tags.TryGetValue("mcp.server.name", out var serverName))
             {
@@ -862,7 +874,7 @@ public class ActivityTraceService : IDisposable
         else if (node.OperationName.StartsWith("llmpool.tool", StringComparison.OrdinalIgnoreCase) ||
                  node.OperationName.StartsWith("llmpool.app", StringComparison.OrdinalIgnoreCase))
         {
-            node.IsAppTool = true;
+            node.ToolType = ActivityToolType.AppTool;
             node.IsToolCall = true;
         }
         // 3. 识别 MCP Server Activity (initialize, tools/list等)
@@ -871,8 +883,8 @@ public class ActivityTraceService : IDisposable
                  node.OperationName.Contains("notifications/", StringComparison.OrdinalIgnoreCase) ||
                  node.Tags.ContainsKey("mcp.session.id"))
         {
-            node.IsMcpServer = true;
-            
+            node.ServerType = ActivityServerType.McpServer;
+
             // 尝试从 Tags 中获取 MCP Server 名称
             if (node.Tags.TryGetValue("mcp.server.name", out var serverName))
             {
@@ -882,7 +894,7 @@ public class ActivityTraceService : IDisposable
         // 4. 识别 LlmPool Server (llmpool.server)
         else if (node.OperationName.StartsWith("llmpool.server", StringComparison.OrdinalIgnoreCase))
         {
-            node.IsLlmPoolServer = true;
+            node.ServerType = ActivityServerType.LlmPoolServer;
         }
         // 5. 识别 HTTP Request
         else if (node.OperationName.StartsWith("http", StringComparison.OrdinalIgnoreCase) ||
@@ -891,7 +903,7 @@ public class ActivityTraceService : IDisposable
             // HTTP 请求类型 - 可以进一步细分
             if (node.ServerAddress != null && node.ServerAddress.Contains("localhost"))
             {
-                node.IsLlmPoolServer = true;
+                node.ServerType = ActivityServerType.LlmPoolServer;
             }
         }
     }
@@ -1263,6 +1275,8 @@ public class ActivityTraceService : IDisposable
                 }
             }
 
+            // 🎯 异步持久化到数据库（通过后台服务）
+            _ = _persistenceService.EnqueueAsync(node);
             // 直接添加到完成队列 (外部 Activity 已经完成)
             _completedTraces.Enqueue(node);
 
@@ -1288,126 +1302,4 @@ public class ActivityTraceService : IDisposable
         while (_completedTraces.TryDequeue(out _)) { }
         _logger.LogInformation("Activity 监听器已停止");
     }
-}
-
-/// <summary>
-/// 追踪节点
-/// </summary>
-public class TraceNode
-{
-    public string ActivityId { get; set; } = string.Empty;
-    public string TraceId { get; set; } = string.Empty;
-    public string SpanId { get; set; } = string.Empty;
-    public string ParentSpanId { get; set; } = string.Empty;
-    public string OperationName { get; set; } = string.Empty;
-    public string DisplayName { get; set; } = string.Empty;
-    public DateTime StartTime { get; set; }
-    public DateTime? EndTime { get; set; }
-    public TimeSpan Duration { get; set; }
-    public string Kind { get; set; } = string.Empty;
-    public string Status { get; set; } = string.Empty;
-    public string? StatusDescription { get; set; }
-    public Dictionary<string, string> Tags { get; set; } = new();
-    
-    // AI 相关属性
-    public string? OperationType { get; set; }
-    public string? ModelId { get; set; }
-    public string? ResponseModelId { get; set; }
-    public string? ProviderName { get; set; }
-    public string? ConversationId { get; set; }
-    public string? ResponseId { get; set; }
-    public string? FinishReason { get; set; }
-    public float? Temperature { get; set; }
-    public int? MaxTokens { get; set; }
-    public int InputTokens { get; set; }
-    public int OutputTokens { get; set; }
-    public string? ServerAddress { get; set; }
-    public int? ServerPort { get; set; }
-    public string? ErrorType { get; set; }
-    public string? ErrorStackTrace { get; set; }
-    
-    // App 相关属性
-    public bool IsAppCall { get; set; }
-    public string? AppName { get; set; }
-    
-    // Tool 相关属性
-    public bool IsToolCall { get; set; }
-    public string? ToolName { get; set; }
-    public string? ToolArguments { get; set; }
-    public string? ToolResult { get; set; }
-    
-    // 工具类型区分
-    public bool IsAppTool { get; set; }  // llmpool.tool (App Tool)
-    public bool IsMcpTool { get; set; }   // tools/call (MCP Tool)
-    
-    // Server 类型区分
-    public bool IsLlmPoolServer { get; set; }  // llmpool.server
-    public bool IsMcpServer { get; set; }      // MCP Server (initialize, tools/list等)
-    public string? McpServerName { get; set; } // MCP Server 的配置名称
-    
-    // Chat 消息内容（从 Events 中提取）
-    public List<TraceChatMessage> InputMessages { get; set; } = new();
-    public string? OutputContent { get; set; }
-    
-    // Activity Events (用于展示工具调用、结果等事件)
-    public List<ActivityEventInfo> Events { get; set; } = new();
-    
-    // 树形结构
-    public List<TraceNode> Children { get; set; } = new();
-}
-
-/// <summary>
-/// Activity Event 信息 (用于 UI 展示)
-/// </summary>
-public class ActivityEventInfo
-{
-    public string Name { get; set; } = string.Empty;
-    public DateTimeOffset Timestamp { get; set; }
-    public Dictionary<string, string> Tags { get; set; } = new();
-}
-
-/// <summary>
-/// Chat 消息 (从 Activity Events 中提取)
-/// </summary>
-public class TraceChatMessage
-{
-    public string Role { get; set; } = string.Empty;
-    public string Content { get; set; } = string.Empty;
-    public string? ToolCallId { get; set; }
-    public string? ToolName { get; set; }
-}
-
-/// <summary>
-/// Conversation 信息
-/// </summary>
-public class ConversationInfo
-{
-    public string ConversationId { get; set; } = string.Empty;
-    public int RequestCount { get; set; }
-    public DateTime FirstRequestTime { get; set; }
-    public DateTime LastRequestTime { get; set; }
-    public int TotalInputTokens { get; set; }
-    public int TotalOutputTokens { get; set; }
-    public bool IsActive { get; set; }
-    public int SuccessCount { get; set; }
-    public int ErrorCount { get; set; }
-    public List<string> Models { get; set; } = new();
-}
-
-/// <summary>
-/// 追踪统计信息
-/// </summary>
-public class TraceStatistics
-{
-    public int TotalTraces { get; set; }
-    public int SuccessCount { get; set; }
-    public int ErrorCount { get; set; }
-    public double TotalDurationMs { get; set; }
-    public double AverageDurationMs { get; set; }
-    public int TotalInputTokens { get; set; }
-    public int TotalOutputTokens { get; set; }
-    public int AppCallCount { get; set; }
-    public int ToolCallCount { get; set; }
-    public List<string> UniqueModels { get; set; } = new();
-    public List<string> UniqueTools { get; set; } = new();
 }
