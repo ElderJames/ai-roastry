@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using LY.LlmPool.Web.Repositories;
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.DependencyInjection;
 using LY.LlmPool.Web.Data.Entities;
 
 namespace LY.LlmPool.Web.Services.Telemetry;
@@ -1153,6 +1154,38 @@ public class ActivityTraceService : IDisposable
             .ToList();
 
         return conversations;
+    }
+
+    public async Task<(IReadOnlyList<ConversationInfo> Items, int TotalCount)> GetHistoricalConversationsAsync(
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedPageSize = Math.Max(pageSize, 1);
+        var normalizedPageIndex = Math.Max(pageIndex, 1);
+        var skip = (normalizedPageIndex - 1) * normalizedPageSize;
+
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IActivityTraceRepository>();
+
+        return await repository.GetConversationsAsync(skip, normalizedPageSize, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<List<TraceNode>> GetHistoricalTracesByConversationsAsync(
+        IReadOnlyCollection<string> conversationIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (conversationIds == null || conversationIds.Count == 0)
+        {
+            return new List<TraceNode>();
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IActivityTraceRepository>();
+
+        return await repository.GetTracesByConversationIdsAsync(conversationIds, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -1,6 +1,8 @@
 @page "/app-call-trace"
 @using LY.LlmPool.Web.Services.Telemetry
+@using Microsoft.Extensions.Options
 @inject ActivityTraceService TraceService
+@inject IOptions<ActivityTracingOptions> ActivityOptions
 @implements IDisposable
 
 <PageTitle>App 调用追踪 - 实时监控</PageTitle>
@@ -15,13 +17,28 @@
                     </Tag>
                 </SpaceItem>
                 <SpaceItem>
-                    <Button Type="@(_autoRefresh ? ButtonType.Default : ButtonType.Primary)" 
-                            OnClick="ToggleAutoRefresh">
+                    <Button Type="@(_autoRefresh ? ButtonType.Default : ButtonType.Primary)"
+                            OnClick="ToggleAutoRefresh"
+                            Disabled="_conversationMode == ConversationDataSourceMode.History">
                         @(_autoRefresh ? "暂停" : "恢复")
                     </Button>
                 </SpaceItem>
                 <SpaceItem>
                     <Button OnClick="ClearAll" Danger>清除所有</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <RadioGroup TValue="ConversationDataSourceMode">
+                        <Radio Value="ConversationDataSourceMode.RealTime"
+                               Checked="_conversationMode == ConversationDataSourceMode.RealTime"
+                               CheckedChanged="async isChecked => await OnConversationModeCheckedChangedAsync(isChecked, ConversationDataSourceMode.RealTime)">
+                            实时会话
+                        </Radio>
+                        <Radio Value="ConversationDataSourceMode.History"
+                               Checked="_conversationMode == ConversationDataSourceMode.History"
+                               CheckedChanged="async isChecked => await OnConversationModeCheckedChangedAsync(isChecked, ConversationDataSourceMode.History)">
+                            历史会话
+                        </Radio>
+                    </RadioGroup>
                 </SpaceItem>
             </Space>
         </PageHeaderExtra>
@@ -47,7 +64,7 @@
                     {
                         <!-- 添加"全部"选项 -->
                         <div class="conversation-item @(string.IsNullOrEmpty(_selectedConversationId) ? "selected" : "")"
-                             @onclick="() => SelectConversation(null)">
+                             @onclick="async () => await SelectConversationAsync(null)">
                             <div style="display: flex; align-items: center;">
                                 <Text Strong>📋 全部会话</Text>
                             </div>
@@ -60,7 +77,7 @@
                         @foreach (var conv in _conversations)
                         {
                             <div class="conversation-item @(conv.ConversationId == _selectedConversationId ? "selected" : "")"
-                                 @onclick="() => SelectConversation(conv.ConversationId)">
+                                 @onclick="async () => await SelectConversationAsync(conv.ConversationId)">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
                                     <div style="flex: 1; min-width: 0;">
                                         @if (conv.IsActive)
@@ -118,6 +135,41 @@
                     {
                         <Empty Description="@("暂无会话记录")" Simple />
                     }
+
+                    @* 历史会话分页控件 *@
+                    @if (_conversationMode == ConversationDataSourceMode.History)
+                    {
+                        <Divider Style="margin: 12px 0;" />
+                        <div style="padding: 8px 0; display: flex; flex-direction: column; gap: 8px;">
+                            <Space Size="@("small")" Style="justify-content: center;">
+                                <SpaceItem>
+                                    <Button Size="@ButtonSize.Small"
+                                            OnClick="async _ => await ChangeHistoryPageAsync(_historyPageIndex - 1)"
+                                            Disabled="_historyPageIndex <= 1">
+                                        上一页
+                                    </Button>
+                                </SpaceItem>
+                                <SpaceItem>
+                                    <Text>第 @_historyPageIndex / @HistoryTotalPages 页</Text>
+                                </SpaceItem>
+                                <SpaceItem>
+                                    <Button Size="@ButtonSize.Small"
+                                            OnClick="async _ => await ChangeHistoryPageAsync(_historyPageIndex + 1)"
+                                            Disabled="_historyPageIndex >= HistoryTotalPages">
+                                        下一页
+                                    </Button>
+                                </SpaceItem>
+                            </Space>
+                            <div style="text-align: center;">
+                                <Button Size="@ButtonSize.Small"
+                                        OnClick="async _ => await RefreshHistoryPageAsync()"
+                                        Loading="_isLoading"
+                                        Block>
+                                    刷新历史
+                                </Button>
+                            </div>
+                        </div>
+                    }
                 </Body>
             </Card>
         </AntDesign.Col>
@@ -139,7 +191,7 @@
                                    TValue="string"
                                    BindOnInput
                                    DebounceMilliseconds="500"
-                                   OnChange="@(_ => OnFilterChanged())" />
+                                   OnChange="async _ => await OnFilterChangedAsync()" />
                         </SpaceItem>
                         <SpaceItem>
                             <Select TItem="string" 
@@ -149,14 +201,14 @@
                                     Style="width: 150px;"
                                     Placeholder="选择类型"
                                     AllowClear
-                                    OnSelectedItemChanged="@(_ => OnFilterChanged())">
+                                    OnSelectedItemChanged="async _ => await OnFilterChangedAsync()">
                             </Select>
                         </SpaceItem>
                         <SpaceItem>
-                            <Checkbox @bind-Checked="@_filterErrorOnly" OnChange="OnFilterChanged">仅显示错误</Checkbox>
+                            <Checkbox @bind-Checked="@_filterErrorOnly" OnChange="async _ => await OnFilterChangedAsync()">仅显示错误</Checkbox>
                         </SpaceItem>
                         <SpaceItem>
-                            <Button Size="@ButtonSize.Small" OnClick="ClearFilters">清除筛选</Button>
+                            <Button Size="@ButtonSize.Small" OnClick="async _ => await ClearFiltersAsync()">清除筛选</Button>
                         </SpaceItem>
                     </Space>
                 </Body>
@@ -371,11 +423,23 @@
 </div>
 
 @code {
+    private enum ConversationDataSourceMode
+    {
+        RealTime,
+        History
+    }
+
     private bool _autoRefresh = true;
     private System.Threading.Timer? _timer;
+    private ConversationDataSourceMode _conversationMode = ConversationDataSourceMode.RealTime;
     private List<TraceNode> _activeRoots = new();
     private List<TraceNode> _completedRoots = new();
     private List<ConversationInfo> _conversations = new();
+    private List<ConversationInfo> _realTimeConversations = new();
+    private List<ConversationInfo> _historyConversations = new();
+    private int _historyPageIndex = 1;
+    private int _historyTotalCount;
+    private int _historyPageSize;
     private string? _selectedConversationId;
     
     // 选中的节点
@@ -402,38 +466,359 @@
     private readonly List<string> _statusOptions = new() { "Success", "Error", "InProgress" };
     private readonly List<string> _typeOptions = new() { "App", "Tool", "MCP Tool", "MCP Server", "Chat", "HTTP" };
 
-    protected override void OnInitialized()
+    private int HistoryTotalPages
+    {
+        get
+        {
+            var pageSize = Math.Max(1, _historyPageSize);
+            if (_historyTotalCount <= 0)
+            {
+                return 1;
+            }
+
+            return (int)Math.Ceiling(_historyTotalCount / (double)pageSize);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
     {
         // 订阅事件
         TraceService.ActivityStarted += OnActivityStarted;
         TraceService.ActivityStopped += OnActivityStopped;
 
+        _historyPageSize = Math.Max(1, ActivityOptions.Value.Pagination?.ConversationsPageSize ?? 5);
+
         // 初始加载数据
-        RefreshData(showLoading: true);
+        await RefreshDataAsync(showLoading: true);
 
         // 🎯 启动定时器（2秒刷新一次,降低频率）
         _timer = new System.Threading.Timer(_ =>
         {
+            if (_conversationMode != ConversationDataSourceMode.RealTime)
+            {
+                return;
+            }
+
             // 🎯 性能优化: 如果用户正在交互,跳过自动刷新
             if (_autoRefresh && !_isUserInteracting && (DateTime.Now - _lastUserInteraction).TotalSeconds > 1)
             {
                 InvokeAsync(() =>
                 {
-                    RefreshData(showLoading: false); // 🎯 自动刷新不显示 loading
+                    RefreshRealTimeData(showLoading: false); // 🎯 自动刷新不显示 loading
                     StateHasChanged();
                 });
             }
         }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
     }
 
+    private async Task RefreshDataAsync(bool showLoading = true)
+    {
+        if (_conversationMode == ConversationDataSourceMode.History)
+        {
+            RefreshRealTimeData(showLoading: false, updateVisibleList: false);
+            await RefreshHistoryDataAsync(showLoading);
+        }
+        else
+        {
+            RefreshRealTimeData(showLoading, updateVisibleList: true);
+        }
+    }
+
+    private void RefreshRealTimeData(bool showLoading = true, bool updateVisibleList = true)
+    {
+        if (showLoading)
+        {
+            _isLoading = true;
+            StateHasChanged();
+        }
+
+        try
+        {
+            _realTimeConversations = TraceService.GetConversationList();
+
+            if (!updateVisibleList)
+            {
+                return;
+            }
+
+            _conversations = _realTimeConversations;
+
+            if (!string.IsNullOrEmpty(_selectedConversationId) &&
+                !_conversations.Any(c => c.ConversationId == _selectedConversationId))
+            {
+                _selectedConversationId = null;
+            }
+
+            if (!string.IsNullOrEmpty(_selectedConversationId))
+            {
+                var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
+                var allNodes = FlattenTraceNodes(traceNodes);
+
+                var activeNodes = ApplyFilters(allNodes.Where(t => t.Status == "InProgress").ToList());
+                var completedNodes = ApplyFilters(allNodes.Where(t => t.Status != "InProgress").ToList());
+
+                _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
+                _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
+            }
+            else
+            {
+                var activeTraces = TraceService.GetActiveTraces();
+                var completedTraces = TraceService.GetCompletedTraces(1000);
+
+                var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
+                var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
+
+                var activeNodes = FlattenTraceNodes(BuildTraceTree(filteredActiveTraces));
+                var completedNodes = FlattenTraceNodes(BuildTraceTree(filteredCompletedTraces));
+
+                activeNodes = ApplyFilters(activeNodes);
+                completedNodes = ApplyFilters(completedNodes);
+
+                _activeRoots = BuildTraceTree(activeNodes)
+                    .OrderBy(r => r.StartTime)
+                    .ToList();
+
+                _completedRoots = BuildTraceTree(completedNodes)
+                    .OrderByDescending(r => r.StartTime)
+                    .ToList();
+            }
+        }
+        finally
+        {
+            if (showLoading)
+            {
+                _isLoading = false;
+            }
+        }
+    }
+
+    private async Task RefreshHistoryDataAsync(bool showLoading = true)
+    {
+        if (showLoading)
+        {
+            _isLoading = true;
+            StateHasChanged();
+        }
+
+        try
+        {
+            var (items, totalCount) = await TraceService.GetHistoricalConversationsAsync(_historyPageIndex, _historyPageSize);
+
+            _historyTotalCount = totalCount;
+            _historyConversations = items.ToList();
+
+            var skip = (_historyPageIndex - 1) * _historyPageSize;
+            if (_historyConversations.Count == 0 && _historyTotalCount > 0 && skip >= _historyTotalCount)
+            {
+                _historyPageIndex = HistoryTotalPages;
+                (items, totalCount) = await TraceService.GetHistoricalConversationsAsync(_historyPageIndex, _historyPageSize);
+                _historyTotalCount = totalCount;
+                _historyConversations = items.ToList();
+            }
+
+            _conversations = _historyConversations;
+
+            if (!string.IsNullOrEmpty(_selectedConversationId) &&
+                !_historyConversations.Any(c => c.ConversationId == _selectedConversationId))
+            {
+                _selectedConversationId = null;
+            }
+
+            await RefreshHistoryTraceViewCoreAsync();
+        }
+        finally
+        {
+            if (showLoading)
+            {
+                _isLoading = false;
+            }
+        }
+    }
+
+    private async Task RefreshHistoryTraceViewAsync(bool showLoading)
+    {
+        if (_conversationMode != ConversationDataSourceMode.History)
+        {
+            return;
+        }
+
+        if (showLoading)
+        {
+            _isLoading = true;
+            StateHasChanged();
+        }
+
+        try
+        {
+            await RefreshHistoryTraceViewCoreAsync();
+        }
+        finally
+        {
+            if (showLoading)
+            {
+                _isLoading = false;
+            }
+        }
+    }
+
+    private async Task RefreshHistoryTraceViewCoreAsync()
+    {
+        _activeRoots.Clear();
+        _completedRoots.Clear();
+
+        var targetConversationIds = !string.IsNullOrEmpty(_selectedConversationId)
+            ? new List<string> { _selectedConversationId }
+            : _historyConversations
+                .Select(c => c.ConversationId)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .Distinct()
+                .ToList();
+
+        if (!targetConversationIds.Any())
+        {
+            return;
+        }
+
+        var traceTrees = await TraceService.GetHistoricalTracesByConversationsAsync(targetConversationIds);
+        if (traceTrees == null || traceTrees.Count == 0)
+        {
+            return;
+        }
+
+        var allNodes = FlattenTraceNodes(traceTrees);
+
+        var activeNodes = ApplyFilters(allNodes.Where(t => t.Status == "InProgress").ToList());
+        var completedNodes = ApplyFilters(allNodes.Where(t => t.Status != "InProgress").ToList());
+
+        _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
+        _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
+    }
+
+	private async Task OnConversationModeCheckedChangedAsync(bool isChecked, ConversationDataSourceMode mode)
+	{
+		if (!isChecked)
+		{
+			return;
+		}
+
+		await OnConversationModeChangedAsync(mode);
+	}
+
+	private async Task OnConversationModeChangedAsync(ConversationDataSourceMode mode)
+	{
+		if (_conversationMode != mode)
+		{
+			_conversationMode = mode;
+		}
+
+		_selectedConversationId = null;
+		_selectedActiveNode = null;
+		_selectedCompletedNode = null;
+
+		if (_conversationMode == ConversationDataSourceMode.RealTime)
+		{
+			RefreshRealTimeData(showLoading: true);
+		}
+		else
+		{
+			RefreshRealTimeData(showLoading: false, updateVisibleList: false);
+			_historyPageIndex = 1;
+			await RefreshHistoryDataAsync(showLoading: true);
+		}
+
+		StateHasChanged();
+	}
+
+    private async Task RefreshHistoryPageAsync()
+    {
+        if (_conversationMode != ConversationDataSourceMode.History)
+        {
+            return;
+        }
+
+        await RefreshHistoryDataAsync(showLoading: true);
+        StateHasChanged();
+    }
+
+    private async Task ChangeHistoryPageAsync(int newIndex)
+    {
+        if (_conversationMode != ConversationDataSourceMode.History)
+        {
+            return;
+        }
+
+        var totalPages = HistoryTotalPages;
+        newIndex = Math.Clamp(newIndex, 1, totalPages);
+
+        if (newIndex == _historyPageIndex)
+        {
+            return;
+        }
+
+        _historyPageIndex = newIndex;
+        await RefreshHistoryDataAsync(showLoading: true);
+        StateHasChanged();
+    }
+
+    private async Task OnFilterChangedAsync()
+    {
+        if (_conversationMode == ConversationDataSourceMode.History)
+        {
+            await RefreshHistoryTraceViewAsync(showLoading: true);
+        }
+        else
+        {
+            RefreshRealTimeData(showLoading: true);
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        _filterText = null;
+        _filterStatus = null;
+        _filterType = null;
+        _filterErrorOnly = false;
+
+        await OnFilterChangedAsync();
+    }
+
+    private async Task SelectConversationAsync(string? conversationId)
+    {
+        _isUserInteracting = true;
+        _lastUserInteraction = DateTime.Now;
+
+        _selectedConversationId = conversationId;
+        _selectedActiveNode = null;
+        _selectedCompletedNode = null;
+
+        if (_conversationMode == ConversationDataSourceMode.History)
+        {
+            await RefreshHistoryTraceViewAsync(showLoading: true);
+        }
+        else
+        {
+            RefreshRealTimeData(showLoading: true);
+        }
+
+        StateHasChanged();
+
+        _ = Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
+    }
+
     private void OnActivityStarted(object? sender, TraceNode node)
     {
-        // 🎯 性能优化: 只在非交互状态下刷新
+        if (_conversationMode != ConversationDataSourceMode.RealTime)
+        {
+            return;
+        }
+
         if (!_isUserInteracting)
         {
             InvokeAsync(() =>
             {
-                RefreshData(showLoading: false); // 🎯 事件推送不显示 loading
+                RefreshRealTimeData(showLoading: false);
                 StateHasChanged();
             });
         }
@@ -441,91 +826,21 @@
 
     private void OnActivityStopped(object? sender, TraceNode node)
     {
-        // 🎯 性能优化: 只在非交互状态下刷新
+        if (_conversationMode != ConversationDataSourceMode.RealTime)
+        {
+            return;
+        }
+
         if (!_isUserInteracting)
         {
             InvokeAsync(() =>
             {
-                RefreshData(showLoading: false); // 🎯 事件推送不显示 loading
+                RefreshRealTimeData(showLoading: false);
                 StateHasChanged();
             });
         }
     }
 
-    private void RefreshData(bool showLoading = true)
-    {
-        // 🎯 只在手动刷新时显示 loading，自动刷新时静默更新
-        if (showLoading)
-        {
-            _isLoading = true;
-            StateHasChanged(); // 立即显示 loading
-        }
-        
-        try
-        {
-            // 获取会话列表 (基于 gen_ai.conversation.id 分组)
-            _conversations = TraceService.GetConversationList();
-            
-            // 如果有选中的会话,使用 GetTracesByConversation 获取完整调用树
-            if (!string.IsNullOrEmpty(_selectedConversationId))
-            {
-                // 🎯 使用 GetTracesByConversation 方法获取完整的调用树(包括关联的 TraceId)
-                var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
-                
-                // 🎯 先展平树形结构为节点列表
-                var allNodes = FlattenTraceNodes(traceNodes);
-                
-                // 分离活跃和已完成的节点
-                var activeNodes = allNodes.Where(t => t.Status == "InProgress").ToList();
-                var completedNodes = allNodes.Where(t => t.Status != "InProgress").ToList();
-                
-                // 🎯 应用筛选(在扁平列表上筛选)
-                activeNodes = ApplyFilters(activeNodes);
-                completedNodes = ApplyFilters(completedNodes);
-                
-                // 🎯 重新构建树形结构
-                _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
-                _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
-            }
-            else
-            {
-                // 🎯 显示所有会话（不按 conversationId 筛选）
-                var activeTraces = TraceService.GetActiveTraces();
-                var completedTraces = TraceService.GetCompletedTraces(1000); // 🎯 增加到1000条,不限制在20条
-                
-                // 🎯 过滤:只保留包含 App 调用的 trace (保持调用链完整)
-                var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
-                var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
-                
-                // 🎯 展平树形结构为节点列表
-                var activeNodes = FlattenTraceNodes(BuildTraceTree(filteredActiveTraces));
-                var completedNodes = FlattenTraceNodes(BuildTraceTree(filteredCompletedTraces));
-                
-                // 🎯 应用用户筛选(在扁平列表上筛选)
-                activeNodes = ApplyFilters(activeNodes);
-                completedNodes = ApplyFilters(completedNodes);
-                
-                // 🎯 重新构建树形结构
-                _activeRoots = BuildTraceTree(activeNodes)
-                    .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
-                    .ToList();
-
-                // 获取已完成的根节点
-                _completedRoots = BuildTraceTree(completedNodes)
-                    .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
-                    .ToList();
-            }
-        }
-        finally
-        {
-            // 🎯 只在显示了 loading 时才重置
-            if (showLoading)
-            {
-                _isLoading = false;
-            }
-        }
-    }
-    
     // 🎯 应用筛选逻辑
     private List<TraceNode> ApplyFilters(List<TraceNode> nodes)
     {
@@ -616,45 +931,6 @@
         return filtered.ToList();
     }
     
-    // 🎯 筛选器变更事件
-    private void OnFilterChanged()
-    {
-        RefreshData(showLoading: true); // 🎯 用户手动筛选，显示 loading
-        StateHasChanged();
-    }
-    
-    // 🎯 清除所有筛选
-    private void ClearFilters()
-    {
-        _filterText = null;
-        _filterStatus = null;
-        _filterType = null;
-        _filterErrorOnly = false;
-        RefreshData(showLoading: true); // 🎯 用户手动清除筛选，显示 loading
-        StateHasChanged();
-    }
-    
-    private void SelectConversation(string? conversationId)
-    {
-        // 🎯 标记用户交互开始
-        _isUserInteracting = true;
-        _lastUserInteraction = DateTime.Now;
-        
-        Console.WriteLine($"🎯 选择会话 (gen_ai.conversation.id): {conversationId ?? "全部"}");
-        _selectedConversationId = conversationId;
-        _selectedActiveNode = null;      // 清除之前选中的节点
-        _selectedCompletedNode = null;   // 清除之前选中的节点
-        
-        Console.WriteLine($"📊 筛选前 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
-        RefreshData(showLoading: true); // 🎯 用户手动选择会话，显示 loading
-        Console.WriteLine($"📊 筛选后 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
-        
-        StateHasChanged();  // 强制 UI 更新
-        
-        // 🎯 延迟重置交互标志
-        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
-    }
-
     private List<TraceNode> BuildTraceTree(List<TraceNode> nodes)
     {
         if (!nodes.Any()) return new List<TraceNode>();

@@ -72,110 +72,36 @@ public class ActivityTraceRepository : IActivityTraceRepository
         }
     }
 
-    /// <summary>
-    /// 分页查询“已完成”的根调用（根节点）树列表。
-    /// </summary>
-    public async Task<(List<TraceNode> Items, int Total)> GetCompletedRootTreesAsync(
-        string? conversationId,
-        int pageIndex,
-        int pageSize,
+    public async Task<(IReadOnlyList<ConversationInfo> Items, int TotalCount)> GetConversationsAsync(
+        int skip,
+        int take,
         CancellationToken cancellationToken = default)
     {
-        if (pageIndex <= 0) pageIndex = 1;
-        if (pageSize <= 0) pageSize = 20;
-
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // 仅选择“根节点”且已完成（EndTime 有值）的记录
-        var query = db.ActivityTraces.AsNoTracking()
-            .Where(t => t.EndTime != null)
+        var baseQuery = db.ActivityTraces
+            .AsNoTracking()
             .Where(t =>
-                string.IsNullOrEmpty(t.ParentSpanId) ||
-                t.ParentSpanId == "0000000000000000" ||
-                t.ParentSpanId == "00000000000000000" ||
-                t.ParentSpanId == "000000000000000000");
+                t.ConversationId != null &&
+                t.ConversationId != string.Empty &&
+                !t.ConversationId.StartsWith("conv-auto-"));
 
-        if (!string.IsNullOrEmpty(conversationId))
-        {
-            var filteredTraceIds = await db.ActivityTraces.AsNoTracking()
-                .Where(t => t.ConversationId == conversationId)
-                .Select(t => t.TraceId)
-                .Distinct()
-                .ToListAsync(cancellationToken);
-
-            if (filteredTraceIds.Count == 0)
-            {
-                return (new List<TraceNode>(), 0);
-            }
-
-            query = query.Where(t => filteredTraceIds.Contains(t.TraceId));
-        }
-
-        var total = await query.CountAsync(cancellationToken);
-
-        // 取当前页的根节点，按时间倒序（最新在前）
-        var rootEntities = await query
-            .OrderByDescending(t => t.StartTime)
-            .Skip((pageIndex - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
-
-        if (rootEntities.Count == 0)
-        {
-            return (new List<TraceNode>(), total);
-        }
-
-        // 加载这些根节点对应的完整 TraceId 的所有节点，构建树
-        var traceIds = rootEntities.Select(e => e.TraceId).Distinct().ToList();
-        var allEntities = await db.ActivityTraces.AsNoTracking()
-            .Where(t => traceIds.Contains(t.TraceId))
-            .OrderBy(t => t.StartTime)
-            .ToListAsync(cancellationToken);
-
-        // 映射为 TraceNode
-        var allNodes = allEntities.Select(MapToNode).ToList();
-
-        // 按 TraceId 构建树
-        var roots = BuildTreesGroupedByTraceId(allNodes);
-
-        // 仅返回当前页根节点对应的树（通过 SpanId 精确匹配）
-        var pageRootSpanIds = new HashSet<string>(rootEntities.Select(r => r.SpanId));
-        var pageRoots = roots
-            .Where(r => pageRootSpanIds.Contains(r.SpanId))
-            .OrderByDescending(r => r.StartTime)
-            .ToList();
-
-        return (pageRoots, total);
-    }
-
-    public async Task<(List<ConversationInfo> Items, int Total)> GetHistoricalConversationsAsync(
-        int pageIndex,
-        int pageSize,
-        CancellationToken cancellationToken = default)
-    {
-        if (pageIndex <= 0) pageIndex = 1;
-        if (pageSize <= 0) pageSize = 20;
-
-        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var baseQuery = db.ActivityTraces.AsNoTracking()
-            .Where(t => t.EndTime != null)
-            .Where(t => !string.IsNullOrEmpty(t.ConversationId))
-            .Where(t => !t.ConversationId!.StartsWith("conv-auto-"));
-
-        var total = await baseQuery
+        var totalCount = await baseQuery
             .Select(t => t.ConversationId!)
             .Distinct()
             .CountAsync(cancellationToken);
 
-        if (total == 0)
+        if (totalCount == 0)
         {
-            return (new List<ConversationInfo>(), 0);
+            return (Array.Empty<ConversationInfo>(), 0);
         }
 
-        var summaries = await baseQuery
+        var conversationRows = await baseQuery
             .GroupBy(t => t.ConversationId!)
-            .Select(g => new ConversationSummaryRow
+            .OrderByDescending(g => g.Max(t => t.StartTime))
+            .Skip(skip)
+            .Take(take)
+            .Select(g => new
             {
                 ConversationId = g.Key,
                 RequestCount = g.Count(),
@@ -183,35 +109,84 @@ public class ActivityTraceRepository : IActivityTraceRepository
                 LastRequestTime = g.Max(t => t.StartTime),
                 TotalInputTokens = g.Sum(t => t.InputTokens),
                 TotalOutputTokens = g.Sum(t => t.OutputTokens),
+                IsActive = g.Any(t => t.EndTime == null),
                 SuccessCount = g.Count(t => t.Status == "Success"),
                 ErrorCount = g.Count(t => t.Status == "Error"),
-                Models = g.Where(t => t.ModelId != null && t.ModelId != string.Empty)
-                          .Select(t => t.ModelId!)
-                          .Distinct()
-                          .ToList()
+                Models = g
+                    .Where(t => t.ModelId != null && t.ModelId != string.Empty)
+                    .Select(t => t.ModelId!)
             })
-            .OrderByDescending(g => g.LastRequestTime)
-            .Skip((pageIndex - 1) * pageSize)
-            .Take(pageSize)
             .ToListAsync(cancellationToken);
 
-        var items = summaries
-            .Select(s => new ConversationInfo
+        var conversations = conversationRows
+            .Select(row => new ConversationInfo
             {
-                ConversationId = s.ConversationId,
-                RequestCount = s.RequestCount,
-                FirstRequestTime = s.FirstRequestTime,
-                LastRequestTime = s.LastRequestTime,
-                TotalInputTokens = s.TotalInputTokens,
-                TotalOutputTokens = s.TotalOutputTokens,
-                SuccessCount = s.SuccessCount,
-                ErrorCount = s.ErrorCount,
-                Models = s.Models,
-                IsActive = false
+                ConversationId = row.ConversationId,
+                RequestCount = row.RequestCount,
+                FirstRequestTime = row.FirstRequestTime,
+                LastRequestTime = row.LastRequestTime,
+                TotalInputTokens = row.TotalInputTokens,
+                TotalOutputTokens = row.TotalOutputTokens,
+                IsActive = row.IsActive,
+                SuccessCount = row.SuccessCount,
+                ErrorCount = row.ErrorCount,
+                Models = row.Models.Distinct().ToList()
             })
             .ToList();
 
-        return (items, total);
+        return (conversations, totalCount);
+    }
+
+    public async Task<List<TraceNode>> GetTracesByConversationIdsAsync(
+        IReadOnlyCollection<string> conversationIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (conversationIds == null || conversationIds.Count == 0)
+        {
+            return new List<TraceNode>();
+        }
+
+        var normalizedConversationIds = conversationIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct()
+            .ToArray();
+
+        if (normalizedConversationIds.Length == 0)
+        {
+            return new List<TraceNode>();
+        }
+
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var relatedTraceIds = await db.ActivityTraces
+            .AsNoTracking()
+            .Where(t =>
+                t.ConversationId != null &&
+                normalizedConversationIds.Contains(t.ConversationId))
+            .Select(t => t.TraceId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        if (relatedTraceIds.Count == 0)
+        {
+            return new List<TraceNode>();
+        }
+
+        var traceEntities = await db.ActivityTraces
+            .AsNoTracking()
+            .Where(t => relatedTraceIds.Contains(t.TraceId))
+            .ToListAsync(cancellationToken);
+
+        if (traceEntities.Count == 0)
+        {
+            return new List<TraceNode>();
+        }
+
+        var nodes = traceEntities
+            .Select(MapToNode)
+            .ToList();
+
+        return BuildTreesGroupedByTraceId(nodes);
     }
 
     /// <summary>

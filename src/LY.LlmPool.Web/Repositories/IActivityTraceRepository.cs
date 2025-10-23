@@ -23,31 +23,25 @@ public interface IActivityTraceRepository
     Task<int> DeleteOlderThanAsync(DateTime cutoff, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 分页查询“已完成”的根调用（根节点）树列表。
-    /// - 当提供 <paramref name="conversationId"/> 时，仅返回该会话的记录；否则返回全部会话。
-    /// - 仅返回根节点及其完整子树（同一 TraceId 下的所有节点）。
+    /// 分页查询会话概要信息。
     /// </summary>
-    /// <param name="conversationId">会话ID（可空，空表示全部会话）</param>
-    /// <param name="pageIndex">页码（从1开始）</param>
-    /// <param name="pageSize">每页大小</param>
-    /// <param name="cancellationToken">取消令牌</param>
-    /// <returns>返回（Items, Total）元组，其中 Items 为当前页的根节点树列表，Total 为总根节点数</returns>
-    Task<(List<TraceNode> Items, int Total)> GetCompletedRootTreesAsync(
-        string? conversationId,
-        int pageIndex,
-        int pageSize,
+    /// <param name="skip">跳过的会话数量。</param>
+    /// <param name="take">获取的会话数量。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>会话列表及总数。</returns>
+    Task<(IReadOnlyList<ConversationInfo> Items, int TotalCount)> GetConversationsAsync(
+        int skip,
+        int take,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 分页查询历史会话列表（基于持久化数据）。
+    /// 根据会话 ID 集合获取对应的完整 Trace 树。
     /// </summary>
-    /// <param name="pageIndex">页码（从1开始）</param>
-    /// <param name="pageSize">每页大小</param>
-    /// <param name="cancellationToken">取消令牌</param>
-    /// <returns>返回（Items, Total）元组，其中 Items 为当前页会话摘要，Total 为历史会话总数</returns>
-    Task<(List<ConversationInfo> Items, int Total)> GetHistoricalConversationsAsync(
-        int pageIndex,
-        int pageSize,
+    /// <param name="conversationIds">会话 ID 集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>完整的 Trace 树列表。</returns>
+    Task<List<TraceNode>> GetTracesByConversationIdsAsync(
+        IReadOnlyCollection<string> conversationIds,
         CancellationToken cancellationToken = default);
 
     /// <summary>
