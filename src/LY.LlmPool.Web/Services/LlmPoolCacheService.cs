@@ -459,6 +459,7 @@ public class LlmPoolCacheService
                         {
                             Success = true,
                             Config = app.LlmConfig,
+                            App = app, // 🎯 设置 App 信息
                             Strategy = "App 直接指定配置",
                             NeedsRelease = false,
                             Message = $"使用 App '{app.Name}' 直接指定的配置: {app.LlmConfig.Name}"
@@ -479,6 +480,7 @@ public class LlmPoolCacheService
                             {
                                 Success = true,
                                 Config = availableConfigsList[0], // 默认第一个（最高优先级）
+                                App = app, // 🎯 设置 App 信息
                                 AvailableConfigs = availableConfigsList, // 🎯 保存所有配置
                                 Strategy = availableConfigsList.Count == 1 ? "App 的 Endpoint (单一配置)" : $"App 的 Endpoint ({availableConfigsList.Count} 个配置)",
                                 NeedsRelease = false,

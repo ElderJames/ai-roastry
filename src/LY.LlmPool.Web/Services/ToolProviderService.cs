@@ -374,6 +374,16 @@ public class ToolProviderService
                 if (validationError != null)
                 {
                     _logger.LogWarning("Tool {ToolName} validation failed", app.Name);
+                    
+                    // 🎯 设置 Activity 状态为 Error
+                    var activity = Activity.Current;
+                    if (activity != null)
+                    {
+                        activity.SetStatus(ActivityStatusCode.Error, "Parameter validation failed");
+                        activity.SetTag("error.type", "ParameterValidationError");
+                        activity.SetTag("error.message", validationError);
+                    }
+                    
                     return validationError;
                 }
             }
@@ -651,6 +661,16 @@ public class ToolProviderService
                 if (validationError != null)
                 {
                     _logger.LogWarning("MCP Tool {ToolName} validation failed", toolName);
+                    
+                    // 🎯 设置 Activity 状态为 Error
+                    var activity = Activity.Current;
+                    if (activity != null)
+                    {
+                        activity.SetStatus(ActivityStatusCode.Error, "Parameter validation failed");
+                        activity.SetTag("error.type", "ParameterValidationError");
+                        activity.SetTag("error.message", validationError);
+                    }
+                    
                     return validationError;
                 }
             }

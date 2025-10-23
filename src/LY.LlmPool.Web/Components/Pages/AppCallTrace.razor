@@ -5,7 +5,7 @@
 
 <PageTitle>App 调用追踪 - 实时监控</PageTitle>
 
-<div style="padding: 24px;">
+<div style="padding: 24px; max-width: 100%; overflow-x: hidden;">
     <PageHeader Title="App 调用追踪 - 实时监控" Subtitle="监控 App Tool 调用链路、嵌套调用和并行执行">
         <PageHeaderExtra>
             <Space>
@@ -124,10 +124,65 @@
 
         <!-- 右侧：原有的调用树和详情 -->
         <AntDesign.Col Span="19">
+            <!-- 🎯 筛选器 -->
+            <Card Size="@CardSize.Small" Style="margin-bottom: 16px;">
+                <Body>
+                    <Space Size="@("middle")">
+                        <SpaceItem>
+                            <Text Strong>筛选:</Text>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Input Placeholder="搜索名称/内容/Tag/Event/错误..." 
+                                   @bind-Value="@_filterText" 
+                                   Style="width: 250px;"
+                                   AllowClear
+                                   TValue="string"
+                                   BindOnInput
+                                   DebounceMilliseconds="500"
+                                   OnChange="@(_ => OnFilterChanged())" />
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Select TItem="string" 
+                                    TItemValue="string"
+                                    DataSource="@_statusOptions"
+                                    @bind-Value="@_filterStatus"
+                                    Style="width: 150px;"
+                                    Placeholder="选择状态"
+                                    AllowClear
+                                    OnSelectedItemChanged="@(_ => OnFilterChanged())">
+                            </Select>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Select TItem="string" 
+                                    TItemValue="string"
+                                    DataSource="@_typeOptions"
+                                    @bind-Value="@_filterType"
+                                    Style="width: 150px;"
+                                    Placeholder="选择类型"
+                                    AllowClear
+                                    OnSelectedItemChanged="@(_ => OnFilterChanged())">
+                            </Select>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Checkbox @bind-Checked="@_filterErrorOnly" OnChange="OnFilterChanged">仅显示错误</Checkbox>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Button Size="@ButtonSize.Small" OnClick="ClearFilters">清除筛选</Button>
+                        </SpaceItem>
+                    </Space>
+                </Body>
+            </Card>
+            
             <Tabs DefaultActiveKey="1">
                 <TabPane Key="1" Tab="活跃调用树">
             <div style="margin-top: 16px;">
-                @if (_activeRoots.Count == 0)
+                @if (_isLoading)
+                {
+                    <div style="text-align: center; padding: 60px 0;">
+                        <Spin Size="@SpinSize.Large" Tip="加载中..." />
+                    </div>
+                }
+                else if (_activeRoots.Count == 0)
                 {
                     <Empty Description="@("当前没有活跃的 App 调用")" />
                 }
@@ -206,7 +261,13 @@
 
         <TabPane Key="2" Tab="已完成调用">
             <div style="margin-top: 16px;">
-                @if (_completedRoots.Count == 0)
+                @if (_isLoading)
+                {
+                    <div style="text-align: center; padding: 60px 0;">
+                        <Spin Size="@SpinSize.Large" Tip="加载中..." />
+                    </div>
+                }
+                else if (_completedRoots.Count == 0)
                 {
                     <Empty Description="@("还没有完成的 App 调用记录")" />
                 }
@@ -335,6 +396,22 @@
     // 🎯 树组件的引用和展开状态
     private Tree<TraceNode>? _completedTreeRef;
     private bool _completedTreeExpandAll = false;
+    
+    // 🎯 性能优化: 防止点击节点时触发刷新
+    private bool _isUserInteracting = false;
+    private DateTime _lastUserInteraction = DateTime.MinValue;
+    
+    // 🎯 筛选器状态
+    private string? _filterText;
+    private string? _filterStatus;
+    private string? _filterType;
+    private bool _filterErrorOnly = false;
+    
+    // 🎯 Loading 状态
+    private bool _isLoading = false;
+    
+    private readonly List<string> _statusOptions = new() { "Success", "Error", "InProgress" };
+    private readonly List<string> _typeOptions = new() { "App", "Tool", "MCP Tool", "MCP Server", "Chat", "HTTP" };
 
     protected override void OnInitialized()
     {
@@ -345,10 +422,11 @@
         // 初始加载数据
         RefreshData();
 
-        // 启动定时器（每秒刷新）
+        // 🎯 启动定时器（2秒刷新一次,降低频率）
         _timer = new System.Threading.Timer(_ =>
         {
-            if (_autoRefresh)
+            // 🎯 性能优化: 如果用户正在交互,跳过自动刷新
+            if (_autoRefresh && !_isUserInteracting && (DateTime.Now - _lastUserInteraction).TotalSeconds > 1)
             {
                 InvokeAsync(() =>
                 {
@@ -356,70 +434,205 @@
                     StateHasChanged();
                 });
             }
-        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
     }
 
     private void OnActivityStarted(object? sender, TraceNode node)
     {
-        InvokeAsync(() =>
+        // 🎯 性能优化: 只在非交互状态下刷新
+        if (!_isUserInteracting)
         {
-            RefreshData();
-            StateHasChanged();
-        });
+            InvokeAsync(() =>
+            {
+                RefreshData();
+                StateHasChanged();
+            });
+        }
     }
 
     private void OnActivityStopped(object? sender, TraceNode node)
     {
-        InvokeAsync(() =>
+        // 🎯 性能优化: 只在非交互状态下刷新
+        if (!_isUserInteracting)
         {
-            RefreshData();
-            StateHasChanged();
-        });
+            InvokeAsync(() =>
+            {
+                RefreshData();
+                StateHasChanged();
+            });
+        }
     }
 
     private void RefreshData()
     {
-        // 获取会话列表 (基于 gen_ai.conversation.id 分组)
-        _conversations = TraceService.GetConversationList();
+        _isLoading = true;
+        StateHasChanged(); // 立即显示 loading
         
-        // 如果有选中的会话,使用 GetTracesByConversation 获取完整调用树
-        if (!string.IsNullOrEmpty(_selectedConversationId))
+        try
         {
-            // 🎯 使用 GetTracesByConversation 方法获取完整的调用树(包括关联的 TraceId)
-            var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
+            // 获取会话列表 (基于 gen_ai.conversation.id 分组)
+            _conversations = TraceService.GetConversationList();
             
-            // 分离活跃和已完成的节点
-            var activeTraces = traceNodes.Where(t => t.Status == "InProgress").ToList();
-            var completedTraces = traceNodes.Where(t => t.Status != "InProgress").ToList();
-            
-            // 直接使用返回的根节点
-            _activeRoots = activeTraces.OrderBy(r => r.StartTime).ToList();
-            _completedRoots = completedTraces.OrderByDescending(r => r.StartTime).ToList();
-        }
-        else
-        {
-            // 显示所有会话
-            var activeTraces = TraceService.GetActiveTraces();
-            var completedTraces = TraceService.GetCompletedTraces(1000); // 🎯 增加到1000条,不限制在20条
-            
-            // 🎯 过滤:只保留包含 App 调用的 trace (保持调用链完整)
-            var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
-            var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
-            
-            // 获取活跃的根节点（没有父节点或父节点为空）
-            _activeRoots = BuildTraceTree(filteredActiveTraces)
-                .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
-                .ToList();
+            // 如果有选中的会话,使用 GetTracesByConversation 获取完整调用树
+            if (!string.IsNullOrEmpty(_selectedConversationId))
+            {
+                // 🎯 使用 GetTracesByConversation 方法获取完整的调用树(包括关联的 TraceId)
+                var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
+                
+                // 🎯 先展平树形结构为节点列表
+                var allNodes = FlattenTraceNodes(traceNodes);
+                
+                // 分离活跃和已完成的节点
+                var activeNodes = allNodes.Where(t => t.Status == "InProgress").ToList();
+                var completedNodes = allNodes.Where(t => t.Status != "InProgress").ToList();
+                
+                // 🎯 应用筛选(在扁平列表上筛选)
+                activeNodes = ApplyFilters(activeNodes);
+                completedNodes = ApplyFilters(completedNodes);
+                
+                // 🎯 重新构建树形结构
+                _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
+                _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
+            }
+            else
+            {
+                // 显示所有会话
+                var activeTraces = TraceService.GetActiveTraces();
+                var completedTraces = TraceService.GetCompletedTraces(1000); // 🎯 增加到1000条,不限制在20条
+                
+                // 🎯 过滤:只保留包含 App 调用的 trace (保持调用链完整)
+                var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
+                var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
+                
+                // 🎯 应用用户筛选(在扁平列表上筛选)
+                filteredActiveTraces = ApplyFilters(filteredActiveTraces);
+                filteredCompletedTraces = ApplyFilters(filteredCompletedTraces);
+                
+                // 获取活跃的根节点（没有父节点或父节点为空）
+                _activeRoots = BuildTraceTree(filteredActiveTraces)
+                    .OrderBy(r => r.StartTime) // 🔑 最早的调用（主 App）排在前面
+                    .ToList();
 
-            // 获取已完成的根节点
-            _completedRoots = BuildTraceTree(filteredCompletedTraces)
-                .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
-                .ToList();
+                // 获取已完成的根节点
+                _completedRoots = BuildTraceTree(filteredCompletedTraces)
+                    .OrderByDescending(r => r.StartTime) // 已完成的调用：最新的排在前面
+                    .ToList();
+            }
         }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    // 🎯 应用筛选逻辑
+    private List<TraceNode> ApplyFilters(List<TraceNode> nodes)
+    {
+        if (!nodes.Any()) return nodes;
+        
+        var filtered = nodes.AsEnumerable();
+        
+        // 🔍 文本筛选: 搜索 App/Tool 名称、Tag、Event、错误信息等
+        if (!string.IsNullOrWhiteSpace(_filterText))
+        {
+            var searchText = _filterText.Trim().ToLowerInvariant();
+            filtered = filtered.Where(n => 
+                // 基本信息
+                (!string.IsNullOrEmpty(n.AppName) && n.AppName.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.ToolName) && n.ToolName.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.DisplayName) && n.DisplayName.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.OperationName) && n.OperationName.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.McpServerName) && n.McpServerName.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.ModelId) && n.ModelId.ToLowerInvariant().Contains(searchText)) ||
+                
+                // Tool 参数和结果
+                (!string.IsNullOrEmpty(n.ToolArguments) && n.ToolArguments.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.ToolResult) && n.ToolResult.ToLowerInvariant().Contains(searchText)) ||
+                
+                // 消息内容
+                (!string.IsNullOrEmpty(n.OutputContent) && n.OutputContent.ToLowerInvariant().Contains(searchText)) ||
+                (n.InputMessages.Any(m => !string.IsNullOrEmpty(m.Content) && m.Content.ToLowerInvariant().Contains(searchText))) ||
+                
+                // 错误信息
+                (!string.IsNullOrEmpty(n.ErrorType) && n.ErrorType.ToLowerInvariant().Contains(searchText)) ||
+                (!string.IsNullOrEmpty(n.StatusDescription) && n.StatusDescription.ToLowerInvariant().Contains(searchText)) ||
+                
+                // Tags (key 或 value)
+                (n.Tags != null && n.Tags.Any(t => 
+                    t.Key.ToLowerInvariant().Contains(searchText) || 
+                    (!string.IsNullOrEmpty(t.Value) && t.Value.ToLowerInvariant().Contains(searchText))
+                )) ||
+                
+                // Events (name 或 tags)
+                (n.Events != null && n.Events.Any(e => 
+                    e.Name.ToLowerInvariant().Contains(searchText) ||
+                    e.Tags.Any(et => 
+                        et.Key.ToLowerInvariant().Contains(searchText) || 
+                        (!string.IsNullOrEmpty(et.Value) && et.Value.ToLowerInvariant().Contains(searchText))
+                    )
+                )) ||
+                
+                // ID 相关
+                n.TraceId.ToLowerInvariant().Contains(searchText) ||
+                n.SpanId.ToLowerInvariant().Contains(searchText) ||
+                n.ActivityId.ToLowerInvariant().Contains(searchText)
+            );
+        }
+        
+        // 状态筛选
+        if (!string.IsNullOrWhiteSpace(_filterStatus))
+        {
+            filtered = filtered.Where(n => n.Status == _filterStatus);
+        }
+        
+        // 类型筛选
+        if (!string.IsNullOrWhiteSpace(_filterType))
+        {
+            filtered = _filterType switch
+            {
+                "App" => filtered.Where(n => n.IsAppCall),
+                "Tool" => filtered.Where(n => n.IsToolCall && !n.IsMcpTool),
+                "MCP Tool" => filtered.Where(n => n.IsMcpTool),
+                "MCP Server" => filtered.Where(n => n.IsMcpServer),
+                "Chat" => filtered.Where(n => n.OperationName.StartsWith("chat")),
+                "HTTP" => filtered.Where(n => n.OperationName.StartsWith("http")),
+                _ => filtered
+            };
+        }
+        
+        // 仅显示错误
+        if (_filterErrorOnly)
+        {
+            filtered = filtered.Where(n => n.Status == "Error" || !string.IsNullOrEmpty(n.ErrorType));
+        }
+        
+        return filtered.ToList();
+    }
+    
+    // 🎯 筛选器变更事件
+    private void OnFilterChanged()
+    {
+        RefreshData();
+        StateHasChanged();
+    }
+    
+    // 🎯 清除所有筛选
+    private void ClearFilters()
+    {
+        _filterText = null;
+        _filterStatus = null;
+        _filterType = null;
+        _filterErrorOnly = false;
+        RefreshData();
+        StateHasChanged();
     }
     
     private void SelectConversation(string? conversationId)
     {
+        // 🎯 标记用户交互开始
+        _isUserInteracting = true;
+        _lastUserInteraction = DateTime.Now;
+        
         Console.WriteLine($"🎯 选择会话 (gen_ai.conversation.id): {conversationId ?? "全部"}");
         _selectedConversationId = conversationId;
         _selectedActiveNode = null;      // 清除之前选中的节点
@@ -430,6 +643,9 @@
         Console.WriteLine($"📊 筛选后 - 活跃: {_activeRoots.Count}, 已完成: {_completedRoots.Count}");
         
         StateHasChanged();  // 强制 UI 更新
+        
+        // 🎯 延迟重置交互标志
+        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
     }
 
     private List<TraceNode> BuildTraceTree(List<TraceNode> nodes)
@@ -529,6 +745,30 @@
         }
 
         return filteredTraces;
+    }
+    
+    /// <summary>
+    /// 展平树形结构为扁平列表(递归收集所有节点)
+    /// </summary>
+    private List<TraceNode> FlattenTraceNodes(List<TraceNode> roots)
+    {
+        var result = new List<TraceNode>();
+        
+        void CollectNodes(TraceNode node)
+        {
+            result.Add(node);
+            foreach (var child in node.Children)
+            {
+                CollectNodes(child);
+            }
+        }
+        
+        foreach (var root in roots)
+        {
+            CollectNodes(root);
+        }
+        
+        return result;
     }
 
     private void ToggleAutoRefresh()
@@ -658,14 +898,28 @@
     // 节点点击事件处理
     private void OnActiveNodeClick(TreeEventArgs<TraceNode> args)
     {
+        // 🎯 性能优化: 标记用户正在交互
+        _isUserInteracting = true;
+        _lastUserInteraction = DateTime.Now;
+        
         _selectedActiveNode = args.Node.DataItem;
         StateHasChanged();
+        
+        // 🎯 延迟重置交互标志
+        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
     }
 
     private void OnCompletedNodeClick(TreeEventArgs<TraceNode> args)
     {
+        // 🎯 性能优化: 标记用户正在交互
+        _isUserInteracting = true;
+        _lastUserInteraction = DateTime.Now;
+        
         _selectedCompletedNode = args.Node.DataItem;
         StateHasChanged();
+        
+        // 🎯 延迟重置交互标志
+        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
     }
 
     // 获取节点图标
@@ -792,13 +1046,17 @@
                     @if (!string.IsNullOrEmpty(node.ToolArguments))
                     {
                         <DescriptionsItem Title="参数">
-                            <pre style="margin: 0;">@node.ToolArguments</pre>
+                            <div style="max-width: 100%; overflow-x: auto;">
+                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 800px;">@node.ToolArguments</pre>
+                            </div>
                         </DescriptionsItem>
                     }
                     @if (!string.IsNullOrEmpty(node.ToolResult))
                     {
                         <DescriptionsItem Title="结果">
-                            <pre style="margin: 0; max-height: 300px; overflow-y: auto;">@node.ToolResult</pre>
+                            <div style="max-width: 100%; overflow-x: auto;">
+                                <pre style="margin: 0; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 800px;">@node.ToolResult</pre>
+                            </div>
                         </DescriptionsItem>
                     }
                 </Descriptions>
@@ -815,13 +1073,13 @@
                         <Text Strong>📥 输入消息:</Text>
                         @foreach (var msg in node.InputMessages)
                         {
-                            <div style="margin-top: 8px; padding: 12px; background-color: #f5f5f5; border-radius: 4px; border-left: 3px solid #1890ff;">
+                            <div style="margin-top: 8px; padding: 12px; background-color: #f5f5f5; border-radius: 4px; border-left: 3px solid #1890ff; max-width: 100%; overflow-x: auto;">
                                 <div style="margin-bottom: 4px;">
                                     <Tag Color="@(msg.Role == "system" ? "purple" : msg.Role == "user" ? "blue" : "green")">
                                         @msg.Role
                                     </Tag>
                                 </div>
-                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background: transparent;">@msg.Content</pre>
+                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; background: transparent; max-width: 100%;">@msg.Content</pre>
                             </div>
                         }
                     </div>
@@ -830,8 +1088,8 @@
                 {
                     <div>
                         <Text Strong>📤 输出内容:</Text>
-                        <div style="margin-top: 8px; padding: 12px; background-color: #f0f9ff; border-radius: 4px; border-left: 3px solid #52c41a;">
-                            <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; background: transparent;">@node.OutputContent</pre>
+                        <div style="margin-top: 8px; padding: 12px; background-color: #f0f9ff; border-radius: 4px; border-left: 3px solid #52c41a; max-width: 100%; overflow-x: auto;">
+                            <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; background: transparent; max-width: 100%;">@node.OutputContent</pre>
                         </div>
                     </div>
                 }
