@@ -27,17 +27,9 @@
                     <Button OnClick="ClearAll" Danger>清除所有</Button>
                 </SpaceItem>
                 <SpaceItem>
-                    <RadioGroup TValue="ConversationDataSourceMode">
-                        <Radio Value="ConversationDataSourceMode.RealTime"
-                               Checked="_conversationMode == ConversationDataSourceMode.RealTime"
-                               CheckedChanged="async isChecked => await OnConversationModeCheckedChangedAsync(isChecked, ConversationDataSourceMode.RealTime)">
-                            实时会话
-                        </Radio>
-                        <Radio Value="ConversationDataSourceMode.History"
-                               Checked="_conversationMode == ConversationDataSourceMode.History"
-                               CheckedChanged="async isChecked => await OnConversationModeCheckedChangedAsync(isChecked, ConversationDataSourceMode.History)">
-                            历史会话
-                        </Radio>
+                    <RadioGroup @bind-Value="_conversationMode" @bind-Value:after="OnConversationModeChangedAsync" ButtonStyle="RadioButtonStyle.Solid">
+                        <Radio RadioButton Value="ConversationDataSourceMode.RealTime">实时</Radio>
+                        <Radio RadioButton Value="ConversationDataSourceMode.History">历史</Radio>
                     </RadioGroup>
                 </SpaceItem>
             </Space>
@@ -57,7 +49,7 @@
                     </div>
                 </TitleTemplate>
                 <Extra>
-                    <Badge Count="@_conversations.Count" ShowZero="true" />
+                    <Badge Count="@GetTotalConversationCount()" ShowZero="true" />
                 </Extra>
                 <Body>
                     @if (_conversations.Any())
@@ -140,26 +132,15 @@
                     @if (_conversationMode == ConversationDataSourceMode.History)
                     {
                         <Divider Style="margin: 12px 0;" />
-                        <div style="padding: 8px 0; display: flex; flex-direction: column; gap: 8px;">
-                            <Space Size="@("small")" Style="justify-content: center;">
-                                <SpaceItem>
-                                    <Button Size="@ButtonSize.Small"
-                                            OnClick="async _ => await ChangeHistoryPageAsync(_historyPageIndex - 1)"
-                                            Disabled="_historyPageIndex <= 1">
-                                        上一页
-                                    </Button>
-                                </SpaceItem>
-                                <SpaceItem>
-                                    <Text>第 @_historyPageIndex / @HistoryTotalPages 页</Text>
-                                </SpaceItem>
-                                <SpaceItem>
-                                    <Button Size="@ButtonSize.Small"
-                                            OnClick="async _ => await ChangeHistoryPageAsync(_historyPageIndex + 1)"
-                                            Disabled="_historyPageIndex >= HistoryTotalPages">
-                                        下一页
-                                    </Button>
-                                </SpaceItem>
-                            </Space>
+                        <div style="padding: 8px 0; display: flex; flex-direction: column; gap: 12px;">
+                            <Pagination Total="_historyTotalCount"
+                                        Current="_historyPageIndex"
+                                        PageSize="_historyPageSize"
+                                        PageSizeOptions="_pageSizeOptions"
+                                        ShowSizeChanger
+                                        Size="@PaginationSize.Small"
+                                        OnChange="OnHistoryPaginationChangeAsync"
+                                        Style="text-align: center;" />
                             <div style="text-align: center;">
                                 <Button Size="@ButtonSize.Small"
                                         OnClick="async _ => await RefreshHistoryPageAsync()"
@@ -440,6 +421,7 @@
     private int _historyPageIndex = 1;
     private int _historyTotalCount;
     private int _historyPageSize;
+    private readonly int[] _pageSizeOptions = new[] { 5, 10, 20, 50, 100 };
     private string? _selectedConversationId;
     
     // 选中的节点
@@ -478,6 +460,19 @@
 
             return (int)Math.Ceiling(_historyTotalCount / (double)pageSize);
         }
+    }
+
+    /// <summary>
+    /// 获取会话列表的总数量（根据当前模式返回不同的值）
+    /// </summary>
+    private int GetTotalConversationCount()
+    {
+        return _conversationMode switch
+        {
+            ConversationDataSourceMode.History => _historyTotalCount,
+            ConversationDataSourceMode.RealTime => _realTimeConversations.Count,
+            _ => _conversations.Count
+        };
     }
 
     protected override async Task OnInitializedAsync()
@@ -693,24 +688,9 @@
         _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
         _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
     }
-
-	private async Task OnConversationModeCheckedChangedAsync(bool isChecked, ConversationDataSourceMode mode)
-	{
-		if (!isChecked)
-		{
-			return;
-		}
-
-		await OnConversationModeChangedAsync(mode);
-	}
-
-	private async Task OnConversationModeChangedAsync(ConversationDataSourceMode mode)
-	{
-		if (_conversationMode != mode)
-		{
-			_conversationMode = mode;
-		}
-
+     
+    private async Task OnConversationModeChangedAsync()
+	{ 
 		_selectedConversationId = null;
 		_selectedActiveNode = null;
 		_selectedCompletedNode = null;
@@ -740,24 +720,35 @@
         StateHasChanged();
     }
 
-    private async Task ChangeHistoryPageAsync(int newIndex)
+    private async Task OnHistoryPaginationChangeAsync(PaginationEventArgs args)
     {
         if (_conversationMode != ConversationDataSourceMode.History)
         {
             return;
         }
 
-        var totalPages = HistoryTotalPages;
-        newIndex = Math.Clamp(newIndex, 1, totalPages);
+        bool needRefresh = false;
 
-        if (newIndex == _historyPageIndex)
+        // 检查页码是否变化
+        if (args.Page != _historyPageIndex)
         {
-            return;
+            _historyPageIndex = args.Page;
+            needRefresh = true;
         }
 
-        _historyPageIndex = newIndex;
-        await RefreshHistoryDataAsync(showLoading: true);
-        StateHasChanged();
+        // 检查分页大小是否变化
+        if (args.PageSize != _historyPageSize)
+        {
+            _historyPageSize = args.PageSize;
+            _historyPageIndex = 1; // 分页大小变化时，重置到第一页
+            needRefresh = true;
+        }
+
+        if (needRefresh)
+        {
+            await RefreshHistoryDataAsync(showLoading: true);
+            StateHasChanged();
+        }
     }
 
     private async Task OnFilterChangedAsync()
@@ -790,8 +781,11 @@
         _lastUserInteraction = DateTime.Now;
 
         _selectedConversationId = conversationId;
+
+        // 🎯 先清空选中节点，强制 Blazor 识别变化
         _selectedActiveNode = null;
         _selectedCompletedNode = null;
+        StateHasChanged();
 
         if (_conversationMode == ConversationDataSourceMode.History)
         {
@@ -804,7 +798,9 @@
 
         StateHasChanged();
 
-        _ = Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
+        // 🎯 延迟重置交互标志
+        await Task.Delay(500);
+        _isUserInteracting = false;
     }
 
     private void OnActivityStarted(object? sender, TraceNode node)
@@ -1181,28 +1177,50 @@
     // 节点点击事件处理
     private void OnActiveNodeClick(TreeEventArgs<TraceNode> args)
     {
-        // 🎯 性能优化: 标记用户正在交互
-        _isUserInteracting = true;
-        _lastUserInteraction = DateTime.Now;
-        
-        _selectedActiveNode = args.Node.DataItem;
-        StateHasChanged();
-        
-        // 🎯 延迟重置交互标志
-        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
+        // 🎯 使用 InvokeAsync 确保在 UI 线程同步上下文中执行所有更新
+        InvokeAsync(async () =>
+        {
+            // 🎯 性能优化: 标记用户正在交互
+            _isUserInteracting = true;
+            _lastUserInteraction = DateTime.Now;
+
+            // 🎯 先清空选中节点，强制 Blazor 识别变化
+            _selectedActiveNode = null;
+            StateHasChanged();
+
+            // 🎯 短暂延迟后设置新节点，确保 UI 完全刷新
+            await Task.Yield();
+            _selectedActiveNode = args.Node.DataItem;
+            StateHasChanged();
+
+            // 🎯 延迟重置交互标志
+            await Task.Delay(500);
+            _isUserInteracting = false;
+        });
     }
 
     private void OnCompletedNodeClick(TreeEventArgs<TraceNode> args)
     {
-        // 🎯 性能优化: 标记用户正在交互
-        _isUserInteracting = true;
-        _lastUserInteraction = DateTime.Now;
-        
-        _selectedCompletedNode = args.Node.DataItem;
-        StateHasChanged();
-        
-        // 🎯 延迟重置交互标志
-        Task.Delay(500).ContinueWith(_ => _isUserInteracting = false);
+        // 🎯 使用 InvokeAsync 确保在 UI 线程同步上下文中执行所有更新
+        InvokeAsync(async () =>
+        {
+            // 🎯 性能优化: 标记用户正在交互
+            _isUserInteracting = true;
+            _lastUserInteraction = DateTime.Now;
+
+            // 🎯 先清空选中节点，强制 Blazor 识别变化
+            _selectedCompletedNode = null;
+            StateHasChanged();
+
+            // 🎯 短暂延迟后设置新节点，确保 UI 完全刷新
+            await Task.Yield();
+            _selectedCompletedNode = args.Node.DataItem;
+            StateHasChanged();
+
+            // 🎯 延迟重置交互标志
+            await Task.Delay(500);
+            _isUserInteracting = false;
+        });
     }
 
     // 获取节点图标

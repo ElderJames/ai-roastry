@@ -79,43 +79,53 @@ public class ActivityTraceRepository : IActivityTraceRepository
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var baseQuery = db.ActivityTraces
-            .AsNoTracking()
+        // 定义有效的 TraceId -> ConversationId 唯一映射（子查询，不立即执行）
+        // 对每个 TraceId 选择一个有效的 ConversationId，使用 Min 保证确定性
+        var validTraceConversationMap = db.ActivityTraces
             .Where(t =>
                 t.ConversationId != null &&
                 t.ConversationId != string.Empty &&
-                !t.ConversationId.StartsWith("conv-auto-"));
+                !t.ConversationId.StartsWith("conv-auto-"))
+            .GroupBy(t => t.TraceId)
+            .Select(g => new
+            {
+                TraceId = g.Key,
+                ConversationId = g.Min(t => t.ConversationId)!
+            });
 
-        var totalCount = await baseQuery
-            .Select(t => t.ConversationId!)
-            .Distinct()
-            .CountAsync(cancellationToken);
+        // 计算总数（有效 TraceId 的数量）
+        var totalCount = await validTraceConversationMap.CountAsync(cancellationToken);
 
         if (totalCount == 0)
         {
             return (Array.Empty<ConversationInfo>(), 0);
         }
 
-        var conversationRows = await baseQuery
-            .GroupBy(t => t.ConversationId!)
-            .OrderByDescending(g => g.Max(t => t.StartTime))
+        // 使用 JOIN 获取所有相关记录并按 TraceId 分组统计
+        // JOIN 比 IN 子查询性能更好，且能直接获取 ConversationId
+        var conversationRows = await (
+            from trace in db.ActivityTraces.AsNoTracking()
+            join mapping in validTraceConversationMap on trace.TraceId equals mapping.TraceId
+            group new { trace, mapping.ConversationId } by trace.TraceId into g
+            orderby g.Max(x => x.trace.StartTime) descending
+            select new
+            {
+                TraceId = g.Key,
+                ConversationId = g.First().ConversationId,  // JOIN 后同一组的 ConversationId 都相同
+                RequestCount = g.Count(),
+                FirstRequestTime = g.Min(x => x.trace.StartTime),
+                LastRequestTime = g.Max(x => x.trace.StartTime),
+                TotalInputTokens = g.Sum(x => x.trace.InputTokens),
+                TotalOutputTokens = g.Sum(x => x.trace.OutputTokens),
+                IsActive = g.Any(x => x.trace.EndTime == null),
+                SuccessCount = g.Count(x => x.trace.Status == "Success"),
+                ErrorCount = g.Count(x => x.trace.Status == "Error"),
+                Models = g
+                    .Select(x => x.trace.ModelId)
+                    .Where(m => m != null && m != string.Empty)
+            })
             .Skip(skip)
             .Take(take)
-            .Select(g => new
-            {
-                ConversationId = g.Key,
-                RequestCount = g.Count(),
-                FirstRequestTime = g.Min(t => t.StartTime),
-                LastRequestTime = g.Max(t => t.StartTime),
-                TotalInputTokens = g.Sum(t => t.InputTokens),
-                TotalOutputTokens = g.Sum(t => t.OutputTokens),
-                IsActive = g.Any(t => t.EndTime == null),
-                SuccessCount = g.Count(t => t.Status == "Success"),
-                ErrorCount = g.Count(t => t.Status == "Error"),
-                Models = g
-                    .Where(t => t.ModelId != null && t.ModelId != string.Empty)
-                    .Select(t => t.ModelId!)
-            })
             .ToListAsync(cancellationToken);
 
         var conversations = conversationRows
