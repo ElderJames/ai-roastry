@@ -1,0 +1,325 @@
+@using LY.LlmPool.Web.Common
+@using LY.LlmPool.Web.Services.Telemetry
+@using LY.LlmPool.Web.Models.Dto
+
+<Modal Visible="@Visible"
+       OnCancel="@HandleCancel"
+       Width="1400"
+       Footer="null">
+    <TitleTemplate>
+        <div style="display: flex; align-items: center; gap: 8px;"> 
+            @if (Node != null)
+            {
+                <span>@Node.Name</span>
+                @if (Node.IsLlmPoolServer)
+                {
+                    <Tag Color="@("green")">LlmPool Server</Tag>
+                }
+                @if (Node.IsAppCall)
+                {
+                    <Tag Color="@("blue")">App 调用</Tag>
+                }
+                @if (Node.IsToolCall)
+                {
+                    <Tag Color="@("purple")">Tool 调用</Tag>
+                }
+                @if (Node.IsAppTool)
+                {
+                    <Tag Color="@("blue")">App Tool</Tag>
+                }
+                @if (Node.IsMcpTool)
+                {
+                    <Tag Color="@("purple")">MCP Tool</Tag>
+                }
+                @if (Node.IsMcpServer)
+                {
+                    <Tag Color="@("orange")">MCP Server</Tag>
+                }
+            }
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+    <div style="max-height: 80vh; overflow-y: auto;">
+        @if (Node != null)
+        {
+            @* 筛选器 *@
+            <Space Style="width: 100%;" Align="@SpaceAlign.Center">
+                <SpaceItem>
+                    <Space Align="@SpaceAlign.Center">
+                        <SpaceItem><Text Strong>时间范围:</Text></SpaceItem>
+                        <SpaceItem>
+                            <RangePicker @bind-Value="_dateRange"
+                                            Placeholder="@(new[] { "开始时间", "结束时间" })"
+                                            ShowTime="true"
+                                            Style="width: 380px;" />
+                        </SpaceItem>
+                    </Space>
+                </SpaceItem>
+                <SpaceItem>
+                    <Space Align="@SpaceAlign.Center">
+                        <SpaceItem><Text Strong>状态:</Text></SpaceItem>
+                        <SpaceItem>
+                            <Select TItem="string"
+                                    TItemValue="string"
+                                    DataSource="@_statusOptions"
+                                    @bind-Value="_statusFilter"
+                                    Placeholder="选择状态"
+                                    AllowClear="true"
+                                    Style="width: 150px;" />
+                        </SpaceItem>
+                    </Space>
+                </SpaceItem>
+                <SpaceItem>
+                    <Space Align="@SpaceAlign.Center">
+                        <SpaceItem><Text Strong>追踪ID:</Text></SpaceItem>
+                        <SpaceItem>
+                            <Input @bind-Value="_traceIdFilter"
+                                    Placeholder="输入追踪ID"
+                                    AllowClear="true"
+                                    Style="width: 200px;" />
+                        </SpaceItem>
+                    </Space>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary"
+                            OnClick="HandleSearch"
+                            Loading="_loading">
+                        查询
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button OnClick="HandleReset">
+                        重置
+                    </Button>
+                </SpaceItem>
+            </Space>
+             
+            @* 数据表格 - Data Table with Conditional Columns *@
+            <Card Size="@CardSize.Small">
+                <TitleTemplate>
+                    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                        <span>@($"历史调用记录 (共 {_totalCount} 条)")</span>
+                        @* 列可见性设置 - Column Visibility Settings (moved to table title) *@
+                        <Popover
+                            Title="列设置"
+                            Trigger="new[] { Trigger.Click }"
+                            Placement="Placement.BottomRight">
+                            <TitleTemplate>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span>列设置</span>
+                                    <div style="margin-left: auto;">
+                                        <Button Size="@ButtonSize.Small" Type="@ButtonType.Link" OnClick="SaveColumnVisibilityAsync">
+                                            保存
+                                        </Button>
+                                        <Button Size="@ButtonSize.Small" Type="@ButtonType.Link" OnClick="ResetColumnVisibility">
+                                            重置
+                                        </Button>
+                                    </div>
+                                </div>
+                            </TitleTemplate>
+                            <ContentTemplate>
+                                <div style="min-width: 280px; padding: 8px;">
+                                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+                                        <Checkbox @bind-Value="_columnVisibility.ShowTraceId">追踪ID</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowConversationId">会话ID</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowStartTime">开始时间</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowEndTime">结束时间</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowDuration">耗时</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowStatus">状态</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowInputMessages">输入消息</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowInputParameters">输入参数</Checkbox>
+                                        <Checkbox @bind-Value="_columnVisibility.ShowOutputContent" Style="grid-column: span 2;">输出内容</Checkbox>
+                                            @* 官方示例用法（提示：Checkbox.CheckedExpression已过期）： @bind-Checked="_columnVisibility.ShowOutputContent" *@
+                                    </div>
+                                </div>
+                            </ContentTemplate>
+                            <ChildContent>
+                                <Button Icon="@IconType.Outline.Setting" Size="@ButtonSize.Small" Type="@ButtonType.Text">
+                                    列设置
+                                </Button>
+                            </ChildContent>
+                        </Popover>
+                    </div>
+                </TitleTemplate>
+                <Body>
+                    <Spin Spinning="_loading">
+                        @if (_records.Any())
+                        {
+                            <Table TItem="TraceRecordDto"
+                                   DataSource="_records"
+                                   Size="@TableSize.Small"
+                                   Bordered
+                                   ScrollY="400px">
+                              @*   <PropertyColumn Property="c => c.Name" Title="名称" Width="150px" /> *@
+
+                                @if (_columnVisibility.ShowTraceId)
+                                {
+                                <PropertyColumn Property="c => c.TraceId" Title="追踪ID" Width="120px">
+                                    <Tooltip Title="@context.TraceId">
+                                        <Paragraph Copyable="true"
+                                                  CopyConfig="new() { Text = context.TraceId }"
+                                                  Style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; cursor: pointer;">
+                                            @TruncateContent(context.TraceId, 12)
+                                        </Paragraph>
+                                    </Tooltip>
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowConversationId)
+                                {
+                                <PropertyColumn Property="c => c.ConversationId" Title="会话ID" Width="120px">
+                                    <Tooltip Title="@context.ConversationId">
+                                        <Paragraph Copyable="true"
+                                                  CopyConfig="new() { Text = context.ConversationId }"
+                                                  Style="margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100px; cursor: pointer;">
+                                            @TruncateContent(context.ConversationId, 12)
+                                        </Paragraph>
+                                    </Tooltip>
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowStartTime)
+                                {
+                                <PropertyColumn Property="c => c.StartTime" Title="开始时间" Width="160px" Sortable>
+                                    @context.StartTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowEndTime)
+                                {
+                                <PropertyColumn Property="c => c.EndTime" Title="结束时间" Width="160px" Sortable>
+                                    @context.EndTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowDuration)
+                                {
+                                <PropertyColumn Property="c => c.DurationMs" Title="耗时(ms)" Width="90px" Sortable Align="@ColumnAlign.Right">
+                                    @context.DurationMs.ToString("N0")
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowStatus)
+                                {
+                                <PropertyColumn Property="c => c.Status" Title="状态" Width="80px">
+                                    <Tag Color="@GetStatusColor(context.Status)">@context.Status</Tag>
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowInputMessages)
+                                {
+                                <PropertyColumn Property="c => c.InputMessagesJson" Title="输入消息" Width="200px">
+                                    @if (!string.IsNullOrEmpty(context.InputMessagesJson))
+                                    {
+                                        var currentContent = context.InputMessagesJson;
+                                        var truncated = TruncateContent(currentContent, 30);
+                                        <Popover>
+                                            <TitleTemplate>
+                                                <span>完整输入消息 (JSON)</span>
+                                            </TitleTemplate>
+                                            <ContentTemplate>
+                                                <div style="max-width: 800px; max-height: 250px; overflow-y: auto;">
+                                                    @JsonHelper.FormatJsonWithHighlight(currentContent)
+                                                </div>
+                                            </ContentTemplate>
+                                            <ChildContent>
+                                                <div style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="@currentContent">
+                                                    @truncated
+                                                </div>
+                                            </ChildContent>
+                                        </Popover>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #999;">无内容</span>
+                                    }
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowInputParameters)
+                                {
+                                <PropertyColumn Property="c => c.InputParameters" Title="输入参数" Width="200px">
+                                    @if (!string.IsNullOrEmpty(context.InputParameters))
+                                    {
+                                        var currentContent = context.InputParameters;
+                                        var truncated = TruncateContent(currentContent, 30);
+                                        <Popover>
+                                            <TitleTemplate>
+                                                <span>完整输入参数 (JSON)</span>
+                                            </TitleTemplate>
+                                            <ContentTemplate>
+                                                        <div style="max-width: 800px; max-height: 250px; overflow-y: auto;">
+                                                    @JsonHelper.FormatJsonWithHighlight(currentContent)
+                                                </div>
+                                            </ContentTemplate>
+                                            <ChildContent>
+                                                <div style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="@currentContent">
+                                                    @truncated
+                                                </div>
+                                            </ChildContent>
+                                        </Popover>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #999;">无参数</span>
+                                    }
+                                </PropertyColumn>
+                                }
+
+                                @if (_columnVisibility.ShowOutputContent)
+                                {
+                                <PropertyColumn Property="c => c.OutputContent" Title="输出内容" Width="200px">
+                                    @if (!string.IsNullOrEmpty(context.OutputContent))
+                                    {
+                                        var currentContent = context.OutputContent;
+                                        var truncated = TruncateContent(currentContent, 30);
+                                        <Popover>
+                                            <TitleTemplate>
+                                                <span>完整输出内容</span>
+                                            </TitleTemplate>
+                                            <ContentTemplate>
+                                                <div style="max-width: 800px; max-height: 250px; overflow-y: auto;">
+                                                    @JsonHelper.FormatJsonWithHighlight(currentContent)
+                                                </div>
+                                            </ContentTemplate>
+                                            <ChildContent>
+                                                <div style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;" title="@currentContent">
+                                                    @truncated
+                                                </div>
+                                            </ChildContent>
+                                        </Popover>
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #999;">无内容</span>
+                                    }
+                                </PropertyColumn>
+                                }
+                            </Table>
+
+                            @* 分页组件 *@
+                            <div style="margin-top: 16px; text-align: right;">
+                                <Pagination Current="_pageIndex"
+                                            Total="_totalCount"
+                                            PageSize="_pageSize"
+                                            PageSizeOptions="new[] { 20, 50, 100 }"
+                                            ShowSizeChanger="true"
+                                            ShowTotal="@ShowTotalFormat"
+                                            OnChange="HandlePageChange" />
+                            </div>
+                        }
+                        else if (!_loading)
+                        {
+                            <Empty Description="@("暂无数据")" />
+                        }
+                    </Spin>
+                </Body>
+            </Card>
+        }
+        else
+        {
+            <Empty Description="@("无节点数据")" />
+        }
+    </div>
+    </ChildContent>
+</Modal>

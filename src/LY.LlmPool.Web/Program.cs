@@ -150,6 +150,10 @@ builder.Services.Configure<LY.LlmPool.Web.Services.Telemetry.ActivityTracingOpti
 builder.Services.AddScoped<LY.LlmPool.Web.Repositories.IActivityTraceRepository,
     LY.LlmPool.Web.Repositories.ActivityTraceRepository>();
 
+// 🎯 注册追踪记录服务（Trace Record Service）
+builder.Services.AddScoped<LY.LlmPool.Web.Services.Telemetry.ITraceRecordService,
+    LY.LlmPool.Web.Services.Telemetry.TraceRecordService>();
+
 // 🎯 注册 Activity 追踪持久化后台服务
 builder.Services.AddSingleton<LY.LlmPool.Web.Services.Telemetry.ActivityTracePersistenceService>();
 builder.Services.AddHostedService<LY.LlmPool.Web.Services.Telemetry.ActivityTracePersistenceService>(

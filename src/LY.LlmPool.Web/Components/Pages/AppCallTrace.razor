@@ -226,32 +226,16 @@
                                               ShowIcon
                                               OnClick="@OnActiveNodeClick">
                                             <TitleTemplate>
-                                                <span>
-                                                    @GetNodeIcon(context.DataItem) 
-                                                    <strong>@context.DataItem.DisplayName</strong>
-                                                    
-                                                    @{
-                                                        var typeTag = GetNodeTypeTag(context.DataItem);
-                                                    }
-                                                    <Tag Color="@typeTag.Color">@typeTag.Text</Tag>
-                                                    
-                                                    @if (!string.IsNullOrEmpty(context.DataItem.AppName))
-                                                    {
-                                                        <Tag Color="@("blue")">@context.DataItem.AppName</Tag>
-                                                    }
-                                                    @if (!string.IsNullOrEmpty(context.DataItem.ToolName))
-                                                    {
-                                                        <Tag Color="@("purple")">@context.DataItem.ToolName</Tag>
-                                                    }
-                                                    @if (!string.IsNullOrEmpty(context.DataItem.McpServerName))
-                                                    {
-                                                        <Tag Color="@("orange")">@context.DataItem.McpServerName</Tag>
-                                                    }
-                                                    
-                                                    <Tag Color="@("processing")">
-                                                        @((DateTime.UtcNow - context.DataItem.StartTime).TotalSeconds.ToString("F1"))s
-                                                    </Tag>
-                                                </span>
+                                                <div @oncontextmenu="@(e => OnNodeContextMenu(e, context.DataItem))"
+                                                     @oncontextmenu:preventDefault="true"
+                                                     style="display: inline-block; width: 100%;">
+                                                    <span>
+                                                        @GetNodeIcon(context.DataItem)
+                                                        <strong>@context.DataItem.DisplayName</strong>
+
+                                                        @RenderNodeTags(context.DataItem, isActive: true)
+                                                    </span>
+                                                </div>
                                             </TitleTemplate>
                                         </Tree>
                                     }
@@ -328,31 +312,19 @@
                                           OnClick="@OnCompletedNodeClick">
                                         <TitleTemplate>
                                             @{
-                                                var statusIcon = context.DataItem.Status == "Success" ? "✅" : 
+                                                var statusIcon = context.DataItem.Status == "Success" ? "✅" :
                                                                context.DataItem.Status == "Error" ? "❌" : "⏹️";
-                                                var typeTag = GetNodeTypeTag(context.DataItem);
                                             }
-                                            <span>
-                                                @statusIcon @GetNodeIcon(context.DataItem) 
-                                                <strong>@context.DataItem.DisplayName</strong>
-                                                
-                                                <Tag Color="@typeTag.Color">@typeTag.Text</Tag>
-                                                
-                                                @if (!string.IsNullOrEmpty(context.DataItem.AppName))
-                                                {
-                                                    <Tag Color="@("blue")">@context.DataItem.AppName</Tag>
-                                                }
-                                                @if (!string.IsNullOrEmpty(context.DataItem.ToolName))
-                                                {
-                                                    <Tag Color="@("purple")">@context.DataItem.ToolName</Tag>
-                                                }
-                                                @if (!string.IsNullOrEmpty(context.DataItem.McpServerName))
-                                                {
-                                                    <Tag Color="@("orange")">@context.DataItem.McpServerName</Tag>
-                                                }
-                                                
-                                                <Tag>@context.DataItem.Duration.TotalSeconds.ToString("F2")s</Tag>
-                                            </span>
+                                            <div @oncontextmenu="@(e => OnNodeContextMenu(e, context.DataItem))"
+                                                 @oncontextmenu:preventDefault="true"
+                                                 style="display: inline-block; width: 100%;">
+                                                <span>
+                                                    @statusIcon @GetNodeIcon(context.DataItem)
+                                                    <strong>@context.DataItem.DisplayName</strong>
+
+                                                    @RenderNodeTags(context.DataItem, isActive: false)
+                                                </span>
+                                            </div>
                                         </TitleTemplate>
                                     </Tree>
                                 </Body>
@@ -403,6 +375,35 @@
     </Row>
 </div>
 
+@* 右键菜单 *@
+@if (_showContextMenu)
+{
+    <div @onclick="CloseContextMenu" @onclick:stopPropagation="false"
+         style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1000;">
+        <div style="position: absolute; left: @(_contextMenuX)px; top: @(_contextMenuY)px; z-index: 1001;">
+            <Card Size="@CardSize.Small" BodyStyle="padding: 4px 0;" Style="min-width: 160px; box-shadow: 0 3px 6px -4px rgba(0,0,0,.12), 0 6px 16px 0 rgba(0,0,0,.08), 0 9px 28px 8px rgba(0,0,0,.05);">
+                <Body>
+                    <Menu Mode="@MenuMode.Vertical" Style="border: none;">
+                        <MenuItem OnClick="@(() => OpenDetailModal())" Style="margin: 0; line-height: 32px;">
+                            <Icon Type="@IconType.Outline.FileText" Style="margin-right: 8px;" />
+                            查看详细数据
+                        </MenuItem>
+                        <MenuItem OnClick="@(() => CloseContextMenu())" Style="margin: 0; line-height: 32px;">
+                            <Icon Type="@IconType.Outline.Close" Style="margin-right: 8px;" />
+                            关闭
+                        </MenuItem>
+                    </Menu>
+                </Body>
+            </Card>
+        </div>
+    </div>
+}
+
+@* 节点详细数据 Modal *@
+<TraceRecordDetail Visible="@_showDetailModal"
+                      Node="@_contextMenuNode"
+                      VisibleChanged="@((visible) => { _showDetailModal = visible; StateHasChanged(); })" />
+
 @code {
     private enum ConversationDataSourceMode
     {
@@ -444,7 +445,14 @@
     
     // 🎯 Loading 状态
     private bool _isLoading = false;
-    
+
+    // 🎯 右键菜单和 Modal 状态
+    private bool _showDetailModal = false;
+    private bool _showContextMenu = false;
+    private TraceNode? _contextMenuNode = null;
+    private double _contextMenuX = 0;
+    private double _contextMenuY = 0;
+
     private readonly List<string> _statusOptions = new() { "Success", "Error", "InProgress" };
     private readonly List<string> _typeOptions = new() { "App", "Tool", "MCP Tool", "MCP Server", "Chat", "HTTP" };
 
@@ -1279,6 +1287,37 @@
         return ("Other", "default");
     }
 
+    // 渲染节点的Tag标签
+    private RenderFragment RenderNodeTags(TraceNode node, bool isActive) => __builder =>
+    {
+        var typeTag = GetNodeTypeTag(node);
+        <Tag Color="@typeTag.Color">@typeTag.Text</Tag>
+
+        @if (!string.IsNullOrEmpty(node.AppName))
+        {
+            <Tag Color="@("blue")">@node.AppName</Tag>
+        }
+        @if (!string.IsNullOrEmpty(node.ToolName))
+        {
+            <Tag Color="@("purple")">@node.ToolName</Tag>
+        }
+        @if (!string.IsNullOrEmpty(node.McpServerName))
+        {
+            <Tag Color="@("orange")">@node.McpServerName</Tag>
+        }
+
+        @if (isActive)
+        {
+            <Tag Color="@("processing")">
+                @((DateTime.UtcNow - node.StartTime).TotalSeconds.ToString("F1"))s
+            </Tag>
+        }
+        else
+        {
+            <Tag>@node.Duration.TotalSeconds.ToString("F2")s</Tag>
+        }
+    };
+
     // 渲染节点详情
     private RenderFragment RenderNodeDetails(TraceNode node, bool isActive) => __builder =>
     {
@@ -1487,6 +1526,47 @@
             </Card>
         }
     };
+
+    /// <summary>
+    /// 处理右键点击节点，显示右键菜单
+    /// </summary>
+    private void OnNodeContextMenu(MouseEventArgs e, TraceNode node)
+    {
+        _contextMenuNode = node;
+        _contextMenuX = e.ClientX;
+        _contextMenuY = e.ClientY;
+        _showContextMenu = true;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 打开详细数据 Modal
+    /// </summary>
+    private void OpenDetailModal()
+    {
+        _showDetailModal = true;
+        _showContextMenu = false;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 关闭详细数据 Modal
+    /// </summary>
+    private void CloseDetailModal()
+    {
+        _showDetailModal = false;
+        _contextMenuNode = null;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 关闭右键菜单
+    /// </summary>
+    private void CloseContextMenu()
+    {
+        _showContextMenu = false;
+        StateHasChanged();
+    }
 
     public void Dispose()
     {

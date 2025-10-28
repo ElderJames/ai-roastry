@@ -79,70 +79,135 @@ public class ActivityTraceRepository : IActivityTraceRepository
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // 定义有效的 TraceId -> ConversationId 唯一映射（子查询，不立即执行）
-        // 对每个 TraceId 选择一个有效的 ConversationId，使用 Min 保证确定性
-        var validTraceConversationMap = db.ActivityTraces
+        // 计算总数（使用 ConversationId 索引）
+        var totalCount = await db.ActivityTraces
             .Where(t =>
                 t.ConversationId != null &&
                 t.ConversationId != string.Empty &&
                 !t.ConversationId.StartsWith("conv-auto-"))
-            .GroupBy(t => t.TraceId)
-            .Select(g => new
-            {
-                TraceId = g.Key,
-                ConversationId = g.Min(t => t.ConversationId)!
-            });
-
-        // 计算总数（有效 TraceId 的数量）
-        var totalCount = await validTraceConversationMap.CountAsync(cancellationToken);
+            .Select(t => t.ConversationId)
+            .Distinct()
+            .CountAsync(cancellationToken);
 
         if (totalCount == 0)
         {
             return (Array.Empty<ConversationInfo>(), 0);
         }
 
-        // 使用 JOIN 获取所有相关记录并按 TraceId 分组统计
-        // JOIN 比 IN 子查询性能更好，且能直接获取 ConversationId
-        var conversationRows = await (
+        // 获取 PAGINATION 的 ConversationId→LastRequestTime
+        var conversationLastRequestTimes = await (
             from trace in db.ActivityTraces.AsNoTracking()
-            join mapping in validTraceConversationMap on trace.TraceId equals mapping.TraceId
-            group new { trace, mapping.ConversationId } by trace.TraceId into g
-            orderby g.Max(x => x.trace.StartTime) descending
+            where trace.ConversationId != null &&
+                  trace.ConversationId != string.Empty &&
+                  !trace.ConversationId.StartsWith("conv-auto-")
+            group trace by trace.ConversationId into g
             select new
             {
-                TraceId = g.Key,
-                ConversationId = g.First().ConversationId,  // JOIN 后同一组的 ConversationId 都相同
-                RequestCount = g.Count(),
-                FirstRequestTime = g.Min(x => x.trace.StartTime),
-                LastRequestTime = g.Max(x => x.trace.StartTime),
-                TotalInputTokens = g.Sum(x => x.trace.InputTokens),
-                TotalOutputTokens = g.Sum(x => x.trace.OutputTokens),
-                IsActive = g.Any(x => x.trace.EndTime == null),
-                SuccessCount = g.Count(x => x.trace.Status == "Success"),
-                ErrorCount = g.Count(x => x.trace.Status == "Error"),
-                Models = g
-                    .Select(x => x.trace.ModelId)
-                    .Where(m => m != null && m != string.Empty)
+                ConversationId = g.Key!,
+                LastRequestTime = g.Max(t => t.StartTime)
             })
+            .OrderByDescending(x => x.LastRequestTime)
             .Skip(skip)
             .Take(take)
             .ToListAsync(cancellationToken);
 
-        var conversations = conversationRows
-            .Select(row => new ConversationInfo
+        if (conversationLastRequestTimes.Count == 0)
+        {
+            return (Array.Empty<ConversationInfo>(), 0);
+        }
+
+        _logger.LogInformation(
+            "GetConversationsAsync: Processing {PagedCount} conversations (skip={Skip}, take={Take}) from {TotalCount} total",
+            conversationLastRequestTimes.Count,
+            skip,
+            take,
+            totalCount);
+
+        var paginatedConversationIds = conversationLastRequestTimes
+            .Select(x => x.ConversationId)
+            .ToHashSet();
+
+        var conversationToTraceIds = await (
+            from trace in db.ActivityTraces.AsNoTracking()
+            where paginatedConversationIds.Contains(trace.ConversationId!)
+            select new { trace.ConversationId, trace.TraceId })
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var traceIdsByConversation = conversationToTraceIds
+            .GroupBy(x => x.ConversationId!)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.TraceId).ToHashSet()
+            );
+
+        // 获取分页对话的所有 TraceId（用于批量查询）
+        var allPaginatedTraceIds = traceIdsByConversation.Values
+            .SelectMany(ids => ids)
+            .Distinct()
+            .ToHashSet();
+
+        // 批量加载分页对话的所有跟踪记录 
+        var allTraceRecords = await db.ActivityTraces
+            .AsNoTracking()
+            .Where(t => allPaginatedTraceIds.Contains(t.TraceId))
+            .Select(t => new
             {
-                ConversationId = row.ConversationId,
-                RequestCount = row.RequestCount,
-                FirstRequestTime = row.FirstRequestTime,
-                LastRequestTime = row.LastRequestTime,
-                TotalInputTokens = row.TotalInputTokens,
-                TotalOutputTokens = row.TotalOutputTokens,
-                IsActive = row.IsActive,
-                SuccessCount = row.SuccessCount,
-                ErrorCount = row.ErrorCount,
-                Models = row.Models.Distinct().ToList()
+                t.TraceId,
+                t.StartTime,
+                t.EndTime,
+                t.InputTokens,
+                t.OutputTokens,
+                t.Status,
+                t.ModelId
             })
-            .ToList();
+            .ToListAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "GetConversationsAsync: Loaded {RecordCount} trace records for {ConversationCount} conversations",
+            allTraceRecords.Count,
+            paginatedConversationIds.Count);
+
+        // In-memory aggregation (only for paginated data - typically 20-50 conversations)
+        var conversations = new List<ConversationInfo>();
+
+        foreach (var convTime in conversationLastRequestTimes)
+        {
+            var conversationId = convTime.ConversationId;
+
+            if (!traceIdsByConversation.TryGetValue(conversationId, out var traceIds))
+                continue;
+
+            // Filter records for this conversation
+            var records = allTraceRecords
+                .Where(r => traceIds.Contains(r.TraceId))
+                .ToList();
+
+            if (records.Count == 0)
+                continue;
+
+            conversations.Add(new ConversationInfo
+            {
+                ConversationId = conversationId,
+                RequestCount = records.Count,
+                FirstRequestTime = records.Min(r => r.StartTime),
+                LastRequestTime = records.Max(r => r.StartTime),
+                TotalInputTokens = records.Sum(r => r.InputTokens),
+                TotalOutputTokens = records.Sum(r => r.OutputTokens),
+                IsActive = records.Any(r => r.EndTime == null),
+                SuccessCount = records.Count(r => r.Status == "Success"),
+                ErrorCount = records.Count(r => r.Status == "Error"),
+                Models = records
+                    .Where(r => !string.IsNullOrEmpty(r.ModelId))
+                    .Select(r => r.ModelId!)
+                    .Distinct()
+                    .ToList()
+            });
+        }
+
+        _logger.LogInformation(
+            "GetConversationsAsync: Successfully aggregated {Count} conversations using optimized batch queries",
+            conversations.Count);
 
         return (conversations, totalCount);
     }
@@ -265,6 +330,88 @@ public class ActivityTraceRepository : IActivityTraceRepository
             .ToListAsync(cancellationToken);
 
         return stats;
+    }
+
+    public async Task<(List<ActivityTrace> Items, int TotalCount)> GetTraceRecordsByNameAsync(
+        string name,
+        DateTime? startTimeFrom = null,
+        DateTime? startTimeTo = null,
+        string? status = null,
+        string? traceId = null,
+        int pageIndex = 1,
+        int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _logger.LogWarning("⚠️ GetTraceRecordsByNameAsync 调用时 name 参数为空");
+            return (new List<ActivityTrace>(), 0);
+        }
+
+        if (pageIndex < 1) pageIndex = 1;
+        if (pageSize < 1) pageSize = 20;
+        if (pageSize > 100) pageSize = 100; // 限制最大页面大小
+
+        try
+        {
+            await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+            // 构建查询
+            var query = db.ActivityTraces
+                .AsNoTracking()
+                .Where(t => t.Name == name && t.IsToolCall && t.IsAppCall);
+
+            // 应用日期范围筛选
+            if (startTimeFrom.HasValue)
+            {
+                query = query.Where(t => t.StartTime >= startTimeFrom.Value);
+            }
+
+            if (startTimeTo.HasValue)
+            {
+                query = query.Where(t => t.StartTime <= startTimeTo.Value);
+            }
+
+            // 应用状态筛选
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                query = query.Where(t => t.Status == status);
+            }
+
+            // 应用 TraceId 筛选（部分匹配）
+            if (!string.IsNullOrWhiteSpace(traceId))
+            {
+                query = query.Where(t => t.TraceId.Contains(traceId));
+            }
+
+            // 获取总数（在分页前）
+            var totalCount = await query.CountAsync(cancellationToken);
+
+            if (totalCount == 0)
+            {
+                _logger.LogInformation("✅ GetTraceRecordsByNameAsync: 未找到匹配的记录 (Name={Name})", name);
+                return (new List<ActivityTrace>(), 0);
+            }
+
+            // 应用排序和分页
+            var items = await query
+                .OrderByDescending(t => t.StartTime)
+                .Skip((pageIndex - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "✅ GetTraceRecordsByNameAsync 成功: Name={Name}, Page={PageIndex}, Size={PageSize}, Total={TotalCount}",
+                name, pageIndex, pageSize, totalCount);
+
+            return (items, totalCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ GetTraceRecordsByNameAsync 失败: Name={Name}, Page={PageIndex}, Size={PageSize}",
+                name, pageIndex, pageSize);
+            throw;
+        }
     }
 
     private sealed class ConversationSummaryRow

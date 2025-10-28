@@ -1,3 +1,4 @@
+using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Telemetry;
 
 namespace LY.LlmPool.Web.Repositories;
@@ -45,12 +46,34 @@ public interface IActivityTraceRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 统计“已完成”的根调用数据（按根节点聚合）。
+    /// 统计"已完成"的根调用数据（按根节点聚合）。
     /// </summary>
     /// <param name="conversationId">会话ID（可空，空表示全部会话）</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns>TraceStatistics（TotalTraces=根调用数，AverageDurationMs/Token 汇总等）</returns>
     Task<TraceStatistics> GetCompletedRootStatisticsAsync(
         string? conversationId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 根据名称查询追踪记录（支持分页和筛选）
+    /// </summary>
+    /// <param name="name">名称（App 名称或 Tool 名称）</param>
+    /// <param name="startTimeFrom">开始时间范围 - 起始（UTC）</param>
+    /// <param name="startTimeTo">开始时间范围 - 结束（UTC）</param>
+    /// <param name="status">状态筛选（可选）</param>
+    /// <param name="traceId">Trace ID 筛选（支持部分匹配）</param>
+    /// <param name="pageIndex">页码（从 1 开始）</param>
+    /// <param name="pageSize">每页大小</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>追踪记录列表和总数</returns>
+    Task<(List<ActivityTrace> Items, int TotalCount)> GetTraceRecordsByNameAsync(
+        string name,
+        DateTime? startTimeFrom = null,
+        DateTime? startTimeTo = null,
+        string? status = null,
+        string? traceId = null,
+        int pageIndex = 1,
+        int pageSize = 20,
         CancellationToken cancellationToken = default);
 }
