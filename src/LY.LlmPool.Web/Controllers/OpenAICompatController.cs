@@ -316,20 +316,17 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity?.SetTag("app.type", app.AppType);
                     requestActivity?.SetTag("app.id", app.Id);
 
-                    // 🎯 加载 App 的 Prompt
-                    if (!string.IsNullOrEmpty(app.PromptId))
+                    // 🎯 加载 App 的 Prompt（从缓存中获取，无需额外查询）
+                    if (app.LlmPrompt != null)
                     {
-                        prompt = await _llmPoolService.GetPromptByIdAsync(app.PromptId);
-                        if (prompt != null)
-                        {
-                            promptContent = prompt.Content;
+                        prompt = app.LlmPrompt;
+                        promptContent = prompt.Content;
 
-                            // 解析 Prompt 的 ModelParameters
-                            if (!string.IsNullOrWhiteSpace(prompt.ModelParameters))
-                            {
-                                modelParameters = ParameterUtils.ParseParametersToDict(prompt.ModelParameters);
-                                _logger.LogInformation("从 Prompt 解析模型参数: {ModelParameters}", prompt.ModelParameters);
-                            }
+                        // 解析 Prompt 的 ModelParameters
+                        if (!string.IsNullOrWhiteSpace(prompt.ModelParameters))
+                        {
+                            modelParameters = ParameterUtils.ParseParametersToDict(prompt.ModelParameters);
+                            _logger.LogInformation("从 Prompt 解析模型参数: {ModelParameters}", prompt.ModelParameters);
                         }
                     }
 

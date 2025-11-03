@@ -628,6 +628,7 @@ public class LlmPoolCacheService
 
             // 1. 尝试按 App 名称解析（直接返回 App 的 Config 或 Endpoint）
             var app = await dbContext.Apps
+                .Include(a => a.LlmPrompt)
                 .Include(a => a.LlmConfig)
                 .Include(a => a.Endpoint)
                     .ThenInclude(e => e!.EndpointConfigs)
