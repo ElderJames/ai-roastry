@@ -193,7 +193,7 @@ public class ApiStreamingTests : IClassFixture<TestWebApplicationFactory>
         // 🎯 创建 FakeUpstreamMessageHandler 实例并传入 LlmPoolClient
         // 这样即使 LlmPoolClient 内部创建新的 HttpClient，也会使用这个 Mock handler
         var fakeHandler = new FakeUpstreamMessageHandler();
-        var llmPoolClient = new LlmPoolClient(client, "test-key", conversationId: null, customHandler: fakeHandler);
+        var llmPoolClient = new LlmPoolClient(client, "test-key", customHandler: fakeHandler);
 
         var messages = new List<ClientMessage>
         {

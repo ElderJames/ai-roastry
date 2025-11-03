@@ -6,11 +6,6 @@ namespace LY.LlmPool.Client;
 public interface ILlmPoolClient
 {
     /// <summary>
-    /// 当前会话的 ConversationId（从服务端响应中获取或设置）
-    /// </summary>
-    string? ConversationId { get; set; }
-
-    /// <summary>
     /// 发送非流式聊天请求
     /// </summary>
     /// <param name="model">模型名称</param>

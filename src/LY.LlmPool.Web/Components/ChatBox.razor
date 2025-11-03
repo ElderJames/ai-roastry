@@ -546,7 +546,7 @@
         var http = HttpClientFactory.CreateClient("LlmPoolApi");
         
         // 🎯 创建 client 时传递当前的 ConversationId（如果有）
-        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk", ConversationId);
+        var client = new LY.LlmPool.Client.LlmPoolClient(http, "kk");
         var msgs = BuildClientMessages();
         var parms = ParameterUtils.GetValidParameters(_appParameters);
         var chatOptions = new LY.LlmPool.Client.ChatOptions
@@ -587,7 +587,7 @@
             var http = HttpClientFactory.CreateClient("LlmPoolApi");
             
             // 🎯 通过构造函数传递 ConversationId
-            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx", ConversationId);
+            var client = new LY.LlmPool.Client.LlmPoolClient(http, "xx");
 
             var chatOptions = new LY.LlmPool.Client.ChatOptions
             {

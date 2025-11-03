@@ -20,13 +20,15 @@ public static class ServiceCollectionExtensions
     /// <param name="apiKey">LlmPool API 密钥 (默认: test-key)</param>
     /// <param name="serviceName">服务名称 (用于 OpenTelemetry,默认: MCP Server)</param>
     /// <param name="serviceVersion">服务版本 (默认: 1.0.0)</param>
+    /// <param name="configureOptionsPerRequest">每次请求时配置 ChatOptions 的委托，可以访问服务提供者</param>
     /// <returns></returns>
     public static IServiceCollection AddLlmPoolClient(
         this IServiceCollection services,
         string baseUrl,
         string? apiKey = null,
         string? serviceName = null,
-        string? serviceVersion = null)
+        string? serviceVersion = null,
+        Action<IServiceProvider, ChatOptions>? configureOptionsPerRequest = null)
     {
         apiKey ??= "test-key";
         serviceName ??= "MCP Server";
@@ -110,7 +112,14 @@ public static class ServiceCollectionExtensions
             httpClient.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
             httpClient.Timeout = TimeSpan.FromMinutes(10);
             
-            return new LlmPoolClient(httpClient, apiKey);
+            // 将 Action<IServiceProvider, ChatOptions> 转换为 Action<ChatOptions>
+            Action<ChatOptions>? configureOptions = null;
+            if (configureOptionsPerRequest != null)
+            {
+                configureOptions = options => configureOptionsPerRequest(sp, options);
+            }
+            
+            return new LlmPoolClient(httpClient, apiKey, null, configureOptions);
         });
         
         // 🎯 注册接口,指向同一个单例实例

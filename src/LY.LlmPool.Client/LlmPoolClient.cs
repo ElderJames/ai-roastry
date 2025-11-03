@@ -103,39 +103,19 @@ public class LlmPoolClient : ILlmPoolClient
     private readonly HttpClient _httpClient;
     private readonly HttpMessageHandler? _customHandler; // 🎯 保存自定义 handler（用于测试 Mock）
     private readonly string _apiKey;
+    private readonly Action<ChatOptions>? _configureOptionsPerRequest;
     private string? _conversationId;
     
-    /// <summary>
-    /// 当前会话的 ConversationId（从服务端响应中获取或设置）
-    /// </summary>
-    public string? ConversationId 
-    { 
-        get => _conversationId;
-        set
-        {
-            _conversationId = value;
-            // 更新 HttpClient 的默认请求头
-            _httpClient.DefaultRequestHeaders.Remove("X-Conversation-Id");
-            if (!string.IsNullOrEmpty(_conversationId))
-            {
-                _httpClient.DefaultRequestHeaders.Add("X-Conversation-Id", _conversationId);
-            }
-        }
-    }
-
-    public LlmPoolClient(string baseUrl, string apiKey, string? conversationId = null)
+    public LlmPoolClient(string baseUrl, string apiKey)
+        : this(new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) }, apiKey, null, null)
     {
-        _httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) };
-        _customHandler = null; // 没有自定义 handler
-        _apiKey = apiKey;
-        ConversationId = conversationId; // 使用属性设置器
     }
 
     /// <summary>
     /// 构造函数：使用已有的 HttpClient
     /// </summary>
-    public LlmPoolClient(HttpClient httpClient, string apiKey, string? conversationId = null)
-        : this(httpClient, apiKey, conversationId, customHandler: null)
+    public LlmPoolClient(HttpClient httpClient, string apiKey)
+        : this(httpClient, apiKey, null, null)
     {
     }
 
@@ -144,14 +124,25 @@ public class LlmPoolClient : ILlmPoolClient
     /// </summary>
     /// <param name="httpClient">HttpClient 实例</param>
     /// <param name="apiKey">API 密钥</param>
-    /// <param name="conversationId">会话 ID</param>
     /// <param name="customHandler">自定义 handler（如测试的 Mock handler），会被包装在 ParameterInjectionHandler 中</param>
-    public LlmPoolClient(HttpClient httpClient, string apiKey, string? conversationId, HttpMessageHandler? customHandler)
+    public LlmPoolClient(HttpClient httpClient, string apiKey, HttpMessageHandler? customHandler)
+        : this(httpClient, apiKey, customHandler, null)
+    {
+    }
+
+    /// <summary>
+    /// 构造函数：使用 HttpClient、自定义 handler 和 options 配置委托
+    /// </summary>
+    /// <param name="httpClient">HttpClient 实例</param>
+    /// <param name="apiKey">API 密钥</param>
+    /// <param name="customHandler">自定义 handler（如测试的 Mock handler），会被包装在 ParameterInjectionHandler 中</param>
+    /// <param name="configureOptionsPerRequest">每次请求时配置 ChatOptions 的委托</param>
+    public LlmPoolClient(HttpClient httpClient, string apiKey, HttpMessageHandler? customHandler, Action<ChatOptions>? configureOptionsPerRequest)
     {
         _httpClient = httpClient;
-        _customHandler = customHandler; // 🎯 保存自定义 handler
+        _customHandler = customHandler;
         _apiKey = apiKey;
-        ConversationId = conversationId; // 使用属性设置器
+        _configureOptionsPerRequest = configureOptionsPerRequest;
     }
 
     private (IChatClient, Microsoft.Extensions.AI.ChatOptions) CreateChatClientAndOptions(
@@ -161,35 +152,42 @@ public class LlmPoolClient : ILlmPoolClient
         Dictionary<string, object>? parameters)
     {
         // 🎯 ConversationId 优先级: options.ConversationId > this.ConversationId > null (从响应提取)
-        string? effectiveConversationId = options?.ConversationId ?? this.ConversationId;
+        string? effectiveConversationId = options?.ConversationId ?? _conversationId;
         
         HttpClient httpClient;
 
         // 🎯 只在真正需要参数注入或 ConversationId 提取时才创建新的 handler 链
         bool needsParameterInjection = parameters?.Count > 0;
         bool needsConversationIdExtraction = string.IsNullOrEmpty(effectiveConversationId);
+        bool needsCustomHeaders = !string.IsNullOrEmpty(effectiveConversationId);
         
-        if (needsParameterInjection || needsConversationIdExtraction)
+        if (needsParameterInjection || needsConversationIdExtraction || needsCustomHeaders)
         {
             // 🎯 使用依赖注入的 customHandler（如果有），否则创建新的 HttpClientHandler
             HttpMessageHandler innerHandler = _customHandler ?? new HttpClientHandler();
             
-            var paramHandler = new ParameterInjectionHandler(
-                parameters, 
-                onConversationIdReceived: (convId) => 
-                {
-                    // 🎯 从响应中接收到 ConversationId 后，更新客户端的 ConversationId
-                    // 但不覆盖 options 中显式设置的值
-                    if (string.IsNullOrEmpty(options?.ConversationId) && string.IsNullOrEmpty(this.ConversationId))
-                    {
-                        this.ConversationId = convId;
-                    }
-                })
+            HttpMessageHandler finalHandler = innerHandler;
+            
+            // 🎯 只在需要参数注入或 ConversationId 提取时才包装 ParameterInjectionHandler
+            if (needsParameterInjection || needsConversationIdExtraction)
             {
-                InnerHandler = innerHandler
-            };
+                finalHandler = new ParameterInjectionHandler(
+                    parameters, 
+                    onConversationIdReceived: (convId) => 
+                    {
+                        // 🎯 从响应中接收到 ConversationId 后，更新客户端的 ConversationId
+                        // 但不覆盖 options 中显式设置的值
+                        if (string.IsNullOrEmpty(options?.ConversationId))
+                        {
+                            _conversationId = convId;
+                        }
+                    })
+                {
+                    InnerHandler = innerHandler
+                };
+            }
 
-            httpClient = new HttpClient(paramHandler)
+            httpClient = new HttpClient(finalHandler)
             {
                 BaseAddress = _httpClient.BaseAddress,
                 Timeout = _httpClient.Timeout
@@ -297,6 +295,12 @@ public class LlmPoolClient : ILlmPoolClient
         if (!string.IsNullOrEmpty(effectiveConversationId))
         {
             chatOptions.ConversationId = effectiveConversationId;
+        }
+
+        // 🎯 应用用户自定义的 options 配置委托（如果有）
+        if (_configureOptionsPerRequest != null)
+        {
+            _configureOptionsPerRequest(chatOptions);
         }
 
         return (chatClient, chatOptions);

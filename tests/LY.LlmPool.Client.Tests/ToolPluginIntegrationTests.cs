@@ -27,7 +27,7 @@ public class ToolPluginIntegrationTests
             BaseAddress = new Uri("https://example.com/")
         };
         // 🎯 传入 customHandler 以便 ParameterInjectionHandler 可以包装它
-        var client = new LlmPoolClient(httpClient, "test-key", conversationId: null, customHandler: handler);
+        var client = new LlmPoolClient(httpClient, "test-key", customHandler: handler);
 
         var messages = new List<ClientMessage>
         {
