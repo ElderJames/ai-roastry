@@ -5,6 +5,7 @@
 @using LY.LlmPool.Web.Services
 @using Microsoft.AspNetCore.Components
 @inject LlmPoolService LlmPoolService
+@inject AppService AppService
 @inject NavigationManager NavigationManager
 
 <Row Gutter="16">
@@ -210,7 +211,7 @@
 
     private async Task LoadData()
     {
-        _apps = await LlmPoolService.GetAppsAsync();
+        _apps = await AppService.GetAppsAsync();
         _configs = await LlmPoolService.GetConfigsAsync();
         _endpoints = await LlmPoolService.GetEndpointsAsync();
     }

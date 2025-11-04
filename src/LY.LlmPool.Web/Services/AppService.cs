@@ -81,6 +81,24 @@ public class AppService
                 throw new InvalidOperationException(uniquenessError);
             }
         }
+
+        // 如果是 Tool 类型，验证名称只包含 ASCII 字母、数字、下划线和横线
+        if (app.AppType == "Tool")
+        {
+            if (string.IsNullOrWhiteSpace(app.Name))
+            {
+                throw new ArgumentException("Tool App name cannot be empty.", nameof(app.Name));
+            }
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(app.Name, @"^[a-zA-Z0-9_-]+$"))
+            {
+                throw new ArgumentException(
+                    "Tool App name can only contain ASCII letters (a-z, A-Z), digits (0-9), underscores (_), and hyphens (-). " +
+                    "Chinese characters and special symbols are not allowed. " +
+                    $"Invalid name: '{app.Name}'",
+                    nameof(app.Name));
+            }
+        }
         
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         app.Id = Guid.NewGuid().ToString("N");
@@ -134,10 +152,10 @@ public class AppService
                 throw new ArgumentException("Tool App name cannot be empty.", nameof(app.Name));
             }
 
-            if (!System.Text.RegularExpressions.Regex.IsMatch(app.Name, @"^[a-zA-Z0-9_]+$"))
+            if (!System.Text.RegularExpressions.Regex.IsMatch(app.Name, @"^[a-zA-Z0-9_-]+$"))
             {
                 throw new ArgumentException(
-                    "Tool App name can only contain ASCII letters (a-z, A-Z), digits (0-9), and underscores (_). " +
+                    "Tool App name can only contain ASCII letters (a-z, A-Z), digits (0-9), underscores (_), and hyphens (-). " +
                     "Chinese characters and special symbols are not allowed. " +
                     $"Invalid name: '{app.Name}'",
                     nameof(app.Name));
@@ -291,6 +309,40 @@ public class AppService
         await dbContext.SaveChangesAsync();
         return member;
     }
+
+    public async Task<AgentMember> UpdateAgentMemberAsync(AgentMember member)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.AgentMembers.FindAsync(member.Id);
+        if (existing == null)
+        {
+            throw new KeyNotFoundException($"AgentMember with ID {member.Id} not found.");
+        }
+
+        existing.Name = member.Name;
+        existing.Role = member.Role;
+        existing.Order = member.Order;
+        existing.LlmPromptId = member.LlmPromptId;
+        existing.LlmConfigId = member.LlmConfigId;
+        existing.UpdatedAt = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync();
+        return existing;
+    }
+
+    public async Task DeleteAgentMemberAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var existing = await dbContext.AgentMembers.FindAsync(id);
+        if (existing == null)
+        {
+            return;
+        }
+        dbContext.AgentMembers.Remove(existing);
+        await dbContext.SaveChangesAsync();
+    }
+
+    public Task RemoveAgentMemberAsync(string id) => DeleteAgentMemberAsync(id);
 
     // Prompt Management (helper methods)
     public async Task<LlmPrompt> AddPromptAsync(LlmPrompt prompt)

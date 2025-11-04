@@ -253,7 +253,7 @@
         _editingApp = new LlmApp { Id = app.Id, Name = app.Name, Description = app.Description, AppType = app.AppType, PromptId = app.PromptId ?? string.Empty, LlmConfigId = app.LlmConfigId ?? string.Empty, EndpointId = app.EndpointId ?? string.Empty, IsEnabled = app.IsEnabled, ConfigJson = app.ConfigJson };
         if (!string.IsNullOrEmpty(_editingApp.LlmConfigId)) { _configType = "model"; OnModelConfigChanged(); }
         else if (!string.IsNullOrEmpty(_editingApp.EndpointId)) { _configType = "endpoint"; OnEndpointConfigChanged(); }
-        if (_editingApp.AppType == LlmAppTypes.AgentGroup) { _members = await LlmPoolService.GetAgentMembersAsync(app.Id!); }
+        if (_editingApp.AppType == LlmAppTypes.AgentGroup) { _members = await AppService.GetAgentMembersByAppIdAsync(app.Id!); }
         
         _showEditModal = true;
     }
@@ -297,9 +297,9 @@
                 await AppService.UpdateAppAsync(_editingApp);
                 if (_editingApp.AppType == LlmAppTypes.AgentGroup)
                 {
-                    var existing = await LlmPoolService.GetAgentMembersAsync(_editingApp.Id!);
-                    foreach (var em in existing) await LlmPoolService.DeleteAgentMemberAsync(em.Id);
-                    foreach (var m in _members) { m.LlmAppId = _editingApp.Id!; await LlmPoolService.AddAgentMemberAsync(m); }
+                    var existing = await AppService.GetAgentMembersByAppIdAsync(_editingApp.Id!);
+                    foreach (var em in existing) await AppService.DeleteAgentMemberAsync(em.Id);
+                    foreach (var m in _members) { m.LlmAppId = _editingApp.Id!; await AppService.AddAgentMemberAsync(m); }
                 }
                 
                 _message.Success("App updated successfully");
@@ -309,7 +309,7 @@
                 var created = await AppService.AddAppAsync(_editingApp);
                 if (_editingApp.AppType == LlmAppTypes.AgentGroup)
                 {
-                    foreach (var m in _members) { m.LlmAppId = created.Id!; await LlmPoolService.AddAgentMemberAsync(m); }
+                    foreach (var m in _members) { m.LlmAppId = created.Id!; await AppService.AddAgentMemberAsync(m); }
                 }
                 
                 _message.Success("App created successfully");

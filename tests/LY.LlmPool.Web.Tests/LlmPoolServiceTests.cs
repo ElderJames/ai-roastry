@@ -42,106 +42,18 @@ public class LlmPoolServiceTests
         public MockChatClientService() : base(null!, null!, null!, null!, null!) { }
     }
 
-    [Fact]
-    public async Task Can_CRUD_LlmApps()
+    [Fact(Skip = "App CRUD operations have been moved to AppService")]
+    public Task Can_CRUD_LlmApps()
     {
-        var options = new DbContextOptionsBuilder<LlmDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        var svc = CreateService(options);
-
-        // Setup dependencies
-        using var db = new LlmDbContext(options);
-        var mt = new LlmModelType { Id = Guid.NewGuid().ToString("N"), Name = "openai" };
-        var cfg = new LlmConfig { Id = Guid.NewGuid().ToString("N"), Name = "gpt-4o-mini", Model = "gpt-4o-mini", BaseUrl = "https://api.openai.com/v1", ApiKey = "x", ModelTypeId = mt.Id };
-        var prompt = new LlmPrompt { Id = Guid.NewGuid().ToString("N"), Name = "sys", Content = "system" };
-        db.ModelTypes.Add(mt);
-        db.Configs.Add(cfg);
-        db.Prompts.Add(prompt);
-        await db.SaveChangesAsync();
-
-        // Create Prompt App
-        var app = new LlmApp
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "test-app",
-            AppType = "Prompt",
-            LlmPromptId = prompt.Id,
-            LlmConfigId = cfg.Id,
-            IsEnabled = true
-        };
-        var created = await svc.AddAppAsync(app);
-        Assert.NotNull(created.Id);
-
-        // Get by ID
-        var fetched = await svc.GetAppByIdAsync(created.Id!);
-        Assert.NotNull(fetched);
-        Assert.Equal("test-app", fetched!.Name);
-
-        // Get by Name
-        var fetchedByName = await svc.GetAppByNameAsync("test-app");
-        Assert.NotNull(fetchedByName);
-        Assert.Equal(created.Id, fetchedByName!.Id);
-
-        // List all
-        var list = await svc.GetAppsAsync();
-        Assert.Contains(list, a => a.Id == created.Id);
-
-        // Update
-        created.Name = "updated-app";
-        var updated = await svc.UpdateAppAsync(created);
-        Assert.Equal("updated-app", updated.Name);
-
-        // Delete
-        await svc.DeleteAppAsync(created.Id!);
-        var deleted = await svc.GetAppByIdAsync(created.Id!);
-        Assert.Null(deleted);
+        // This test has been moved to AppServiceTests.cs
+        return Task.CompletedTask;
     }
 
-    [Fact]
-    public async Task Can_CRUD_AgentGroup_With_Members()
+    [Fact(Skip = "AgentGroup CRUD operations have been moved to AppService")]
+    public Task Can_CRUD_AgentGroup_With_Members()
     {
-        var options = new DbContextOptionsBuilder<LlmDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        var svc = CreateService(options);
-
-        // Setup dependencies
-        using var db = new LlmDbContext(options);
-        var mt = new LlmModelType { Id = Guid.NewGuid().ToString("N"), Name = "openai" };
-        var cfg1 = new LlmConfig { Id = Guid.NewGuid().ToString("N"), Name = "gpt-4o-mini", Model = "gpt-4o-mini", BaseUrl = "https://api.openai.com/v1", ApiKey = "x", ModelTypeId = mt.Id };
-        var cfg2 = new LlmConfig { Id = Guid.NewGuid().ToString("N"), Name = "gpt-4", Model = "gpt-4", BaseUrl = "https://api.openai.com/v1", ApiKey = "x", ModelTypeId = mt.Id };
-        var prompt1 = new LlmPrompt { Id = Guid.NewGuid().ToString("N"), Name = "agent1", Content = "you are agent1" };
-        var prompt2 = new LlmPrompt { Id = Guid.NewGuid().ToString("N"), Name = "agent2", Content = "you are agent2" };
-        db.ModelTypes.Add(mt);
-        db.Configs.AddRange(cfg1, cfg2);
-        db.Prompts.AddRange(prompt1, prompt2);
-        await db.SaveChangesAsync();
-
-        // Create AgentGroup with members
-        var app = new LlmApp
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "agent-group",
-            AppType = "AgentGroup",
-            OrchestrationMode = OrchestrationMode.Sequential
-        };
-
-        var members = new List<AgentMember>
-        {
-            new AgentMember { Id = Guid.NewGuid().ToString("N"), Name = "Researcher", Role = "researcher", Order = 1, LlmPromptId = prompt1.Id, LlmConfigId = cfg1.Id },
-            new AgentMember { Id = Guid.NewGuid().ToString("N"), Name = "Writer", Role = "writer", Order = 2, LlmPromptId = prompt2.Id, LlmConfigId = cfg2.Id }
-        };
-
-        var created = await svc.CreateAgentGroupWithMembersAsync(app, members);
-        Assert.NotNull(created.Id);
-        Assert.Equal(2, created.AgentMembers.Count);
-
-        // Get members
-        var fetchedMembers = await svc.GetAgentMembersAsync(created.Id!);
-        Assert.Equal(2, fetchedMembers.Count);
-        Assert.Contains(fetchedMembers, m => m.Role == "researcher");
-        Assert.Contains(fetchedMembers, m => m.Role == "writer");
+        // This test has been moved to AppServiceTests.cs
+        return Task.CompletedTask;
     }
 
     [Fact(Skip = "AgentTool entity and related methods have been removed")]
