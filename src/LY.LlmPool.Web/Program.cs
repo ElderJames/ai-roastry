@@ -314,7 +314,7 @@ builder.Services.AddHttpClient("UpstreamLlm")
     .AddStandardResilienceHandler(options =>
     {
         // 重试策略配置
-        options.Retry.MaxRetryAttempts = 3;  // 最多重试 3 次
+        options.Retry.MaxRetryAttempts = 10;  // 最多重试 10 次
         options.Retry.Delay = TimeSpan.FromSeconds(1);  // 基础延迟 1 秒
         options.Retry.BackoffType = Polly.DelayBackoffType.Exponential;  // 指数退避 (1s, 2s, 4s)
         options.Retry.UseJitter = true;  // 添加抖动，避免雷鸣群效应
@@ -323,11 +323,12 @@ builder.Services.AddHttpClient("UpstreamLlm")
         options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(120);  // 单次尝试超时 120 秒
         options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(300);  // 总超时 300 秒 (包括重试)
         
-        // 熔断器配置 (采样窗口必须 >= 2倍的 AttemptTimeout)
-        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);  // 采样窗口 240 秒 (>= 2 * 120)
-        options.CircuitBreaker.FailureRatio = 0.5;  // 失败率 >= 50% 时熔断
-        options.CircuitBreaker.MinimumThroughput = 10;  // 最少 10 个请求才触发熔断
-        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(30);  // 熔断持续 30 秒
+        // 🎯 禁用熔断器 - 避免 "circuit is open" 异常中断服务
+        // 如果需要熔断功能，建议在上游服务端处理，而不是在客户端
+        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(240);  
+        options.CircuitBreaker.FailureRatio = 1.0;  // 设置为 100%，实际上禁用熔断
+        options.CircuitBreaker.MinimumThroughput = int.MaxValue;  // 设置极高阈值，实际上禁用熔断
+        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(1);  // 即使熔断也快速恢复
     });
 
 // Add Ant Design
