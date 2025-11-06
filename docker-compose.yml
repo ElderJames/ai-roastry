@@ -15,7 +15,7 @@ services:
     restart: always
 
   db:
-    image: postgres:17.4-alpine
+    image: git.liany.com.cn/lianyuan/postgres:17.4-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-user_pg}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password_zYHcAJ}
