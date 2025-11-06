@@ -593,7 +593,8 @@
             {
                 Temperature = 0.7f,
                 MaxOutputTokens = 10000,
-                TopP = null
+                TopP = null,
+                ConversationId = ConversationId
             };
 
             var parms = _appParameters.Any(p => !string.IsNullOrEmpty(p.Value))

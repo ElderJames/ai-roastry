@@ -36,7 +36,13 @@
         <AntDesign.Col Span="6">
             <Card Title="会话列表" Size="@CardSize.Small" Style="height: calc(100vh - 200px); overflow-y: auto;">
                 <Extra>
-                    <Badge Count="@_records.Count" ShowZero="true" />
+                    <Button Size="@ButtonSize.Small"
+                            OnClick="ManualRefresh"
+                            Loading="_loading"
+                            Style="margin-right: 8px;">
+                        刷新
+                    </Button>
+                    <Badge Count="@_totalCount" ShowZero="true" />
                 </Extra>
                 <Body>
                     @if (_loading)
@@ -94,6 +100,19 @@
                     {
                         <Empty Description="@("暂无调用记录")" Simple />
                     }
+
+                    @* 分页控件 *@
+                    <Divider Style="margin: 12px 0;" />
+                    <div style="padding: 8px 0; display: flex; flex-direction: column; gap: 12px;">
+                        <Pagination Total="@_totalCount"
+                                    Current="@_pageIndex"
+                                    PageSize="@_pageSize"
+                                    PageSizeOptions="@_pageSizeOptions"
+                                    ShowSizeChanger
+                                    Size="@PaginationSize.Small"
+                                    OnChange="OnPaginationChangeAsync"
+                                    Style="text-align: center;" />
+                    </div>
                 </Body>
             </Card>
         </AntDesign.Col>
@@ -366,11 +385,30 @@
     private bool _loading = true;
     private bool _loadingNodes = false;
     private string _pageSubtitle = "";
-    
+
     // 🎯 自动刷新相关
     private bool _autoRefresh = true;
     private System.Threading.Timer? _timer;
     private bool _selectedRecordCompleted = false; // 标记选中的记录是否已完成
+
+    // 🎯 分页相关
+    private int _pageIndex = 1;
+    private int _pageSize = 100;
+    private int _totalCount = 0;
+    private readonly int[] _pageSizeOptions = new[] { 50, 100, 200 };
+
+    private int TotalPages
+    {
+        get
+        {
+            var pageSize = Math.Max(1, _pageSize);
+            if (_totalCount <= 0)
+            {
+                return 1;
+            }
+            return (int)Math.Ceiling(_totalCount / (double)pageSize);
+        }
+    }
 
     // 工具调用展示数据
     private class ToolCallDisplayData
@@ -430,7 +468,7 @@
         _pageSubtitle = $"App: {AppName}";
         await LoadRecordsAsync();
         
-        // 🎯 启动定时器（2秒刷新一次）
+        // 🎯 启动定时器（5秒刷新一次）
         _timer = new System.Threading.Timer(async _ =>
         {
             if (_autoRefresh)
@@ -441,7 +479,13 @@
                     StateHasChanged();
                 });
             }
-        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+    }
+
+    private async Task ManualRefresh()
+    {
+        await LoadRecordsAsync();
+        StateHasChanged();
     }
 
     private async Task LoadRecordsAsync()
@@ -449,7 +493,17 @@
         _loading = true;
         try
         {
-            _records = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, 100);
+            var skip = (_pageIndex - 1) * _pageSize;
+            _records = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, _pageSize, skip);
+            _totalCount = await PersistenceService.GetRecordsCountByRequestModelAsync(AppName!);
+
+            // 处理边界情况：如果当前页没有数据且有数据，则重置到最后一页
+            if (_records.Count == 0 && _totalCount > 0 && _pageIndex > 1)
+            {
+                _pageIndex = TotalPages;
+                skip = (_pageIndex - 1) * _pageSize;
+                _records = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, _pageSize, skip);
+            }
         }
         catch (Exception ex)
         {
@@ -467,8 +521,11 @@
         try
         {
             // 刷新记录列表
-            var newRecords = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, 100);
+            var skip = (_pageIndex - 1) * _pageSize;
+            var newRecords = await PersistenceService.GetRecordsByRequestModelAsync(AppName!, _pageSize, skip);
+            var newTotalCount = await PersistenceService.GetRecordsCountByRequestModelAsync(AppName!);
             _records = newRecords;
+            _totalCount = newTotalCount;
             
             // 🎯 如果有选中的记录且该记录未完成,则刷新时间线节点
             if (!string.IsNullOrEmpty(_selectedRecordId) && !_selectedRecordCompleted)
@@ -501,6 +558,32 @@
     }
     
     // 🎯 切换自动刷新
+    private async Task OnPaginationChangeAsync(PaginationEventArgs args)
+    {
+        bool needRefresh = false;
+
+        // 检查页码是否变化
+        if (args.Page != _pageIndex)
+        {
+            _pageIndex = args.Page;
+            needRefresh = true;
+        }
+
+        // 检查分页大小是否变化
+        if (args.PageSize != _pageSize)
+        {
+            _pageSize = args.PageSize;
+            _pageIndex = 1; // 分页大小变化时，重置到第一页
+            needRefresh = true;
+        }
+
+        if (needRefresh)
+        {
+            await LoadRecordsAsync();
+            StateHasChanged();
+        }
+    }
+
     private void ToggleAutoRefresh()
     {
         _autoRefresh = !_autoRefresh;

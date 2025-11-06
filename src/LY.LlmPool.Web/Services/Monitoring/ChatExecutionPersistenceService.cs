@@ -531,4 +531,47 @@ public class ChatExecutionPersistenceService
             return new List<ChatExecutionRecord>();
         }
     }
+
+    /// <summary>
+    /// 根据 RequestModel 查询执行记录列表（支持分页）
+    /// </summary>
+    public async Task<List<ChatExecutionRecord>> GetRecordsByRequestModelAsync(string requestModel, int pageSize, int skip)
+    {
+        try
+        {
+            await using var context = await _contextFactory.CreateDbContextAsync();
+
+            return await context.ChatExecutionRecords
+                .Where(r => r.RequestModel == requestModel)
+                .OrderByDescending(r => r.StartTime)
+                .Skip(skip)
+                .Take(pageSize)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "查询执行记录失败: RequestModel={RequestModel}", requestModel);
+            return new List<ChatExecutionRecord>();
+        }
+    }
+
+    /// <summary>
+    /// 根据 RequestModel 获取执行记录总数
+    /// </summary>
+    public async Task<int> GetRecordsCountByRequestModelAsync(string requestModel)
+    {
+        try
+        {
+            await using var context = await _contextFactory.CreateDbContextAsync();
+
+            return await context.ChatExecutionRecords
+                .Where(r => r.RequestModel == requestModel)
+                .CountAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取执行记录总数失败: RequestModel={RequestModel}", requestModel);
+            return 0;
+        }
+    }
 }
