@@ -108,8 +108,8 @@ public class TraceRecordService : ITraceRecordService
             Name = entity.Name ?? string.Empty,
             TraceId = entity.TraceId,
             ConversationId = entity.ConversationId ?? string.Empty,
-            StartTime = entity.StartTime.ToLocalTime(), // 转换为本地时间用于显示
-            EndTime = entity.EndTime?.ToLocalTime() ?? entity.StartTime.ToLocalTime(),
+            StartTime = entity.StartTime, // 转换为本地时间用于显示
+            EndTime = entity.EndTime ?? entity.StartTime,
             DurationMs = entity.DurationMs,
             Status = entity.Status,
             OutputContent = entity.OutputContent,

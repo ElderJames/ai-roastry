@@ -106,10 +106,10 @@
                     <Divider />
 
                     <Descriptions Bordered Column="2">
-                        <DescriptionsItem Title="Request Received">@timings?.RequestReceivedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
-                        <DescriptionsItem Title="Model Call Started">@timings?.ModelCallStartedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
-                        <DescriptionsItem Title="Response Started">@timings?.ModelResponseStartedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
-                        <DescriptionsItem Title="Response Ended">@timings?.ModelResponseEndedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Request Received">@timings?.RequestReceivedAt?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Model Call Started">@timings?.ModelCallStartedAt?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Response Started">@timings?.ModelResponseStartedAt?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
+                        <DescriptionsItem Title="Response Ended">@timings?.ModelResponseEndedAt?.ToString("yyyy-MM-dd HH:mm:ss.fff") ?? "N/A"</DescriptionsItem>
                     </Descriptions>
                 </TabPane>
 

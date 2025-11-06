@@ -17,12 +17,6 @@ public class LoadBalancerService
     
     // 🎯 跟踪每个配置当前的请求数（用于负载均衡）
     private readonly ConcurrentDictionary<string, int> _configRequestCounts = new();
-    
-    // 🎯 配置锁（用于检测是否空闲）
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _configLocks = new();
-    
-    // 配置：等待空闲配置的最大时间（秒）
-    private const int MaxWaitForIdleSeconds = 3;
 
     public LoadBalancerService(
         ILogger<LoadBalancerService> logger,
@@ -98,7 +92,7 @@ public class LoadBalancerService
             // 🎯 立即增加请求计数,确保下一次请求能看到最新状态
             IncrementRequestCount(selectedConfig.Id!);
             _logger.LogDebug("📈 配置 {ConfigName} 被选中,立即更新请求计数: {Count}",
-                selectedConfig.Name, _configRequestCounts[selectedConfig.Id!]);
+                selectedConfig.Name, _configRequestCounts.GetOrAdd(selectedConfig.Id!, 0));
         }
         
         _logger.LogInformation("✅ 模型 '{ModelName}' 解析成功: Strategy={Strategy}, Config={ConfigName}",
@@ -239,42 +233,11 @@ public class LoadBalancerService
 
     /// <summary>
     /// 选择最优配置（负载均衡核心逻辑）
+    /// 🎯 简化版本：直接选择请求数最少的配置，避免使用 Semaphore 造成死锁
     /// </summary>
-    private async Task<LlmConfig?> SelectBestConfigAsync(List<LlmConfig> configs, string endpointName)
+    private Task<LlmConfig?> SelectBestConfigAsync(List<LlmConfig> configs, string endpointName)
     {
-        // 策略 1: 优先选择空闲的配置
-        foreach (var config in configs)
-        {
-            if (await TryAcquireConfigAsync(config.Id!))
-            {
-                _logger.LogInformation("✅ 找到空闲配置: {ConfigName} for Endpoint {EndpointName}", 
-                    config.Name, endpointName);
-                return config;
-            }
-        }
-
-        // 策略 2: 等待一段时间，看是否有配置变为空闲
-        _logger.LogInformation("⏳ 所有配置都在忙，等待 {Seconds} 秒...", MaxWaitForIdleSeconds);
-        
-        var waitTasks = configs.Select(async config =>
-        {
-            var acquired = await TryAcquireConfigWithTimeoutAsync(config.Id!, MaxWaitForIdleSeconds);
-            return acquired ? config : null;
-        });
-
-        var waitResults = await Task.WhenAll(waitTasks);
-        var availableConfig = waitResults.FirstOrDefault(c => c != null);
-        
-        if (availableConfig != null)
-        {
-            _logger.LogInformation("✅ 等待后获得空闲配置: {ConfigName} for Endpoint {EndpointName}", 
-                availableConfig.Name, endpointName);
-            return availableConfig;
-        }
-
-        // 策略 3: 选择并发数最少的配置（均衡分配）
-        _logger.LogInformation("⚖️ 等待超时，选择并发数最少的配置 for Endpoint {EndpointName}", endpointName);
-        
+        // 选择当前请求数最少的配置
         var configWithMinRequests = configs
             .Select(c => new
             {
@@ -282,54 +245,23 @@ public class LoadBalancerService
                 RequestCount = _configRequestCounts.GetOrAdd(c.Id!, 0)
             })
             .OrderBy(x => x.RequestCount)
+            .ThenBy(x => configs.IndexOf(x.Config)) // 保持 Priority 顺序
             .First();
 
-        _logger.LogInformation("📊 选择配置 {ConfigName}，当前请求数: {RequestCount}", 
-            configWithMinRequests.Config.Name, configWithMinRequests.RequestCount);
+        _logger.LogInformation("✅ 选择配置 {ConfigName}（当前请求数: {RequestCount}），Endpoint: {EndpointName}", 
+            configWithMinRequests.Config.Name, configWithMinRequests.RequestCount, endpointName);
 
         // 增加请求计数
         IncrementRequestCount(configWithMinRequests.Config.Id!);
         
-        return configWithMinRequests.Config;
+        return Task.FromResult<LlmConfig?>(configWithMinRequests.Config);
     }
 
     /// <summary>
-    /// 尝试获取配置锁（非阻塞）
-    /// </summary>
-    private async Task<bool> TryAcquireConfigAsync(string configId)
-    {
-        var semaphore = _configLocks.GetOrAdd(configId, _ => new SemaphoreSlim(1, 1));
-        return await semaphore.WaitAsync(TimeSpan.Zero);
-    }
-
-    /// <summary>
-    /// 尝试获取配置锁（带超时）
-    /// </summary>
-    private async Task<bool> TryAcquireConfigWithTimeoutAsync(string configId, int timeoutSeconds)
-    {
-        var semaphore = _configLocks.GetOrAdd(configId, _ => new SemaphoreSlim(1, 1));
-        return await semaphore.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds));
-    }
-
-    /// <summary>
-    /// 释放配置
+    /// 释放配置（减少请求计数）
     /// </summary>
     public void ReleaseConfig(string configId)
     {
-        // 如果有锁，释放它
-        if (_configLocks.TryGetValue(configId, out var semaphore))
-        {
-            try
-            {
-                semaphore.Release();
-                _logger.LogDebug("🔓 释放配置锁: {ConfigId}", configId);
-            }
-            catch (SemaphoreFullException)
-            {
-                _logger.LogDebug("⚠️ 配置锁已经是释放状态: {ConfigId}", configId);
-            }
-        }
-
         // 减少请求计数
         DecrementRequestCount(configId);
     }

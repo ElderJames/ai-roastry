@@ -1,5 +1,7 @@
+using LY.LlmPool.Web.Data.Converters;
 using LY.LlmPool.Web.Data.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace LY.LlmPool.Web.Data;
 
@@ -32,6 +34,29 @@ public class LlmDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
+        try
+        {
+            // 从 DbContext 的服务提供者获取 IHttpContextAccessor
+            var httpContextAccessor = this.GetService<IHttpContextAccessor>();
+            var converter = new UtcToUserLocalTimeConverter(httpContextAccessor);
+
+            // 为所有实体的 DateTime 属性应用时区转换
+            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+            {
+                foreach (var property in entityType.GetProperties())
+                {
+                    if (property.ClrType == typeof(DateTime) || property.ClrType == typeof(DateTime?))
+                    {
+                        property.SetValueConverter(converter);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 在某些测试场景中，IHttpContextAccessor 可能不可用，忽略异常
+        }
+
         modelBuilder.Entity<LlmModelType>(entity =>
         {
             entity.HasKey(e => e.Id);
@@ -44,7 +69,7 @@ public class LlmDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.Name).IsUnique();
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
+
             entity.HasOne(e => e.ModelType)
                 .WithMany(e => e.Configs)
                 .HasForeignKey(e => e.ModelTypeId)
@@ -80,22 +105,22 @@ public class LlmDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.RequestReceivedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
+
             entity.HasOne(e => e.Endpoint)
                 .WithMany()
                 .HasForeignKey(e => e.EndpointId)
                 .OnDelete(DeleteBehavior.Restrict);
-                
+
             entity.HasOne(e => e.LlmConfig)
                 .WithMany()
                 .HasForeignKey(e => e.LlmConfigId)
                 .OnDelete(DeleteBehavior.SetNull);
-                
+
             entity.HasOne(e => e.ParentCall)
                 .WithMany(e => e.ChildCalls)
                 .HasForeignKey(e => e.ParentCallId)
                 .OnDelete(DeleteBehavior.Restrict);
-                
+
             entity.HasIndex(e => e.EndpointId);
             entity.HasIndex(e => e.LlmConfigId);
             entity.HasIndex(e => e.RequestReceivedAt);

@@ -1,6 +1,7 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
+using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.SemanticKernel;
 using HandlebarsDotNet;
@@ -14,17 +15,20 @@ public class PromptService
     private readonly IChatClientService _chatClientService;
     private readonly ILogger<PromptService> _logger;
     private readonly LlmPoolCacheService _cacheService; // 🎯 缓存服务
+    private readonly ToolMetadataService _toolMetadataService; // 🎯 工具元数据服务
 
     public PromptService(
         IDbContextFactory<LlmDbContext> dbContextFactory, 
         IChatClientService chatClientService,
         ILogger<PromptService> logger,
-        LlmPoolCacheService cacheService) // 🎯 注入缓存服务
+        LlmPoolCacheService cacheService, // 🎯 注入缓存服务
+        ToolMetadataService toolMetadataService) // 🎯 注入工具元数据服务
     {
         _dbContextFactory = dbContextFactory;
         _chatClientService = chatClientService;
         _logger = logger;
         _cacheService = cacheService;
+        _toolMetadataService = toolMetadataService;
     }
 
     public async Task<List<LlmPrompt>> GetPromptsAsync()
@@ -86,6 +90,42 @@ public class PromptService
         existing.Version++;
 
         await dbContext.SaveChangesAsync();
+
+        // 🎯 查找所有使用该 Prompt 的 Tool 类型 App,并刷新它们的工具缓存
+        try
+        {
+            var relatedToolApps = await dbContext.Apps
+                .Where(a => a.LlmPromptId == prompt.Id && a.AppType == "Tool")
+                .Select(a => new { a.Id, a.Name })
+                .ToListAsync();
+
+            if (relatedToolApps.Any())
+            {
+                _logger.LogInformation(
+                    "Prompt {PromptId} ({PromptName}) updated, refreshing {Count} related Tool App(s): {AppNames}",
+                    prompt.Id, prompt.Name, relatedToolApps.Count, string.Join(", ", relatedToolApps.Select(a => a.Name)));
+
+                foreach (var app in relatedToolApps)
+                {
+                    if (!string.IsNullOrEmpty(app.Id))
+                    {
+                        await _toolMetadataService.RefreshAppToolAsync(app.Id);
+                        await _cacheService.InvalidateAppRelatedCachesAsync(app.Id);
+                    }
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Prompt {PromptId} ({PromptName}) updated, no related Tool Apps found", 
+                    prompt.Id, prompt.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh tool caches after Prompt {PromptId} update", prompt.Id);
+            // 不抛出异常,允许 Prompt 更新继续完成
+        }
+
         return existing;
     }
 

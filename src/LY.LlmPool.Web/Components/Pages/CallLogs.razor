@@ -84,7 +84,7 @@
                                     </Space>
                                 </div>
                                 <div style="margin-top: 2px; font-size: 11px; color: #999;">
-                                    🕐 @record.StartTime.ToLocalTime().ToString("MM-dd HH:mm:ss")
+                                    🕐 @record.StartTime.ToString("MM-dd HH:mm:ss")
                                 </div>
                                 @if (record.TotalDurationMs.HasValue)
                                 {
@@ -172,7 +172,7 @@
                                             </Tag>
                                         </Column>
                                         <Column Title="时间戳" TData="string">
-                                            @context.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff")
+                                            @context.Timestamp.ToString("HH:mm:ss.fff")
                                         </Column>
                                         <Column Title="耗时" TData="string">
                                             @{
@@ -764,8 +764,8 @@
                     var isSuccess = resultData.RootElement.TryGetProperty("isSuccess", out var successElement)
                         && successElement.GetBoolean();
 
-                    var callTimestamp = node.Data.ToolCallNode.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff");
-                    var resultTimestamp = node.Data.ToolResultNode.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    var callTimestamp = node.Data.ToolCallNode.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    var resultTimestamp = node.Data.ToolResultNode.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff");
                     var totalDurationMs = node.Data.ToolResultNode.ElapsedMs - node.Data.ToolCallNode.ElapsedMs;
 
                     // 提取参数

@@ -143,7 +143,7 @@
                                                                 {
                                                                     <Tag Color="TagColor.Green">✓ 成功</Tag>
                                                                 }
-                                                                <span class="tool-time">@ev.Time.ToLocalTime().ToString("HH:mm:ss")</span>
+                                                                <span class="tool-time">@ev.Time.ToString("HH:mm:ss")</span>
                                                             </div>
                                                             
                                                             @if (!string.IsNullOrEmpty(ev.Arguments))
@@ -210,7 +210,7 @@
                             }
                         </div>
                         <div class="message-time">
-                            @message.Timestamp.ToLocalTime().ToString("HH:mm:ss")
+                            @message.Timestamp.ToString("HH:mm:ss")
                         </div>
                     </div>
                 }
