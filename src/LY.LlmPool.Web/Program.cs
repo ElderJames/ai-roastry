@@ -101,7 +101,7 @@ builder.Services.AddSingleton<LY.LlmPool.Web.Services.Tools.ToolMetadataService>
 builder.Services.AddHybridCache(options =>
 {
     // L1 cache (in-memory) settings
-    options.MaximumPayloadBytes = 10 * 1024 * 1024; // 10MB per cache entry
+    options.MaximumPayloadBytes = 100 * 1024 * 1024; // 100MB per cache entry
     options.MaximumKeyLength = 1024; // Max key length
 
     // Default expiration (can be overridden per entry)

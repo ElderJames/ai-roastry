@@ -61,7 +61,7 @@ public static class ServiceCollectionExtensions
                     .AddSource("Experimental.ModelContextProtocol") // MCP SDK
                     .AddSource("ModelContextProtocol")              // MCP SDK (备用名称)
                     .AddSource("Microsoft.Extensions.AI")
-                    .AddSource("*")  // 监听所有 ActivitySource
+                    //.AddSource("*")  // 监听所有 ActivitySource
                     
                     .AddHttpClientInstrumentation(options =>
                     {

@@ -38,6 +38,9 @@ public partial class TraceRecordDetail
     private int _totalCount = 0;
     private int _pageIndex = 1;
     private int _pageSize = 20;
+    // 状态跟踪：记录弹窗可见性和已加载的 ActivityId，避免实时刷新时重复拉取
+    private bool _wasVisible = false;
+    private string? _lastLoadedActivityId = null;
 
     // 筛选条件
     private DateTime?[]? _dateRange = null;
@@ -97,10 +100,20 @@ public partial class TraceRecordDetail
     /// </summary>
     protected override async Task OnParametersSetAsync()
     {
-        // 只在 Modal 打开且 Node 不为空时加载数据
-        if (Visible && Node != null && !_loading)
+        var activityId = Node?.ActivityId;
+        var becameVisible = Visible && !_wasVisible;
+        var activityChanged = Visible && activityId != null && activityId != _lastLoadedActivityId;
+
+        if (Visible && Node != null && !_loading && (becameVisible || activityChanged))
         {
             await LoadDataAsync();
+        }
+
+        _wasVisible = Visible;
+
+        if (!Visible)
+        {
+            _lastLoadedActivityId = null;
         }
     }
 
@@ -135,6 +148,10 @@ public partial class TraceRecordDetail
 
             _records = result.Items;
             _totalCount = result.TotalCount;
+            if (Node != null)
+            {
+                _lastLoadedActivityId = Node.ActivityId;
+            }
 
             Logger.LogInformation(
                 "✅ LoadDataAsync 成功: Name={Name}, TotalCount={TotalCount}",
@@ -208,6 +225,8 @@ public partial class TraceRecordDetail
         _pageIndex = 1;
         _records = new List<TraceRecordDto>();
         _totalCount = 0;
+        _wasVisible = false;
+        _lastLoadedActivityId = null;
     }
 
     /// <summary>
@@ -256,6 +275,7 @@ public partial class TraceRecordDetail
     private async Task LoadColumnVisibilityAsync()
     {
         try
+        
         {
             var json = await JSRuntime.InvokeAsync<string>("localStorage.getItem", ColumnVisibilityStorageKey);
             if (!string.IsNullOrEmpty(json))
