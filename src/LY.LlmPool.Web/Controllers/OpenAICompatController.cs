@@ -191,8 +191,8 @@ namespace LY.LlmPool.Web.Controllers
 
             try
             {
-                requestActivity?.SetTag("request.body", requestBody);
-                _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestBody);
+                requestActivity?.SetTag("request.body", requestData);
+                _logger.LogInformation("收到聊天请求，请求体: {RequestBody}", requestData);
                 ChatRequest chatRequest;
                 try
                 {
@@ -1061,7 +1061,8 @@ namespace LY.LlmPool.Web.Controllers
             if (currentActivity != null && aiMessages.Any())
             {
                 var inputMessagesJson = JsonSerializer.Serialize(
-                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList()
+                    aiMessages.Select(m => new { role = m.Role.ToString(), content = m.Text }).ToList(),
+                    _jsonSerializerOptions
                 );
                 currentActivity.SetTag("gen_ai.prompt", inputMessagesJson);
                 _logger.LogDebug("📝 记录输入消息到 Activity: {MessageCount} messages", aiMessages.Count);

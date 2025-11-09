@@ -256,7 +256,7 @@
                             </Card>
                         </AntDesign.Col>
                         <AntDesign.Col Span="12">
-                            <Card Title="详细信息" Bordered>
+                            <Card Title="详细信息" Bordered BodyStyle="height: calc(100vh - 410px); overflow-y: auto; overflow-x: hidden;">
                                 <Body>
                                     @if (_selectedActiveNode != null)
                                     {
@@ -290,14 +290,14 @@
                 {
                     <Row Gutter="16">
                         <AntDesign.Col Span="12">
-                            <Card Bordered>
+                            <Card Bordered BodyStyle="height: calc(100vh - 410px); overflow-y: auto; overflow-x: hidden;">
                                 <TitleTemplate>
                                     <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                                         <span>📋 调用树</span>
                                         <Space Size="@("small")">
                                             <SpaceItem>
-                                                <Button Size="@ButtonSize.Small" 
-                                                        Type="@ButtonType.Link" 
+                                                <Button Size="@ButtonSize.Small"
+                                                        Type="@ButtonType.Link"
                                                         OnClick="ExpandAllCompletedNodes">
                                                     @(_completedTreeExpandAll ? "收起全部" : "展开全部")
                                                 </Button>
@@ -340,7 +340,7 @@
                             </Card>
                         </AntDesign.Col>
                         <AntDesign.Col Span="12">
-                            <Card Title="详细信息" Bordered>
+                            <Card Title="详细信息" Bordered BodyStyle="height: calc(100vh - 410px); overflow-y: auto; overflow-x: hidden;">
                                 <Body>
                                     @if (_selectedCompletedNode != null)
                                     {
@@ -1427,7 +1427,7 @@
                     {
                         <DescriptionsItem Title="参数">
                             <div style="max-width: 100%; overflow-x: auto;">
-                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 800px;">@node.ToolArguments</pre>
+                                <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 100%;">@node.ToolArguments</pre>
                             </div>
                         </DescriptionsItem>
                     }
@@ -1435,7 +1435,7 @@
                     {
                         <DescriptionsItem Title="结果">
                             <div style="max-width: 100%; overflow-x: auto;">
-                                <pre style="margin: 0; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 800px;">@node.ToolResult</pre>
+                                <pre style="margin: 0; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; max-width: 100%;">@node.ToolResult</pre>
                             </div>
                         </DescriptionsItem>
                     }
@@ -1555,15 +1555,17 @@
         @* 所有 Tags *@
         @if (node.Tags != null && node.Tags.Count > 0)
         {
-            <Card Title="所有 Tags" Size="@CardSize.Small" Style="margin-top: 16px;">
-                <Table TItem="KeyValuePair<string, string>" 
-                       DataSource="@node.Tags.ToList()" 
-                       Size="@TableSize.Small"
-                       Bordered>
-                    <PropertyColumn Property="c => c.Key" Title="Key" />
-                    <PropertyColumn Property="c => c.Value" Title="Value" />
-                </Table>
-            </Card>
+            <Collapse Style="margin-top: 16px;" Bordered>
+                <Panel Header="@($"所有 Tags ({node.Tags.Count} 项)")" Key="tags">
+                    <Table TItem="KeyValuePair<string, string>"
+                           DataSource="@node.Tags.ToList()"
+                           Size="@TableSize.Small"
+                           Bordered>
+                        <PropertyColumn Property="c => c.Key" Title="Key" />
+                        <PropertyColumn Property="c => c.Value" Title="Value" />
+                    </Table>
+                </Panel>
+            </Collapse>
         }
     };
 
