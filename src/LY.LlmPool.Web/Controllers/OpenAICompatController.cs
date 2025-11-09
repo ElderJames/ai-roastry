@@ -296,6 +296,8 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity?.SetTag("app.type", app.AppType);
                     requestActivity?.SetTag("app.id", app.Id);
                     requestActivity?.SetTag("routing", "agent_group");
+                    requestActivity?.SetTag("app.prompt.id", app.LlmPrompt?.Id);
+                    requestActivity?.SetTag("app.prompt", app.LlmPrompt?.Content);
 
                     await HandleAgentGroupAsync(chatRequest, app, requestData, requestStartTime);
                     return;
@@ -315,6 +317,8 @@ namespace LY.LlmPool.Web.Controllers
                     requestActivity?.SetTag("app.name", app.Name);
                     requestActivity?.SetTag("app.type", app.AppType);
                     requestActivity?.SetTag("app.id", app.Id);
+                    requestActivity?.SetTag("app.prompt.id", app.LlmPrompt?.Id);
+                    requestActivity?.SetTag("app.prompt", app.LlmPrompt?.Content);
 
                     // 🎯 加载 App 的 Prompt（从缓存中获取，无需额外查询）
                     if (app.LlmPrompt != null)
@@ -327,6 +331,22 @@ namespace LY.LlmPool.Web.Controllers
                         {
                             modelParameters = ParameterUtils.ParseParametersToDict(prompt.ModelParameters);
                             _logger.LogInformation("从 Prompt 解析模型参数: {ModelParameters}", prompt.ModelParameters);
+                        }
+
+                        _logger.LogInformation("✅ App {AppName} 成功加载 Prompt: Content长度={ContentLength}, ModelParameters={HasModelParameters}",
+                            app.Name, promptContent?.Length ?? 0, !string.IsNullOrWhiteSpace(prompt.ModelParameters));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ App {AppName} (ID: {AppId}) 没有关联的 Prompt！LlmPromptId: {PromptId}",
+                            app.Name, app.Id, app.LlmPromptId);
+
+                        // 🎯 如果是 Prompt 类型的 App 但没有关联 Prompt，这是一个配置错误
+                        if (string.Equals(app.AppType, "Prompt", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogError("❌ Prompt 类型的 App {AppName} 必须有关联的 Prompt，但当前没有配置", app.Name);
+                            await WriteAssistantMessageAsync(chatRequest.Model, $"App '{app.Name}' 是 Prompt 类型但没有关联的 Prompt 模板，请检查配置。");
+                            return;
                         }
                     }
 
@@ -388,7 +408,8 @@ namespace LY.LlmPool.Web.Controllers
                 requestActivity?.SetTag("gen_ai.request.model", actualModelName ?? config.Model);
                 requestActivity?.SetTag("gen_ai.system", config.BaseUrl);
                 requestActivity?.SetTag("selection.strategy", selectionStrategy);
-                requestActivity?.SetTag("app.name", config.Name); // 🎯 记录 LlmConfig 的名称
+                requestActivity?.SetTag("config.name", config.Name); // 🎯 记录 LlmConfig 的名称
+
                 if (!string.IsNullOrEmpty(actualEndpointId))
                 {
                     requestActivity?.SetTag("endpoint.id", actualEndpointId);
@@ -487,7 +508,7 @@ namespace LY.LlmPool.Web.Controllers
 
                 try
                 {
-                    var convertedMessages = ConvertToAIChatMessages(chatRequest.Messages);
+                    var convertedMessages = ConvertToAIChatMessages(chatRequest.Messages ?? []);
 
                     if (chatRequest.Stream == true)
                     {
@@ -1013,7 +1034,7 @@ namespace LY.LlmPool.Web.Controllers
 
                 var content = ExtractContent(m);
                 return new AIChatMessage(role, content);
-            }).ToList();
+            }).Where(x => !string.IsNullOrEmpty(x.Text)).ToList();
         }
 
         /// <summary>

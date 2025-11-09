@@ -708,7 +708,7 @@ public class LlmPoolCacheService
 
         // 🎯 使用 HybridCache 缓存解析结果
         var cacheKey = $"{LoadBalancerCacheKeyPrefix}{modelName}";
-        return await _cache.GetOrCreateAsync(
+        var cachedResult = await _cache.GetOrCreateAsync(
             cacheKey,
             async cancel =>
             {
@@ -721,6 +721,16 @@ public class LlmPoolCacheService
                 LocalCacheExpiration = LocalCacheExpiration // 1 分钟本地缓存
             },
             cancellationToken: cancellationToken);
+
+        // 🎯 如果从缓存加载，需要重新加载完整的对象（包括导航属性）
+        if (cachedResult != null && (cachedResult.App == null || cachedResult.Config == null))
+        {
+            _logger.LogDebug("🔄 从缓存加载，需要重新加载完整对象: {ModelName}", modelName);
+            await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+            await cachedResult.LoadFullObjectsAsync(dbContext, cancellationToken);
+        }
+
+        return cachedResult;
     }
 
     /// <summary>
@@ -734,6 +744,7 @@ public class LlmPoolCacheService
 
             // 1. 尝试按 App 名称解析（直接返回 App 的 Config 或 Endpoint）
             var app = await dbContext.Apps
+                .AsNoTracking()
                 .Include(a => a.LlmPrompt)
                 .Include(a => a.LlmConfig)
                 .Include(a => a.Endpoint)
@@ -750,7 +761,9 @@ public class LlmPoolCacheService
                     return new ConfigSelectionResult
                     {
                         Success = true,
-                        App = app,
+                        AppId = app.Id,
+                        App = app, // 直接设置，因为这是从数据库加载的
+                        ConfigId = null,
                         Config = null, // AgentGroup 不使用 Config
                         Strategy = "代理组",
                         NeedsRelease = false,
@@ -766,7 +779,9 @@ public class LlmPoolCacheService
                     return new ConfigSelectionResult
                     {
                         Success = true,
+                        ConfigId = app.LlmConfig.Id,
                         Config = app.LlmConfig,
+                        AppId = app.Id,
                         App = app,
                         Strategy = "App 直接指定配置",
                         NeedsRelease = false,
@@ -791,9 +806,13 @@ public class LlmPoolCacheService
                         return new ConfigSelectionResult
                         {
                             Success = true,
+                            ConfigId = availableConfigsList[0].Id, // 默认第一个（最高优先级）
                             Config = availableConfigsList[0], // 默认第一个（最高优先级）
+                            AvailableConfigIds = availableConfigsList.Where(c => c.Id != null).Select(c => c.Id!).ToList(), // 保存所有配置ID
                             AvailableConfigs = availableConfigsList, // 🎯 保存所有配置
+                            AppId = app.Id, // 🎯 重要: 设置 App ID
                             App = app, // 🎯 重要: 设置 App 引用
+                            EndpointId = app.Endpoint.Id, // 🎯 设置 Endpoint ID
                             Endpoint = app.Endpoint, // 🎯 设置 Endpoint 引用
                             Strategy = availableConfigsList.Count == 1 ? "App 的 Endpoint (单一配置)" : $"App 的 Endpoint ({availableConfigsList.Count} 个配置)",
                             NeedsRelease = false,
@@ -817,6 +836,7 @@ public class LlmPoolCacheService
                 return new ConfigSelectionResult
                 {
                     Success = true,
+                    ConfigId = config.Id,
                     Config = config,
                     Strategy = "直接配置名称",
                     NeedsRelease = false,
@@ -844,8 +864,12 @@ public class LlmPoolCacheService
                     return new ConfigSelectionResult
                     {
                         Success = true,
+                        ConfigId = availableConfigs[0].Id, // 默认第一个（最高优先级）
                         Config = availableConfigs[0], // 默认第一个（最高优先级）
+                        AvailableConfigIds = availableConfigs.Where(c => c.Id != null).Select(c => c.Id!).ToList(), // 保存所有配置ID
                         AvailableConfigs = availableConfigs, // 🎯 保存所有配置
+                        EndpointId = endpointByName.Id, // 设置Endpoint ID
+                        Endpoint = endpointByName, // 设置Endpoint
                         Strategy = availableConfigs.Count == 1 ? "Endpoint 名称 (单一配置)" : $"Endpoint 名称 ({availableConfigs.Count} 个配置)",
                         NeedsRelease = false,
                         Message = $"使用 Endpoint '{endpointByName.Name}' 的配置 (共 {availableConfigs.Count} 个)"
@@ -873,8 +897,12 @@ public class LlmPoolCacheService
                     return new ConfigSelectionResult
                     {
                         Success = true,
+                        ConfigId = availableConfigs[0].Id, // 默认第一个（最高优先级）
                         Config = availableConfigs[0], // 默认第一个（最高优先级）
+                        AvailableConfigIds = availableConfigs.Where(c => c.Id != null).Select(c => c.Id!).ToList(), // 保存所有配置ID
                         AvailableConfigs = availableConfigs, // 🎯 保存所有配置
+                        EndpointId = endpointById.Id, // 设置Endpoint ID
+                        Endpoint = endpointById, // 设置Endpoint
                         Strategy = availableConfigs.Count == 1 ? "Endpoint ID (单一配置)" : $"Endpoint ID ({availableConfigs.Count} 个配置)",
                         NeedsRelease = false,
                         Message = $"使用 Endpoint ID '{endpointById.Id}' 的配置 (共 {availableConfigs.Count} 个)"

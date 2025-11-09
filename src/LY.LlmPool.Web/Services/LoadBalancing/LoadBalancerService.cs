@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace LY.LlmPool.Web.Services.LoadBalancing;
@@ -314,17 +316,32 @@ public class ConfigSelectionResult
     public bool Success { get; set; }
 
     /// <summary>
-    /// 选中的配置
+    /// 选中的配置ID（用于缓存序列化）
+    /// </summary>
+    public string? ConfigId { get; set; }
+
+    /// <summary>
+    /// 选中的配置（运行时加载）
     /// </summary>
     public LlmConfig? Config { get; set; }
 
     /// <summary>
-    /// 相关的 App（如果有）
+    /// 相关的 App ID（用于缓存序列化）
+    /// </summary>
+    public string? AppId { get; set; }
+
+    /// <summary>
+    /// 相关的 App（运行时加载）
     /// </summary>
     public LlmApp? App { get; set; }
 
     /// <summary>
-    /// 相关的 Endpoint（如果有）
+    /// 相关的 Endpoint ID（用于缓存序列化）
+    /// </summary>
+    public string? EndpointId { get; set; }
+
+    /// <summary>
+    /// 相关的 Endpoint（运行时加载）
     /// </summary>
     public LlmEndpoint? Endpoint { get; set; }
 
@@ -344,6 +361,11 @@ public class ConfigSelectionResult
     public bool IsAgentGroup { get; set; }
 
     /// <summary>
+    /// 所有可用配置ID列表（用于缓存序列化）
+    /// </summary>
+    public List<string>? AvailableConfigIds { get; set; }
+
+    /// <summary>
     /// 所有可用配置列表（用于 Endpoint 多配置场景）
     /// 🎯 缓存时保存所有配置,使用时再进行负载均衡选择
     /// </summary>
@@ -353,4 +375,50 @@ public class ConfigSelectionResult
     /// 消息
     /// </summary>
     public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 从数据库加载完整的对象（用于缓存反序列化后）
+    /// </summary>
+    public async Task LoadFullObjectsAsync(LlmDbContext dbContext, CancellationToken cancellationToken = default)
+    {
+        // 加载 App（包含导航属性）
+        if (!string.IsNullOrEmpty(AppId))
+        {
+            App = await dbContext.Apps
+                .Include(a => a.LlmPrompt)
+                .Include(a => a.LlmConfig)
+                .Include(a => a.Endpoint)
+                    .ThenInclude(e => e!.EndpointConfigs)
+                    .ThenInclude(ec => ec.LlmConfig)
+                .FirstOrDefaultAsync(a => a.Id == AppId && a.IsEnabled, cancellationToken);
+        }
+
+        // 加载 Config
+        if (!string.IsNullOrEmpty(ConfigId))
+        {
+            Config = await dbContext.Configs
+                .FirstOrDefaultAsync(c => c.Id == ConfigId && c.IsEnabled, cancellationToken);
+        }
+
+        // 加载 Endpoint
+        if (!string.IsNullOrEmpty(EndpointId))
+        {
+            Endpoint = await dbContext.Endpoints
+                .Include(e => e.EndpointConfigs)
+                    .ThenInclude(ec => ec.LlmConfig)
+                .FirstOrDefaultAsync(e => e.Id == EndpointId && e.IsEnabled, cancellationToken);
+        }
+
+        // 加载 AvailableConfigs
+        if (AvailableConfigIds != null && AvailableConfigIds.Any())
+        {
+            var configsFromDb = await dbContext.Configs
+                .Where(c => c.Id != null && AvailableConfigIds.Contains(c.Id) && c.IsEnabled)
+                .ToListAsync(cancellationToken);
+
+            AvailableConfigs = configsFromDb
+                .OrderBy(c => AvailableConfigIds.IndexOf(c.Id!))
+                .ToList();
+        }
+    }
 }

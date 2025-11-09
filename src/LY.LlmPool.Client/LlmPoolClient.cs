@@ -312,6 +312,11 @@ public class LlmPoolClient : ILlmPoolClient
         var chatMessages = new List<ChatMessage>();
         foreach (var msg in messages)
         {
+            if (string.IsNullOrEmpty(msg.Content))
+            {
+                continue;
+            }
+
             var role = msg.Role.ToLowerInvariant() switch
             {
                 "user" => ChatRole.User,
@@ -335,14 +340,14 @@ public class LlmPoolClient : ILlmPoolClient
 
     public async Task<string> ChatAsync(
         string model,
-        IEnumerable<ClientMessage> messages,
+        IEnumerable<ClientMessage>? messages = null,
         Dictionary<string, object>? parameters = null,
         IEnumerable<object>? toolObjects = null,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         var (chatClient, chatOptions) = CreateChatClientAndOptions(model, toolObjects, options, parameters);
-        var chatMessages = BuildChatMessages(messages);
+        var chatMessages = messages != null ? BuildChatMessages(messages) : [];
 
         var response = await chatClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
         return response.Text ?? string.Empty;
@@ -350,14 +355,14 @@ public class LlmPoolClient : ILlmPoolClient
 
     public async IAsyncEnumerable<StreamingChatUpdate> ChatStreamAsync(
         string model,
-        IEnumerable<ClientMessage> messages,
+        IEnumerable<ClientMessage>? messages=null,
         Dictionary<string, object>? parameters = null,
         IEnumerable<object>? toolObjects = null,
         ChatOptions? options = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var (chatClient, chatOptions) = CreateChatClientAndOptions(model, toolObjects, options, parameters);
-        var chatMessages = BuildChatMessages(messages);
+        var chatMessages = messages != null ? BuildChatMessages(messages) : [];
 
         await foreach (var update in chatClient.GetStreamingResponseAsync(chatMessages, chatOptions, cancellationToken))
         {
