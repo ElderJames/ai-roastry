@@ -49,6 +49,15 @@
                     </div>
                 </TitleTemplate>
                 <Extra>
+                    @if (_conversationMode == ConversationDataSourceMode.History)
+                    {
+                        <Button Size="@ButtonSize.Small"
+                            OnClick="async _ => await RefreshHistoryPageAsync()"
+                            Loading="_isLoading"
+                            Style="margin-right: 8px;">
+                            刷新
+                        </Button> 
+                    } 
                     <Badge Count="@GetTotalConversationCount()" ShowZero="true" />
                 </Extra>
                 <Body>
@@ -411,9 +420,14 @@
         History
     }
 
+    // 🎯 实时模式下会话列表的最大数量限制
+    private const int MaxRealtimeConversations = 100;
+
     private bool _autoRefresh = true;
-    private System.Threading.Timer? _timer;
-    private ConversationDataSourceMode _conversationMode = ConversationDataSourceMode.RealTime;
+    // 🎯 P0 优化: 移除定时器,改为纯事件驱动模式
+    // private System.Threading.Timer? _timer;
+    // private bool _disposed = false;
+    private ConversationDataSourceMode _conversationMode = ConversationDataSourceMode.History;
     private List<TraceNode> _activeRoots = new();
     private List<TraceNode> _completedRoots = new();
     private List<ConversationInfo> _conversations = new();
@@ -424,7 +438,7 @@
     private int _historyPageSize;
     private readonly int[] _pageSizeOptions = new[] { 5, 10, 20, 50, 100 };
     private string? _selectedConversationId;
-    
+
     // 选中的节点
     private TraceNode? _selectedActiveNode;
     private TraceNode? _selectedCompletedNode;
@@ -432,17 +446,17 @@
     // 🎯 树组件的引用和展开状态
     private Tree<TraceNode>? _completedTreeRef;
     private bool _completedTreeExpandAll = false;
-    
+
     // 🎯 性能优化: 防止点击节点时触发刷新
     private bool _isUserInteracting = false;
     private DateTime _lastUserInteraction = DateTime.MinValue;
-    
+
     // 🎯 筛选器状态
     private string? _filterText;
     private string? _filterStatus;
     private string? _filterType;
     private bool _filterErrorOnly = false;
-    
+
     // 🎯 Loading 状态
     private bool _isLoading = false;
 
@@ -486,7 +500,8 @@
     protected override async Task OnInitializedAsync()
     {
         // 订阅事件
-        TraceService.ActivityStarted += OnActivityStarted;
+        //只监听停止事件，避免重复刷新
+        //TraceService.ActivityStarted += OnActivityStarted;
         TraceService.ActivityStopped += OnActivityStopped;
 
         _historyPageSize = Math.Max(1, ActivityOptions.Value.Pagination?.ConversationsPageSize ?? 5);
@@ -494,104 +509,116 @@
         // 初始加载数据
         await RefreshDataAsync(showLoading: true);
 
-        // 🎯 启动定时器（2秒刷新一次,降低频率）
+        // 🎯 P0 优化: 移除定时器,改为纯事件驱动模式
+        // 通过 ActivityStarted/Stopped 事件实时刷新,无需轮询
+        /*
         _timer = new System.Threading.Timer(_ =>
         {
-            if (_conversationMode != ConversationDataSourceMode.RealTime)
+            if (_disposed || _conversationMode != ConversationDataSourceMode.RealTime)
             {
                 return;
-            }
+                }
 
             // 🎯 性能优化: 如果用户正在交互,跳过自动刷新
             if (_autoRefresh && !_isUserInteracting && (DateTime.Now - _lastUserInteraction).TotalSeconds > 1)
             {
                 InvokeAsync(() =>
                 {
-                    RefreshRealTimeData(showLoading: false); // 🎯 自动刷新不显示 loading
-                    StateHasChanged();
-                });
-            }
-        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        if (_disposed) return; // 双重检查
+        RefreshRealTimeData(showLoading: false); // 🎯 自动刷新不显示 loading
+        StateHasChanged();
+        });
+                }
+            }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        */
+    }
+
+    /// <summary>
+    /// 仅刷新会话列表（实时模式）
+    /// </summary>
+    private void RefreshConversationList()
+    {
+        _realTimeConversations = TraceService.GetRecentConversationList(MaxRealtimeConversations);
+        _conversations = _realTimeConversations;
+
+        // 如果选中的会话不在列表中，清空选择
+        if (!string.IsNullOrEmpty(_selectedConversationId) &&
+            !_conversations.Any(c => c.ConversationId == _selectedConversationId))
+        {
+            _selectedConversationId = null;
+        }
+    }
+
+    /// <summary>
+    /// 仅刷新活跃调用树（实时模式）
+    /// </summary>
+    private void RefreshActiveRoots()
+    {
+        // 🎯 统一数据源: 始终从 GetActiveTraces 获取实时数据
+        var activeTraces = TraceService.GetActiveTraces().ToList();
+
+        // 🎯 如果选中了特定会话，筛选该会话的trace
+        if (!string.IsNullOrEmpty(_selectedConversationId))
+        {
+            activeTraces = activeTraces
+                .Where(t => t.ConversationId == _selectedConversationId)
+                .ToList();
+        }
+
+        // 过滤App相关的trace
+        var filteredActiveTraces = FilterAppRelatedTraces(activeTraces);
+
+        // 构建树 → 展平 → 应用筛选 → 重新构建树
+        var activeNodes = FlattenTraceNodes(BuildTraceTree(filteredActiveTraces));
+        activeNodes = ApplyFilters(activeNodes);
+
+        _activeRoots = BuildTraceTree(activeNodes)
+            .OrderBy(r => r.StartTime)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 仅刷新已完成调用树（实时模式）
+    /// </summary>
+    private void RefreshCompletedRoots()
+    {
+        var selectedConversationIds = new List<string>();
+
+        if (!string.IsNullOrEmpty(_selectedConversationId))
+        {
+            selectedConversationIds.Add(_selectedConversationId);
+        }
+        else 
+        {
+            selectedConversationIds = _conversations.Select(s => s.ConversationId).Distinct().ToList();
+        }
+        // 🎯 统一数据源: 始终从 GetCompletedTraces 获取最新数据
+        var completedTraces = TraceService.GetTracesByConversations(selectedConversationIds);
+
+        // 过滤App相关的trace
+        //var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces);
+
+        // 构建树 → 展平 → 应用筛选 → 重新构建树
+        var completedNodes = FlattenTraceNodes(completedTraces);
+        completedNodes = ApplyFilters(completedNodes);
+
+        _completedRoots = BuildTraceTree(completedNodes)
+            .OrderByDescending(r => r.StartTime)
+            .ToList();
     }
 
     private async Task RefreshDataAsync(bool showLoading = true)
     {
         if (_conversationMode == ConversationDataSourceMode.History)
         {
-            RefreshRealTimeData(showLoading: false, updateVisibleList: false);
             await RefreshHistoryDataAsync(showLoading);
         }
         else
         {
-            RefreshRealTimeData(showLoading, updateVisibleList: true);
-        }
-    }
-
-    private void RefreshRealTimeData(bool showLoading = true, bool updateVisibleList = true)
-    {
-        if (showLoading)
-        {
-            _isLoading = true;
-            StateHasChanged();
-        }
-
-        try
-        {
-            _realTimeConversations = TraceService.GetConversationList();
-
-            if (!updateVisibleList)
-            {
-                return;
-            }
-
-            _conversations = _realTimeConversations;
-
-            if (!string.IsNullOrEmpty(_selectedConversationId) &&
-                !_conversations.Any(c => c.ConversationId == _selectedConversationId))
-            {
-                _selectedConversationId = null;
-            }
-
-            if (!string.IsNullOrEmpty(_selectedConversationId))
-            {
-                var traceNodes = TraceService.GetTracesByConversation(_selectedConversationId);
-                var allNodes = FlattenTraceNodes(traceNodes);
-
-                var activeNodes = ApplyFilters(allNodes.Where(t => t.Status == "InProgress").ToList());
-                var completedNodes = ApplyFilters(allNodes.Where(t => t.Status != "InProgress").ToList());
-
-                _activeRoots = BuildTraceTree(activeNodes).OrderBy(r => r.StartTime).ToList();
-                _completedRoots = BuildTraceTree(completedNodes).OrderByDescending(r => r.StartTime).ToList();
-            }
-            else
-            {
-                var activeTraces = TraceService.GetActiveTraces();
-                var completedTraces = TraceService.GetCompletedTraces(1000);
-
-                var filteredActiveTraces = FilterAppRelatedTraces(activeTraces.ToList());
-                var filteredCompletedTraces = FilterAppRelatedTraces(completedTraces.ToList());
-
-                var activeNodes = FlattenTraceNodes(BuildTraceTree(filteredActiveTraces));
-                var completedNodes = FlattenTraceNodes(BuildTraceTree(filteredCompletedTraces));
-
-                activeNodes = ApplyFilters(activeNodes);
-                completedNodes = ApplyFilters(completedNodes);
-
-                _activeRoots = BuildTraceTree(activeNodes)
-                    .OrderBy(r => r.StartTime)
-                    .ToList();
-
-                _completedRoots = BuildTraceTree(completedNodes)
-                    .OrderByDescending(r => r.StartTime)
-                    .ToList();
-            }
-        }
-        finally
-        {
-            if (showLoading)
-            {
-                _isLoading = false;
-            }
+            // 🎯 实时模式: 刷新会话列表、活跃树、完成树
+            RefreshConversationList();
+            RefreshActiveRoots();
+            RefreshCompletedRoots();
         }
     }
 
@@ -698,18 +725,21 @@
     }
      
     private async Task OnConversationModeChangedAsync()
-	{ 
+	{
 		_selectedConversationId = null;
 		_selectedActiveNode = null;
 		_selectedCompletedNode = null;
 
 		if (_conversationMode == ConversationDataSourceMode.RealTime)
 		{
-			RefreshRealTimeData(showLoading: true);
+			// 🎯 切换到实时模式: 刷新会话列表、活跃树、完成树
+			RefreshConversationList();
+			RefreshActiveRoots();
+			RefreshCompletedRoots();
 		}
 		else
 		{
-			RefreshRealTimeData(showLoading: false, updateVisibleList: false);
+			// 🎯 切换到历史模式: 只加载历史数据
 			_historyPageIndex = 1;
 			await RefreshHistoryDataAsync(showLoading: true);
 		}
@@ -767,7 +797,9 @@
         }
         else
         {
-            RefreshRealTimeData(showLoading: true);
+            // 🎯 实时模式: 筛选变化时刷新活跃树和完成树（应用新筛选条件）
+            RefreshActiveRoots();
+            RefreshCompletedRoots();
         }
 
         StateHasChanged();
@@ -790,7 +822,7 @@
 
         _selectedConversationId = conversationId;
 
-        // 🎯 先清空选中节点，强制 Blazor 识别变化
+        // 清空选中节点
         _selectedActiveNode = null;
         _selectedCompletedNode = null;
         StateHasChanged();
@@ -801,7 +833,9 @@
         }
         else
         {
-            RefreshRealTimeData(showLoading: true);
+            // 🎯 实时模式: 同时刷新活跃树和完成树（用户主动点击会话）
+            RefreshActiveRoots();
+            RefreshCompletedRoots();
         }
 
         StateHasChanged();
@@ -818,14 +852,13 @@
             return;
         }
 
-        if (!_isUserInteracting)
+        InvokeAsync(() =>
         {
-            InvokeAsync(() =>
-            {
-                RefreshRealTimeData(showLoading: false);
-                StateHasChanged();
-            });
-        }
+            // 🎯 事件触发时实时刷新会话列表和活跃树
+            RefreshConversationList();
+            RefreshActiveRoots();
+            StateHasChanged();
+        });
     }
 
     private void OnActivityStopped(object? sender, TraceNode node)
@@ -835,14 +868,13 @@
             return;
         }
 
-        if (!_isUserInteracting)
+        InvokeAsync(() =>
         {
-            InvokeAsync(() =>
-            {
-                RefreshRealTimeData(showLoading: false);
-                StateHasChanged();
-            });
-        }
+            // 🎯 事件触发时实时刷新会话列表和活跃树
+            RefreshConversationList();
+            RefreshActiveRoots();
+            StateHasChanged();
+        });
     }
 
     // 🎯 应用筛选逻辑
@@ -856,47 +888,7 @@
         if (!string.IsNullOrWhiteSpace(_filterText))
         {
             var searchText = _filterText.Trim().ToLowerInvariant();
-            filtered = filtered.Where(n => 
-                // 基本信息
-                (!string.IsNullOrEmpty(n.AppName) && n.AppName.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.ToolName) && n.ToolName.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.DisplayName) && n.DisplayName.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.OperationName) && n.OperationName.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.McpServerName) && n.McpServerName.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.ModelId) && n.ModelId.ToLowerInvariant().Contains(searchText)) ||
-                
-                // Tool 参数和结果
-                (!string.IsNullOrEmpty(n.ToolArguments) && n.ToolArguments.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.ToolResult) && n.ToolResult.ToLowerInvariant().Contains(searchText)) ||
-                
-                // 消息内容
-                (!string.IsNullOrEmpty(n.OutputContent) && n.OutputContent.ToLowerInvariant().Contains(searchText)) ||
-                (n.InputMessages.Any(m => !string.IsNullOrEmpty(m.Content) && m.Content.ToLowerInvariant().Contains(searchText))) ||
-                
-                // 错误信息
-                (!string.IsNullOrEmpty(n.ErrorType) && n.ErrorType.ToLowerInvariant().Contains(searchText)) ||
-                (!string.IsNullOrEmpty(n.StatusDescription) && n.StatusDescription.ToLowerInvariant().Contains(searchText)) ||
-                
-                // Tags (key 或 value)
-                (n.Tags != null && n.Tags.Any(t => 
-                    t.Key.ToLowerInvariant().Contains(searchText) || 
-                    (!string.IsNullOrEmpty(t.Value) && t.Value.ToLowerInvariant().Contains(searchText))
-                )) ||
-                
-                // Events (name 或 tags)
-                (n.Events != null && n.Events.Any(e => 
-                    e.Name.ToLowerInvariant().Contains(searchText) ||
-                    e.Tags.Any(et => 
-                        et.Key.ToLowerInvariant().Contains(searchText) || 
-                        (!string.IsNullOrEmpty(et.Value) && et.Value.ToLowerInvariant().Contains(searchText))
-                    )
-                )) ||
-                
-                // ID 相关
-                n.TraceId.ToLowerInvariant().Contains(searchText) ||
-                n.SpanId.ToLowerInvariant().Contains(searchText) ||
-                n.ActivityId.ToLowerInvariant().Contains(searchText)
-            );
+            filtered = filtered.Where(n => MatchesSearchText(n, searchText));
         }
         
         // 状态筛选
@@ -934,7 +926,67 @@
         
         return filtered.ToList();
     }
-    
+
+    // 🎯 文本匹配优化: 提前终止,按优先级检查
+    private bool MatchesSearchText(TraceNode n, string searchText)
+    {
+        // 高频字段 - 快速检查
+        if (!string.IsNullOrEmpty(n.AppName) && n.AppName.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.ToolName) && n.ToolName.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.DisplayName) && n.DisplayName.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.OperationName) && n.OperationName.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.McpServerName) && n.McpServerName.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.ModelId) && n.ModelId.ToLowerInvariant().Contains(searchText))
+            return true;
+
+        // Tool 相关
+        if (!string.IsNullOrEmpty(n.ToolArguments) && n.ToolArguments.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.ToolResult) && n.ToolResult.ToLowerInvariant().Contains(searchText))
+            return true;
+
+        // 消息内容
+        if (!string.IsNullOrEmpty(n.OutputContent) && n.OutputContent.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (n.InputMessages.Any(m => !string.IsNullOrEmpty(m.Content) && m.Content.ToLowerInvariant().Contains(searchText)))
+            return true;
+
+        // 错误信息
+        if (!string.IsNullOrEmpty(n.ErrorType) && n.ErrorType.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (!string.IsNullOrEmpty(n.StatusDescription) && n.StatusDescription.ToLowerInvariant().Contains(searchText))
+            return true;
+
+        // Tags - 较慢的操作
+        if (n.Tags != null && n.Tags.Any(t =>
+            t.Key.ToLowerInvariant().Contains(searchText) ||
+            (!string.IsNullOrEmpty(t.Value) && t.Value.ToLowerInvariant().Contains(searchText))))
+            return true;
+
+        // Events - 最慢的操作
+        if (n.Events != null && n.Events.Any(e =>
+            e.Name.ToLowerInvariant().Contains(searchText) ||
+            e.Tags.Any(et =>
+                et.Key.ToLowerInvariant().Contains(searchText) ||
+                (!string.IsNullOrEmpty(et.Value) && et.Value.ToLowerInvariant().Contains(searchText)))))
+            return true;
+
+        // ID 相关
+        if (n.TraceId.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (n.SpanId.ToLowerInvariant().Contains(searchText))
+            return true;
+        if (n.ActivityId.ToLowerInvariant().Contains(searchText))
+            return true;
+
+        return false;
+    }
+
     private List<TraceNode> BuildTraceTree(List<TraceNode> nodes)
     {
         if (!nodes.Any()) return new List<TraceNode>();
@@ -1192,12 +1244,6 @@
             _isUserInteracting = true;
             _lastUserInteraction = DateTime.Now;
 
-            // 🎯 先清空选中节点，强制 Blazor 识别变化
-            _selectedActiveNode = null;
-            StateHasChanged();
-
-            // 🎯 短暂延迟后设置新节点，确保 UI 完全刷新
-            await Task.Yield();
             _selectedActiveNode = args.Node.DataItem;
             StateHasChanged();
 
@@ -1216,12 +1262,6 @@
             _isUserInteracting = true;
             _lastUserInteraction = DateTime.Now;
 
-            // 🎯 先清空选中节点，强制 Blazor 识别变化
-            _selectedCompletedNode = null;
-            StateHasChanged();
-
-            // 🎯 短暂延迟后设置新节点，确保 UI 完全刷新
-            await Task.Yield();
             _selectedCompletedNode = args.Node.DataItem;
             StateHasChanged();
 
@@ -1570,9 +1610,22 @@
 
     public void Dispose()
     {
+        // 🎯 P0 优化: 移除定时器处理
+        /*
+        _disposed = true;
+
+        // 先停止timer
+        if (_timer != null)
+        {
+            _timer.Change(Timeout.Infinite, Timeout.Infinite);
+            _timer.Dispose();
+            _timer = null;
+        }
+        */
+
+        // 取消事件订阅
         TraceService.ActivityStarted -= OnActivityStarted;
         TraceService.ActivityStopped -= OnActivityStopped;
-        _timer?.Dispose();
     }
 }
 

@@ -23,7 +23,7 @@ public class ActivityTraceService : IDisposable
     private readonly ConcurrentQueue<TraceNode> _completedTraces = new();
     private readonly ConcurrentDictionary<string, Activity> _activeActivities = new();  // 🎯 缓存真实的 Activity 对象
     private ActivityListener? _activityListener;
-    private const int MaxCompletedTraces = 100000; // 保留最近 100000 条完成的追踪
+    private const int MaxCompletedTraces = 40000; // 保留最近 40000 条完成的追踪
     
     // 🎯 HybridCache 键名常量
     private const string CacheKeyCompletedTraces = "ActivityTrace:CompletedTraces";
@@ -1156,6 +1156,18 @@ public class ActivityTraceService : IDisposable
         return conversations;
     }
 
+    /// <summary>
+    /// 获取最新的N条会话列表（用于实时模式限制数据量）
+    /// </summary>
+    /// <param name="maxCount">最大返回数量，默认100</param>
+    /// <returns>按最后请求时间倒序排列的会话列表</returns>
+    public List<ConversationInfo> GetRecentConversationList(int maxCount = 100)
+    {
+        return GetConversationList()
+            .Take(maxCount)
+            .ToList();
+    }
+
     public async Task<(IReadOnlyList<ConversationInfo> Items, int TotalCount)> GetHistoricalConversationsAsync(
         int pageIndex,
         int pageSize,
@@ -1210,6 +1222,74 @@ public class ActivityTraceService : IDisposable
 
         // 🎯 第二步: 提取所有相关的 TraceId
         var relatedTraceIds = activitiesWithConversationId
+            .Select(t => t.TraceId)
+            .Distinct()
+            .ToHashSet();
+
+        // 🎯 第三步: 查询所有这些 TraceId 下的 Activity (包括没有 ConversationId 的工具调用)
+        var allRelatedTraces = allTraces
+            .Where(t => relatedTraceIds.Contains(t.TraceId))
+            .ToList();
+
+        // 🎯 第四步: 按 TraceId 分组，构建多个调用树
+        var traceGroups = allRelatedTraces.GroupBy(t => t.TraceId);
+        var allRootNodes = new List<TraceNode>();
+
+        foreach (var group in traceGroups)
+        {
+            var nodeDict = group.ToDictionary(n => n.SpanId);
+            
+            foreach (var node in group)
+            {
+                if (node.ParentSpanId == "0000000000000000" || !nodeDict.ContainsKey(node.ParentSpanId))
+                {
+                    allRootNodes.Add(node);
+                }
+                else
+                {
+                    var parent = nodeDict[node.ParentSpanId];
+                    if (!parent.Children.Contains(node))
+                    {
+                        parent.Children.Add(node);
+                    }
+                }
+            }
+        }
+
+        return allRootNodes.OrderByDescending(n => n.StartTime).ToList();
+    }
+
+
+    /// <summary>
+    /// 批量查询多个会话的调用树（性能优化版本）
+    /// </summary>
+    /// <param name="conversationIds">会话ID列表</param>
+    /// <returns>所有会话的调用树根节点列表</returns>
+    public List<TraceNode> GetTracesByConversations(List<string> conversationIds)
+    {
+        if (conversationIds == null || !conversationIds.Any())
+        {
+            return new List<TraceNode>();
+        }
+
+        var allTraces = _completedTraces
+            .Concat(_activeTraces.Values)
+            .ToList();
+
+        // 🎯 第一步: 找到所有包含这些 ConversationId 的 Activity
+        var conversationIdSet = conversationIds.ToHashSet();
+        var activitiesWithConversationIds = allTraces
+            .Where(t => !string.IsNullOrEmpty(t.ConversationId) && conversationIdSet.Contains(t.ConversationId))
+            .ToList();
+
+        if (!activitiesWithConversationIds.Any())
+        {
+            _logger.LogInformation("未找到任何指定的 ConversationId 的 Activity");
+            return new List<TraceNode>();
+        }
+
+        // 🎯 第二步: 提取所有相关的 TraceId
+        var relatedTraceIds = activitiesWithConversationIds
             .Select(t => t.TraceId)
             .Distinct()
             .ToHashSet();
