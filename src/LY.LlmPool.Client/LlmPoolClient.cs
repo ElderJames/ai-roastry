@@ -60,7 +60,7 @@ internal class ParameterInjectionHandler : DelegatingHandler
 
         // 调用下一个处理器或发送请求
         var response = await base.SendAsync(request, cancellationToken);
-        
+
         // 🎯 从响应头中提取 ConversationId
         if (response.Headers.TryGetValues("X-Conversation-Id", out var conversationIdValues))
         {
@@ -70,7 +70,7 @@ internal class ParameterInjectionHandler : DelegatingHandler
                 _onConversationIdReceived?.Invoke(conversationId);
             }
         }
-        
+
         return response;
     }
 
@@ -105,7 +105,7 @@ public class LlmPoolClient : ILlmPoolClient
     private readonly string _apiKey;
     private readonly Action<ChatOptions>? _configureOptionsPerRequest;
     private string? _conversationId;
-    
+
     public LlmPoolClient(string baseUrl, string apiKey)
         : this(new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"), Timeout = TimeSpan.FromMinutes(10) }, apiKey, null, null)
     {
@@ -151,33 +151,42 @@ public class LlmPoolClient : ILlmPoolClient
         ChatOptions? options,
         Dictionary<string, object>? parameters)
     {
+        // 如果传入了 options，使用它（它已经是 ChatOptions，继承自 Microsoft.Extensions.AI.ChatOptions）
+        // 否则创建默认的
+        var chatOptions = options ?? new ChatOptions();
+
+        // 🎯 应用用户自定义的 options 配置委托（如果有）
+        if (_configureOptionsPerRequest != null)
+        {
+            _configureOptionsPerRequest(chatOptions);
+        }
         // 🎯 ConversationId 优先级: options.ConversationId > this.ConversationId > null (从响应提取)
-        string? effectiveConversationId = options?.ConversationId ?? _conversationId;
-        
+        string? effectiveConversationId = chatOptions?.ConversationId ?? _conversationId;
+
         HttpClient httpClient;
 
         // 🎯 只在真正需要参数注入或 ConversationId 提取时才创建新的 handler 链
         bool needsParameterInjection = parameters?.Count > 0;
         bool needsConversationIdExtraction = string.IsNullOrEmpty(effectiveConversationId);
         bool needsCustomHeaders = !string.IsNullOrEmpty(effectiveConversationId);
-        
+
         if (needsParameterInjection || needsConversationIdExtraction || needsCustomHeaders)
         {
             // 🎯 使用依赖注入的 customHandler（如果有），否则创建新的 HttpClientHandler
             HttpMessageHandler innerHandler = _customHandler ?? new HttpClientHandler();
-            
+
             HttpMessageHandler finalHandler = innerHandler;
-            
+
             // 🎯 只在需要参数注入或 ConversationId 提取时才包装 ParameterInjectionHandler
             if (needsParameterInjection || needsConversationIdExtraction)
             {
                 finalHandler = new ParameterInjectionHandler(
-                    parameters, 
-                    onConversationIdReceived: (convId) => 
+                    parameters,
+                    onConversationIdReceived: (convId) =>
                     {
                         // 🎯 从响应中接收到 ConversationId 后，更新客户端的 ConversationId
                         // 但不覆盖 options 中显式设置的值
-                        if (string.IsNullOrEmpty(options?.ConversationId))
+                        if (string.IsNullOrEmpty(chatOptions?.ConversationId))
                         {
                             _conversationId = convId;
                         }
@@ -198,7 +207,7 @@ public class LlmPoolClient : ILlmPoolClient
             {
                 httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
             }
-            
+
             // 🎯 如果有 effectiveConversationId，添加到请求头
             if (!string.IsNullOrEmpty(effectiveConversationId))
             {
@@ -281,26 +290,18 @@ public class LlmPoolClient : ILlmPoolClient
                 .Build();
         }
 
-        // 如果传入了 options，使用它（它已经是 ChatOptions，继承自 Microsoft.Extensions.AI.ChatOptions）
-        // 否则创建默认的
-        var chatOptions = options ?? new ChatOptions();
-        
+
+
         // 确保 Tools 被设置
         if (tools.Count > 0 && chatOptions.Tools == null)
         {
             chatOptions.Tools = tools;
         }
-        
+
         // 🎯 确保 ConversationId 被设置到 options 中（使用优先级后的值）
         if (!string.IsNullOrEmpty(effectiveConversationId))
         {
             chatOptions.ConversationId = effectiveConversationId;
-        }
-
-        // 🎯 应用用户自定义的 options 配置委托（如果有）
-        if (_configureOptionsPerRequest != null)
-        {
-            _configureOptionsPerRequest(chatOptions);
         }
 
         return (chatClient, chatOptions);
