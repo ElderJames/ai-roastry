@@ -163,7 +163,7 @@ public class AppService
         existing.Description = app.Description;
         existing.AppType = app.AppType;
         existing.OrchestrationMode = app.OrchestrationMode;
-        existing.PromptId = app.PromptId;
+        existing.LlmPromptId = app.LlmPromptId;
         existing.LlmConfigId = app.LlmConfigId;
         existing.EndpointId = app.EndpointId;
         existing.IsEnabled = app.IsEnabled;

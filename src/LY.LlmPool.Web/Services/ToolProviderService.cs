@@ -173,12 +173,12 @@ public class ToolProviderService
         _logger.LogInformation("App ID: {AppId}, Name: {AppName}, Type: {AppType}", app.Id, app.Name, app.AppType);
 
         // 如果 App 有关联的 Prompt，从 Prompt 的 PromptTools 加载工具
-        if (!string.IsNullOrEmpty(app.PromptId))
+        if (!string.IsNullOrEmpty(app.LlmPromptId))
         {
             using var scope = _serviceProvider.CreateScope();
             var promptService = scope.ServiceProvider.GetRequiredService<PromptService>();
             
-            var prompt = await promptService.GetPromptByIdAsync(app.PromptId);
+            var prompt = await promptService.GetPromptByIdAsync(app.LlmPromptId);
             if (prompt != null)
             {
                 _logger.LogInformation("App {AppName} has associated Prompt {PromptId}, loading tools from PromptTools", 
@@ -201,7 +201,7 @@ public class ToolProviderService
             else
             {
                 _logger.LogWarning("App {AppId} references Prompt {PromptId} but Prompt not found", 
-                    app.Id, app.PromptId);
+                    app.Id, app.LlmPromptId);
             }
         }
         else
@@ -305,19 +305,19 @@ public class ToolProviderService
 
         // 获取 App 的 Prompt 和配置
         // Tool App 应该有一个绑定的 Prompt，从中获取配置
-        if (string.IsNullOrEmpty(app.PromptId))
+        if (string.IsNullOrEmpty(app.LlmPromptId))
         {
             _logger.LogWarning("Tool App {AppName} has no Prompt binding", app.Name);
             return null;
         }
 
         var promptService = scope.ServiceProvider.GetRequiredService<PromptService>();
-        var toolPrompt = await promptService.GetPromptByIdAsync(app.PromptId);
+        var toolPrompt = await promptService.GetPromptByIdAsync(app.LlmPromptId);
         
         if (toolPrompt == null)
         {
             _logger.LogWarning("Tool App {AppName} references non-existent Prompt {PromptId}", 
-                app.Name, app.PromptId);
+                app.Name, app.LlmPromptId);
             return null;
         }
 

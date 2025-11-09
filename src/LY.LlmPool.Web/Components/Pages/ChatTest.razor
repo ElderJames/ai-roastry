@@ -50,9 +50,9 @@
                                             {
                                                 <div>描述: @app.Description</div>
                                             }
-                                            @if (!string.IsNullOrEmpty(app.PromptId))
+                                            @if (!string.IsNullOrEmpty(app.LlmPromptId))
                                             {
-                                                <div>Prompt: @app.Prompt?.Name</div>
+                                                <div>Prompt: @app.LlmPrompt?.Name</div>
                                             }
                                         </Body>
                                     </Card>
@@ -252,7 +252,7 @@
         _configSourceLabel = null;
         _configWarning = null;
 
-        systemPrompt = app.Prompt?.Content ?? string.Empty;
+        systemPrompt = app.LlmPrompt?.Content ?? string.Empty;
         if (!string.IsNullOrEmpty(systemPrompt))
         {
             var service = new PromptParameterService();

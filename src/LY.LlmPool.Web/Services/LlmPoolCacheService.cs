@@ -25,7 +25,7 @@ public class LlmPoolCacheService
     private const string AppListPrefix = "LlmPool:AppList:";
     private const string EndpointListPrefix = "LlmPool:EndpointList:";
     private const string ConfigListPrefix = "LlmPool:ConfigList:";
-    
+
     // LoadBalancer 缓存键前缀
     private const string LoadBalancerCacheKeyPrefix = "lb:model:";
     private static readonly TimeSpan LoadBalancerCacheExpiration = TimeSpan.FromMinutes(5);
@@ -35,7 +35,7 @@ public class LlmPoolCacheService
     private static readonly TimeSpan LocalCacheExpiration = TimeSpan.FromMinutes(5);
 
     public LlmPoolCacheService(
-        HybridCache cache, 
+        HybridCache cache,
         ILogger<LlmPoolCacheService> logger,
         IServiceProvider serviceProvider,
         IDbContextFactory<LlmDbContext> dbContextFactory) // 🎯 注入 DbContextFactory
@@ -329,7 +329,7 @@ public class LlmPoolCacheService
             await InvalidateModelCacheAsync(oldName, cancellationToken);
             _logger.LogInformation("🔄 已清除 App 旧名称的模型缓存: lb:model:{OldName}", oldName);
         }
-        
+
         // 1. 获取 App 的模型名称和类型
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var app = await dbContext.Apps.AsNoTracking().FirstOrDefaultAsync(a => a.Id == appId, cancellationToken);
@@ -338,7 +338,7 @@ public class LlmPoolCacheService
             // 清除模型负载均衡缓存
             await InvalidateModelCacheAsync(app.Name, cancellationToken);
             _logger.LogInformation("🔄 已清除 App {AppId} 的模型缓存: lb:model:{ModelName}", appId, app.Name);
-            
+
             // 🎯 如果是 Tool 类型，同步刷新工具元数据缓存
             if (app.AppType == "Tool")
             {
@@ -348,7 +348,7 @@ public class LlmPoolCacheService
                 _logger.LogInformation("🔄 已刷新 Tool App {AppId} ({AppName}) 的工具元数据", appId, app.Name);
             }
         }
-        
+
         // 2. 清除 App 相关缓存
         await RemoveAppAsync(appId, cancellationToken);
         await RemoveAllAppsAsync(cancellationToken);
@@ -362,19 +362,19 @@ public class LlmPoolCacheService
     public async Task InvalidateConfigRelatedCachesAsync(string configId, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("🔄 开始失效 Config {ConfigId} 相关的所有缓存...", configId);
-        
+
         await using (var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
             // 获取 Config 信息
             var config = await dbContext.Configs.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == configId, cancellationToken);
-            
+
             if (config != null)
             {
                 // 清除 Config 自身的模型缓存
                 await InvalidateModelCacheAsync(config.Name, cancellationToken);
                 _logger.LogInformation("🔄 已清除 Config {ConfigId} 的模型缓存: lb:model:{ModelName}", configId, config.Name);
-                
+
                 // 🎯 1. 查找所有使用此 Config 的 Endpoint（通过 EndpointConfig）
                 var relatedEndpoints = await dbContext.EndpointConfigs
                     .Where(ec => ec.LlmConfigId == configId && ec.Endpoint != null)
@@ -386,13 +386,13 @@ public class LlmPoolCacheService
                 if (relatedEndpoints.Any())
                 {
                     _logger.LogInformation("🔄 Config {ConfigId} 影响了 {Count} 个 Endpoint", configId, relatedEndpoints.Count);
-                    
+
                     foreach (var endpoint in relatedEndpoints)
                     {
                         // 刷新 Endpoint 的缓存（Name 和 Id）
                         await RefreshModelCacheAsync(endpoint.Name!, cancellationToken);
                         await RefreshModelCacheAsync(endpoint.Id!, cancellationToken);
-                        
+
                         // 刷新绑定了该 Endpoint 的所有 App 的缓存
                         var endpointApps = await dbContext.Apps
                             .Where(a => a.EndpointId == endpoint.Id)
@@ -405,7 +405,7 @@ public class LlmPoolCacheService
                             {
                                 await InvalidateModelCacheAsync(app.Name!, cancellationToken);
                                 await RemoveAppAsync(app.Id!, cancellationToken);
-                                
+
                                 // 如果是 Tool 类型，刷新工具元数据
                                 if (app.AppType == "Tool")
                                 {
@@ -427,14 +427,14 @@ public class LlmPoolCacheService
                 if (directApps.Any())
                 {
                     _logger.LogInformation("🔄 Config {ConfigId} 直接影响了 {Count} 个 App", configId, directApps.Count);
-                    
+
                     foreach (var app in directApps)
                     {
                         if (!string.IsNullOrEmpty(app.Id))
                         {
                             await InvalidateModelCacheAsync(app.Name!, cancellationToken);
                             await RemoveAppAsync(app.Id!, cancellationToken);
-                            
+
                             // 如果是 Tool 类型，刷新工具元数据
                             if (app.AppType == "Tool")
                             {
@@ -447,15 +447,15 @@ public class LlmPoolCacheService
                 }
             }
         }
-        
+
         // 清除 Config 自身的缓存
         await RemoveConfigAsync(configId, cancellationToken);
-        
+
         // 清除所有列表缓存
         await RemoveAllConfigsAsync(cancellationToken);
         await RemoveAllAppsAsync(cancellationToken);
         await RemoveAllEndpointsAsync(cancellationToken);
-        
+
         _logger.LogInformation("✅ 已失效 Config {ConfigId} 相关的所有缓存（包括关联的 Endpoint 和 App）", configId);
     }
 
@@ -479,7 +479,7 @@ public class LlmPoolCacheService
             await InvalidateModelCacheAsync(oldName, cancellationToken);
             _logger.LogInformation("🔄 已清除 Endpoint 旧名称的模型缓存: lb:model:{OldName}", oldName);
         }
-        
+
         // 1. 获取 Endpoint 和所有使用该 Endpoint 的 App，清除模型缓存
         await using (var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
@@ -491,10 +491,10 @@ public class LlmPoolCacheService
                 await InvalidateModelCacheAsync(endpoint.Name, cancellationToken);
                 // 🎯 同时清除 ID 映射的缓存
                 await InvalidateModelCacheAsync(endpoint.Id, cancellationToken);
-                _logger.LogInformation("🔄 已清除 Endpoint {EndpointId} 的模型缓存: lb:model:{ModelName}, lb:model:{EndpointId}", 
+                _logger.LogInformation("🔄 已清除 Endpoint {EndpointId} 的模型缓存: lb:model:{ModelName}, lb:model:{EndpointId}",
                     endpointId, endpoint.Name, endpoint.Id);
             }
-            
+
             // 清除所有使用该 Endpoint 的 App 的模型缓存
             var appsUsingEndpoint = await dbContext.Apps.AsNoTracking()
                 .Where(a => a.EndpointId == endpointId)
@@ -502,11 +502,11 @@ public class LlmPoolCacheService
             foreach (var app in appsUsingEndpoint)
             {
                 await InvalidateModelCacheAsync(app.Name, cancellationToken);
-                _logger.LogInformation("🔄 已清除使用 Endpoint {EndpointId} 的 App {AppId} 的模型缓存: lb:model:{ModelName}", 
+                _logger.LogInformation("🔄 已清除使用 Endpoint {EndpointId} 的 App {AppId} 的模型缓存: lb:model:{ModelName}",
                     endpointId, app.Id, app.Name);
             }
         }
-        
+
         // 2. 清除 Endpoint 相关缓存
         await RemoveEndpointAsync(endpointId, cancellationToken);
         await RemoveAllEndpointsAsync(cancellationToken);
@@ -545,6 +545,8 @@ public class LlmPoolCacheService
 
             // 1. 预热所有启用的 App
             var apps = await dbContext.Apps
+                .AsNoTracking()
+                .Include(a => a.LlmPrompt)
                 .Include(a => a.LlmConfig)
                 .Include(a => a.Endpoint)
                     .ThenInclude(e => e!.EndpointConfigs)
@@ -558,7 +560,7 @@ public class LlmPoolCacheService
                 {
                     // 直接解析 App 的配置（优先使用直接指定的 Config，否则用 Endpoint）
                     ConfigSelectionResult? result = null;
-                    
+
                     if (!string.IsNullOrEmpty(app.LlmConfigId) && app.LlmConfig != null && app.LlmConfig.IsEnabled)
                     {
                         result = new ConfigSelectionResult
@@ -579,7 +581,7 @@ public class LlmPoolCacheService
                             .OrderBy(ec => ec.Priority)
                             .Select(ec => ec.LlmConfig!)
                             .ToList();
-                        
+
                         if (availableConfigsList.Any())
                         {
                             result = new ConfigSelectionResult
@@ -592,12 +594,12 @@ public class LlmPoolCacheService
                                 NeedsRelease = false,
                                 Message = $"App '{app.Name}' 的 Endpoint '{app.Endpoint.Name}' 有 {availableConfigsList.Count} 个可用配置"
                             };
-                            
+
                             _logger.LogDebug("App '{AppName}' 的 Endpoint '{EndpointName}' -> {Count} 个配置",
                                 app.Name, app.Endpoint.Name, availableConfigsList.Count);
                         }
                     }
-                    
+
                     if (result != null)
                     {
                         var cacheKey = $"{LoadBalancerCacheKeyPrefix}{app.Name}";
@@ -632,7 +634,7 @@ public class LlmPoolCacheService
                         NeedsRelease = false,
                         Message = $"直接使用配置: {config.Name}"
                     };
-                    
+
                     await _cache.SetAsync($"{LoadBalancerCacheKeyPrefix}{config.Name}", result, new HybridCacheEntryOptions { Expiration = LoadBalancerCacheExpiration }, cancellationToken: cancellationToken);
                     _logger.LogDebug("✅ 预热 Config: {ConfigName}", config.Name);
                 }
@@ -659,7 +661,7 @@ public class LlmPoolCacheService
                         .OrderBy(ec => ec.Priority)
                         .Select(ec => ec.LlmConfig!)
                         .ToList();
-                    
+
                     if (availableConfigs.Any())
                     {
                         // 🎯 缓存时保存所有可用配置,使用时再进行负载均衡选择
@@ -672,11 +674,11 @@ public class LlmPoolCacheService
                             NeedsRelease = false,
                             Message = $"Endpoint '{endpoint.Name}' 有 {availableConfigs.Count} 个可用配置"
                         };
-                        
+
                         // 缓存名称映射
                         await _cache.SetAsync($"{LoadBalancerCacheKeyPrefix}{endpoint.Name}", result, new HybridCacheEntryOptions { Expiration = LoadBalancerCacheExpiration }, cancellationToken: cancellationToken);
                         _logger.LogDebug("✅ 预热 Endpoint (Name): {EndpointName} -> {Count} 个配置", endpoint.Name, availableConfigs.Count);
-                        
+
                         // 缓存 ID 映射
                         await _cache.SetAsync($"{LoadBalancerCacheKeyPrefix}{endpoint.Id}", result, new HybridCacheEntryOptions { Expiration = LoadBalancerCacheExpiration }, cancellationToken: cancellationToken);
                         _logger.LogDebug("✅ 预热 Endpoint (ID): {EndpointId} -> {Count} 个配置", endpoint.Id, availableConfigs.Count);
@@ -751,7 +753,7 @@ public class LlmPoolCacheService
                     .ThenInclude(e => e!.EndpointConfigs)
                     .ThenInclude(ec => ec.LlmConfig)
                 .FirstOrDefaultAsync(a => a.Name == modelName && a.IsEnabled, cancellationToken);
-            
+
             if (app != null)
             {
                 // 🎯 特殊处理 AgentGroup 类型
@@ -771,7 +773,7 @@ public class LlmPoolCacheService
                         Message = $"AgentGroup 应用: {app.Name}"
                     };
                 }
-                
+
                 // 优先使用 App 直接指定的 Config
                 if (!string.IsNullOrEmpty(app.LlmConfigId) && app.LlmConfig != null && app.LlmConfig.IsEnabled)
                 {
@@ -788,7 +790,7 @@ public class LlmPoolCacheService
                         Message = $"使用 App '{app.Name}' 直接指定的配置: {app.LlmConfig.Name}"
                     };
                 }
-                
+
                 // 否则使用 App 的 Endpoint
                 if (!string.IsNullOrEmpty(app.EndpointId) && app.Endpoint != null && app.Endpoint.IsEnabled)
                 {
@@ -798,10 +800,10 @@ public class LlmPoolCacheService
                         .OrderBy(ec => ec.Priority)
                         .Select(ec => ec.LlmConfig!)
                         .ToList();
-                    
+
                     if (availableConfigsList.Any())
                     {
-                        _logger.LogDebug("找到 App: {AppName} -> Endpoint: {EndpointName} -> {Count} 个配置", 
+                        _logger.LogDebug("找到 App: {AppName} -> Endpoint: {EndpointName} -> {Count} 个配置",
                             app.Name, app.Endpoint.Name, availableConfigsList.Count);
                         return new ConfigSelectionResult
                         {
@@ -820,7 +822,7 @@ public class LlmPoolCacheService
                         };
                     }
                 }
-                
+
                 _logger.LogWarning("App '{AppName}' 没有可用的配置或 Endpoint", app.Name);
                 return null;
             }
@@ -829,7 +831,7 @@ public class LlmPoolCacheService
             var config = await dbContext.Configs
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Name == modelName && c.IsEnabled, cancellationToken);
-            
+
             if (config != null)
             {
                 _logger.LogDebug("找到 Config: {ConfigName}（直接使用，无需负载均衡）", config.Name);
@@ -849,7 +851,7 @@ public class LlmPoolCacheService
                 .Include(e => e.EndpointConfigs)
                 .ThenInclude(ec => ec.LlmConfig)
                 .FirstOrDefaultAsync(e => e.Name == modelName && e.IsEnabled, cancellationToken);
-            
+
             if (endpointByName != null)
             {
                 var availableConfigs = endpointByName.EndpointConfigs
@@ -857,7 +859,7 @@ public class LlmPoolCacheService
                     .OrderBy(ec => ec.Priority)
                     .Select(ec => ec.LlmConfig!)
                     .ToList();
-                
+
                 if (availableConfigs.Any())
                 {
                     _logger.LogDebug("找到 Endpoint: {EndpointName} -> {Count} 个可用配置", endpointByName.Name, availableConfigs.Count);
@@ -882,7 +884,7 @@ public class LlmPoolCacheService
                 .Include(e => e.EndpointConfigs)
                 .ThenInclude(ec => ec.LlmConfig)
                 .FirstOrDefaultAsync(e => e.Id == modelName && e.IsEnabled, cancellationToken);
-            
+
             if (endpointById != null)
             {
                 var availableConfigs = endpointById.EndpointConfigs
@@ -890,7 +892,7 @@ public class LlmPoolCacheService
                     .OrderBy(ec => ec.Priority)
                     .Select(ec => ec.LlmConfig!)
                     .ToList();
-                
+
                 if (availableConfigs.Any())
                 {
                     _logger.LogDebug("找到 Endpoint ID: {EndpointId} -> {Count} 个可用配置", endpointById.Id, availableConfigs.Count);
@@ -927,10 +929,10 @@ public class LlmPoolCacheService
     public async Task RefreshModelCacheAsync(string modelName, CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("🔄 刷新模型缓存: {ModelName}", modelName);
-        
+
         // 先清除旧缓存
         await InvalidateModelCacheAsync(modelName, cancellationToken);
-        
+
         // 重新解析并缓存（ResolveModelNameAsync 会自动缓存结果）
         var result = await ResolveModelNameAsync(modelName, cancellationToken);
         if (result != null && result.Success)
@@ -962,7 +964,7 @@ public class LlmPoolCacheService
         try
         {
             await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-            
+
             // 检查 App 名称冲突
             if (entityType != "App")
             {
@@ -980,7 +982,7 @@ public class LlmPoolCacheService
                     return $"App 名称 '{name}' 已被其他 App 使用，请使用不同的名称。";
                 }
             }
-            
+
             // 检查 Config 名称冲突
             if (entityType != "Config")
             {
@@ -998,7 +1000,7 @@ public class LlmPoolCacheService
                     return $"Config 名称 '{name}' 已被其他 Config 使用，请使用不同的名称。";
                 }
             }
-            
+
             // 检查 Endpoint 名称冲突
             if (entityType != "Endpoint")
             {
@@ -1016,7 +1018,7 @@ public class LlmPoolCacheService
                     return $"Endpoint 名称 '{name}' 已被其他 Endpoint 使用，请使用不同的名称。";
                 }
             }
-            
+
             return null; // 名称唯一
         }
         catch (Exception ex)

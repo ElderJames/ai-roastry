@@ -33,20 +33,6 @@ namespace LY.LlmPool.Web.Data.Entities
         public string? LlmPromptId { get; set; }
         public virtual LlmPrompt? LlmPrompt { get; set; }
 
-        // Backward-compatible aliases for UI code
-        [NotMapped]
-        public string? PromptId
-        {
-            get => LlmPromptId;
-            set => LlmPromptId = value;
-        }
-
-        [NotMapped]
-        public LlmPrompt? Prompt
-        {
-            get => LlmPrompt;
-        }
-
         [Column("llm_config_id")]
         public string? LlmConfigId { get; set; }
         public virtual LlmConfig? LlmConfig { get; set; }

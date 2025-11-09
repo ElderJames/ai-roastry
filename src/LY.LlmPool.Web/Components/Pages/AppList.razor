@@ -53,7 +53,7 @@
             </PropertyColumn>
             <PropertyColumn Property="c=>c.Description" Title="Description" />
             <Column Title="Prompt" TData="string">
-                @if (!string.IsNullOrEmpty(context.PromptId)) { <Tag>@context.Prompt?.Name</Tag> }
+                @if (!string.IsNullOrEmpty(context.LlmPromptId)) { <Tag>@context.LlmPrompt?.Name</Tag> }
                 else { <span class="text-muted">Not Set</span> }
             </Column>
             <Column Title="Configuration" TData="string">
@@ -127,7 +127,7 @@
         <Row Gutter="16">
             <AntDesign.Col Span="12">
                 <FormItem Label="Prompt">
-                    <Select TItemValue="string" TItem="LlmPrompt" @bind-Value="_editingApp.PromptId" ValueName="Id" LabelName="Name" Placeholder="Select a prompt (optional)" AllowClear="true" DataSource="_prompts" />
+                    <Select TItemValue="string" TItem="LlmPrompt" @bind-Value="_editingApp.LlmPromptId" ValueName="Id" LabelName="Name" Placeholder="Select a prompt (optional)" AllowClear="true" DataSource="_prompts" />
                 </FormItem>
             </AntDesign.Col>
             <AntDesign.Col Span="12">
@@ -223,7 +223,7 @@
     private void AddNewApp()
     {
         _isEditing = false;
-        _editingApp = new LlmApp { AppType = LlmAppTypes.Prompt, IsEnabled = true, PromptId = string.Empty, LlmConfigId = string.Empty, EndpointId = string.Empty };
+        _editingApp = new LlmApp { AppType = LlmAppTypes.Prompt, IsEnabled = true, LlmPromptId = string.Empty, LlmConfigId = string.Empty, EndpointId = string.Empty };
         _configType = "model";
         _selectedConfigInfo = null;
         _showEditModal = true;
@@ -236,7 +236,7 @@
         {
             AppType = LlmAppTypes.AgentGroup,
             IsEnabled = true,
-            PromptId = string.Empty,
+            LlmPromptId = string.Empty,
             LlmConfigId = string.Empty,
             EndpointId = string.Empty
         };
@@ -250,7 +250,7 @@
     private async Task EditApp(LlmApp app)
     {
         _isEditing = true;
-        _editingApp = new LlmApp { Id = app.Id, Name = app.Name, Description = app.Description, AppType = app.AppType, PromptId = app.PromptId ?? string.Empty, LlmConfigId = app.LlmConfigId ?? string.Empty, EndpointId = app.EndpointId ?? string.Empty, IsEnabled = app.IsEnabled, ConfigJson = app.ConfigJson };
+        _editingApp = new LlmApp { Id = app.Id, Name = app.Name, Description = app.Description, AppType = app.AppType, LlmPromptId = app.LlmPromptId ?? string.Empty, LlmConfigId = app.LlmConfigId ?? string.Empty, EndpointId = app.EndpointId ?? string.Empty, IsEnabled = app.IsEnabled, ConfigJson = app.ConfigJson };
         if (!string.IsNullOrEmpty(_editingApp.LlmConfigId)) { _configType = "model"; OnModelConfigChanged(); }
         else if (!string.IsNullOrEmpty(_editingApp.EndpointId)) { _configType = "endpoint"; OnEndpointConfigChanged(); }
         if (_editingApp.AppType == LlmAppTypes.AgentGroup) { _members = await AppService.GetAgentMembersByAppIdAsync(app.Id!); }
