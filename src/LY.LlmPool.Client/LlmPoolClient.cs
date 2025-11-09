@@ -347,7 +347,7 @@ public class LlmPoolClient : ILlmPoolClient
         CancellationToken cancellationToken = default)
     {
         var (chatClient, chatOptions) = CreateChatClientAndOptions(model, toolObjects, options, parameters);
-        var chatMessages = messages != null ? BuildChatMessages(messages) : [];
+        var chatMessages = messages != null ? BuildChatMessages(messages) : [new ChatMessage(ChatRole.User, "")];
 
         var response = await chatClient.GetResponseAsync(chatMessages, chatOptions, cancellationToken);
         return response.Text ?? string.Empty;
@@ -355,14 +355,14 @@ public class LlmPoolClient : ILlmPoolClient
 
     public async IAsyncEnumerable<StreamingChatUpdate> ChatStreamAsync(
         string model,
-        IEnumerable<ClientMessage>? messages=null,
+        IEnumerable<ClientMessage>? messages = null,
         Dictionary<string, object>? parameters = null,
         IEnumerable<object>? toolObjects = null,
         ChatOptions? options = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var (chatClient, chatOptions) = CreateChatClientAndOptions(model, toolObjects, options, parameters);
-        var chatMessages = messages != null ? BuildChatMessages(messages) : [];
+        var chatMessages = messages != null ? BuildChatMessages(messages) : [new ChatMessage(ChatRole.User, "")];
 
         await foreach (var update in chatClient.GetStreamingResponseAsync(chatMessages, chatOptions, cancellationToken))
         {
