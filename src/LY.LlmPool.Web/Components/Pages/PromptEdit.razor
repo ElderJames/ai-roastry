@@ -2112,7 +2112,7 @@
     {
         try
         {
-            var prompt = await LlmPoolService.GetPromptByIdAsync(Id!);
+            var prompt = await PromptService.GetPromptByIdAsync(Id!);
             if (prompt == null)
             {
                 _message.Error("Prompt not found");
@@ -2123,7 +2123,7 @@
             _editingPrompt = prompt;
 
             // Load the latest history record
-            var history = await LlmPoolService.GetPromptHistoryAsync(Id);
+            var history = await PromptService.GetPromptHistoryAsync(Id);
             var latestHistory = history.OrderByDescending(h => h.CreateTime).FirstOrDefault();
 
             if (latestHistory != null)
@@ -2155,7 +2155,7 @@
     {
         try
         {
-            var history = await LlmPoolService.GetPromptHistoryAsync(Id);
+            var history = await PromptService.GetPromptHistoryAsync(Id);
             var version = history.FirstOrDefault(h => h.Version.ToString() == Version);
             if (version == null)
             {
@@ -2205,12 +2205,12 @@
         {
             if (_editingPrompt.Id == null)
             {
-                await LlmPoolService.CreatePromptAsync(_editingPrompt);
+                await PromptService.CreatePromptAsync(_editingPrompt);
                 _message.Success("Prompt created successfully");
             }
             else
             {
-                await LlmPoolService.UpdatePromptAsync(_editingPrompt);
+                await PromptService.UpdatePromptAsync(_editingPrompt);
                 _message.Success("Prompt updated successfully");
             }
 
@@ -2245,7 +2245,7 @@
                 }).ToList()
             };
 
-            await LlmPoolService.SavePromptHistoryAsync(history);
+            await PromptService.SavePromptHistoryAsync(history);
             _message.Success("History saved successfully");
 
             // Save tool bindings
@@ -2928,7 +2928,7 @@
                 }).ToList()
             };
 
-            await LlmPoolService.SavePromptHistoryAsync(history);
+            await PromptService.SavePromptHistoryAsync(history);
         }
     }
 
@@ -2944,7 +2944,7 @@
 
         try
         {
-            _promptHistory = await LlmPoolService.GetPromptHistoryAsync(_editingPrompt.Id);
+            _promptHistory = await PromptService.GetPromptHistoryAsync(_editingPrompt.Id);
         }
         finally
         {
@@ -2992,7 +2992,7 @@
     {
         try
         {
-            await LlmPoolService.DeletePromptHistoryAsync(history.Id);
+            await PromptService.DeletePromptHistoryAsync(history.Id);
             _message.Success("History record deleted successfully");
             
             // Refresh the history list

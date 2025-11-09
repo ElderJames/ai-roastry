@@ -120,16 +120,10 @@ public class ConfigService
 
         await dbContext.SaveChangesAsync();
         
-        // 🎯 使用统一缓存服务清理缓存（会自动触发 LoadBalancer 缓存预热）
+        // 🎯 使用统一缓存服务清理缓存（会自动触发级联刷新：Endpoint 和 App）
         if (!string.IsNullOrEmpty(config.Id))
         {
-            await _cacheService.InvalidateConfigRelatedCachesAsync(config.Id);
-        }
-        
-        // 🎯 如果名称变更，清除旧名称的 LoadBalancer 缓存
-        if (oldName != config.Name && _loadBalancer != null)
-        {
-            await _loadBalancer.InvalidateModelCacheAsync(oldName);
+            await _cacheService.InvalidateConfigRelatedCachesAsync(config.Id!);
         }
         
         return existing;
@@ -144,20 +138,14 @@ public class ConfigService
             throw new KeyNotFoundException($"Config with ID {id} not found.");
         }
 
-        var configName = config.Name;
-        dbContext.Configs.Remove(config);
-        await dbContext.SaveChangesAsync();
-        
-        // 🎯 清除 LoadBalancer 缓存
-        if (_loadBalancer != null)
-        {
-            await _loadBalancer.InvalidateModelCacheAsync(configName);
-        }
+        // 🎯 在删除前刷新所有相关缓存（Endpoint 和 App）
         if (_cacheService != null)
         {
-            // 清除所有引用此 Config 的实体缓存
-            await _cacheService.RefreshModelCacheAsync(configName);
+            await _cacheService.InvalidateConfigRelatedCachesAsync(id);
         }
+        
+        dbContext.Configs.Remove(config);
+        await dbContext.SaveChangesAsync();
     }
 
     // Resolve a config directly by its name (enabled only)

@@ -2,6 +2,7 @@
 @using LY.LlmPool.Web.Services
 @using LY.LlmPool.Web.Data.Entities
 @using AntDesign
+@inject EndpointService EndpointService
 @inject LlmPoolService LlmPoolService
 @inject MessageService _message
 @inject NavigationManager NavigationManager
@@ -162,7 +163,7 @@ Width="800">
         _loading = true;
         try
         {
-            _endpoints = await LlmPoolService.GetEndpointsAsync();
+            _endpoints = await EndpointService.GetEndpointsAsync();
             _availableConfigs = await LlmPoolService.GetConfigsAsync();
         }
         finally
@@ -192,7 +193,7 @@ Width="800">
 
     private async Task DeleteEndpoint(LlmEndpoint endpoint)
     {
-        await LlmPoolService.DeleteEndpointAsync(endpoint.Id);
+        await EndpointService.DeleteEndpointAsync(endpoint.Id);
         await LoadDataAsync();
     }
 
@@ -211,11 +212,11 @@ Width="800">
 
         if (string.IsNullOrEmpty(_editingEndpoint.Id))
         {
-            await LlmPoolService.AddEndpointAsync(_editingEndpoint);
+            await EndpointService.AddEndpointAsync(_editingEndpoint);
         }
         else
         {
-            await LlmPoolService.UpdateEndpointAsync(_editingEndpoint);
+            await EndpointService.UpdateEndpointAsync(_editingEndpoint);
         }
         _message.Success($"Saved successfully");
         CloseDialog();

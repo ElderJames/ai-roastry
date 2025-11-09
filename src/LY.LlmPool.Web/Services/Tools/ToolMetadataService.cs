@@ -318,7 +318,7 @@ public class ToolMetadataService
             if (app.AppType != "Tool" || !app.IsEnabled)
             {
                 _logger.LogInformation("App {AppName} is not a Tool or is disabled, removing from cache", app.Name);
-                await RemoveToolFromCacheAsync(app.Name);
+                await RemoveToolByNameAsync(app.Name);
                 return;
             }
 
@@ -382,7 +382,7 @@ public class ToolMetadataService
         try
         {
             // 直接从缓存中移除该工具
-            await RemoveToolFromCacheAsync(toolName);
+            await RemoveToolByNameAsync(toolName);
             _logger.LogInformation("Successfully removed tool from cache: {ToolName}", toolName);
         }
         catch (Exception ex)
@@ -434,6 +434,9 @@ public class ToolMetadataService
     {
         _logger.LogDebug("Refreshing all tools cache...");
 
+        // 🔥 先移除缓存，确保更新生效（避免 HybridCache 本地缓存导致的延迟）
+        await _cache.RemoveAsync(AllToolsCacheKey);
+
         var appTools = await ScanAppToolsAsync();
         var mcpTools = await ScanMcpToolsAsync();
         var allTools = appTools.Concat(mcpTools).ToList();
@@ -446,7 +449,7 @@ public class ToolMetadataService
     /// <summary>
     /// 从缓存中移除指定工具
     /// </summary>
-    private async Task RemoveToolFromCacheAsync(string toolName)
+    public async Task RemoveToolByNameAsync(string toolName)
     {
         if (string.IsNullOrWhiteSpace(toolName))
         {

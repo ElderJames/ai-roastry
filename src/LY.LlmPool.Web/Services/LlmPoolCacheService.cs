@@ -314,13 +314,39 @@ public class LlmPoolCacheService
     /// </summary>
     public async Task InvalidateAppRelatedCachesAsync(string appId, CancellationToken cancellationToken = default)
     {
-        // 1. 获取 App 的模型名称，清除对应的负载均衡缓存
+        await InvalidateAppRelatedCachesAsync(appId, oldName: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// 移除与指定 App 关联的所有缓存（包括关联的 Config 和 Endpoint）
+    /// 🎯 支持清除旧名称（当 App 名称变更时使用）
+    /// </summary>
+    public async Task InvalidateAppRelatedCachesAsync(string appId, string? oldName, CancellationToken cancellationToken = default)
+    {
+        // 如果提供了旧名称，先清除旧名称的缓存
+        if (!string.IsNullOrEmpty(oldName))
+        {
+            await InvalidateModelCacheAsync(oldName, cancellationToken);
+            _logger.LogInformation("🔄 已清除 App 旧名称的模型缓存: lb:model:{OldName}", oldName);
+        }
+        
+        // 1. 获取 App 的模型名称和类型
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var app = await dbContext.Apps.AsNoTracking().FirstOrDefaultAsync(a => a.Id == appId, cancellationToken);
         if (app != null)
         {
+            // 清除模型负载均衡缓存
             await InvalidateModelCacheAsync(app.Name, cancellationToken);
             _logger.LogInformation("🔄 已清除 App {AppId} 的模型缓存: lb:model:{ModelName}", appId, app.Name);
+            
+            // 🎯 如果是 Tool 类型，同步刷新工具元数据缓存
+            if (app.AppType == "Tool")
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var toolMetadataService = scope.ServiceProvider.GetRequiredService<Tools.ToolMetadataService>();
+                await toolMetadataService.RefreshAppToolAsync(appId);
+                _logger.LogInformation("🔄 已刷新 Tool App {AppId} ({AppName}) 的工具元数据", appId, app.Name);
+            }
         }
         
         // 2. 清除 App 相关缓存
@@ -330,46 +356,107 @@ public class LlmPoolCacheService
     }
 
     /// <summary>
-    /// 移除与指定 Config 关联的所有缓存（包括使用该 Config 的 App）
-    /// 🎯 会同步更新所有引用该 Config 的 Endpoint 和 App
+    /// 移除与指定 Config 关联的所有缓存（包括使用该 Config 的 App 和 Endpoint）
+    /// 🎯 会同步更新所有引用该 Config 的 Endpoint 和 App，并刷新它们的负载均衡缓存
     /// </summary>
     public async Task InvalidateConfigRelatedCachesAsync(string configId, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("🔄 开始失效 Config {ConfigId} 相关的所有缓存...", configId);
         
-        // 1. 获取所有使用该 Config 的 App 和 Config 本身的名称，清除模型缓存
         await using (var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
-            // 清除 Config 自身的模型缓存（Config 可以作为模型名称直接使用）
+            // 获取 Config 信息
             var config = await dbContext.Configs.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == configId, cancellationToken);
+            
             if (config != null)
             {
+                // 清除 Config 自身的模型缓存
                 await InvalidateModelCacheAsync(config.Name, cancellationToken);
                 _logger.LogInformation("🔄 已清除 Config {ConfigId} 的模型缓存: lb:model:{ModelName}", configId, config.Name);
-            }
-            
-            // 清除所有使用该 Config 的 App 的模型缓存
-            var appsUsingConfig = await dbContext.Apps.AsNoTracking()
-                .Where(a => a.LlmConfigId == configId)
-                .ToListAsync(cancellationToken);
-            foreach (var app in appsUsingConfig)
-            {
-                await InvalidateModelCacheAsync(app.Name, cancellationToken);
-                _logger.LogInformation("🔄 已清除使用 Config {ConfigId} 的 App {AppId} 的模型缓存: lb:model:{ModelName}", 
-                    configId, app.Id, app.Name);
+                
+                // 🎯 1. 查找所有使用此 Config 的 Endpoint（通过 EndpointConfig）
+                var relatedEndpoints = await dbContext.EndpointConfigs
+                    .Where(ec => ec.LlmConfigId == configId && ec.Endpoint != null)
+                    .Include(ec => ec.Endpoint)
+                    .Select(ec => new { ec.Endpoint!.Id, ec.Endpoint.Name })
+                    .Distinct()
+                    .ToListAsync(cancellationToken);
+
+                if (relatedEndpoints.Any())
+                {
+                    _logger.LogInformation("🔄 Config {ConfigId} 影响了 {Count} 个 Endpoint", configId, relatedEndpoints.Count);
+                    
+                    foreach (var endpoint in relatedEndpoints)
+                    {
+                        // 刷新 Endpoint 的缓存（Name 和 Id）
+                        await RefreshModelCacheAsync(endpoint.Name!, cancellationToken);
+                        await RefreshModelCacheAsync(endpoint.Id!, cancellationToken);
+                        
+                        // 刷新绑定了该 Endpoint 的所有 App 的缓存
+                        var endpointApps = await dbContext.Apps
+                            .Where(a => a.EndpointId == endpoint.Id)
+                            .Select(a => new { a.Id, a.Name, a.AppType })
+                            .ToListAsync(cancellationToken);
+
+                        foreach (var app in endpointApps)
+                        {
+                            if (!string.IsNullOrEmpty(app.Id))
+                            {
+                                await InvalidateModelCacheAsync(app.Name!, cancellationToken);
+                                await RemoveAppAsync(app.Id!, cancellationToken);
+                                
+                                // 如果是 Tool 类型，刷新工具元数据
+                                if (app.AppType == "Tool")
+                                {
+                                    using var scope = _serviceProvider.CreateScope();
+                                    var toolMetadataService = scope.ServiceProvider.GetRequiredService<Tools.ToolMetadataService>();
+                                    await toolMetadataService.RefreshAppToolAsync(app.Id!);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 🎯 2. 查找所有直接使用此 Config 的 App
+                var directApps = await dbContext.Apps
+                    .Where(a => a.LlmConfigId == configId)
+                    .Select(a => new { a.Id, a.Name, a.AppType })
+                    .ToListAsync(cancellationToken);
+
+                if (directApps.Any())
+                {
+                    _logger.LogInformation("🔄 Config {ConfigId} 直接影响了 {Count} 个 App", configId, directApps.Count);
+                    
+                    foreach (var app in directApps)
+                    {
+                        if (!string.IsNullOrEmpty(app.Id))
+                        {
+                            await InvalidateModelCacheAsync(app.Name!, cancellationToken);
+                            await RemoveAppAsync(app.Id!, cancellationToken);
+                            
+                            // 如果是 Tool 类型，刷新工具元数据
+                            if (app.AppType == "Tool")
+                            {
+                                using var scope = _serviceProvider.CreateScope();
+                                var toolMetadataService = scope.ServiceProvider.GetRequiredService<Tools.ToolMetadataService>();
+                                await toolMetadataService.RefreshAppToolAsync(app.Id!);
+                            }
+                        }
+                    }
+                }
             }
         }
         
-        // 2. 清除 Config 自身的缓存
+        // 清除 Config 自身的缓存
         await RemoveConfigAsync(configId, cancellationToken);
         
-        // 3. 清除所有列表缓存
+        // 清除所有列表缓存
         await RemoveAllConfigsAsync(cancellationToken);
         await RemoveAllAppsAsync(cancellationToken);
-        await RemoveAllEndpointsAsync(cancellationToken); // 🎯 Endpoint 也可能引用了该 Config
+        await RemoveAllEndpointsAsync(cancellationToken);
         
-        _logger.LogInformation("✅ 已失效 Config {ConfigId} 相关的所有缓存（包括关联的 App 和 Endpoint）", configId);
+        _logger.LogInformation("✅ 已失效 Config {ConfigId} 相关的所有缓存（包括关联的 Endpoint 和 App）", configId);
     }
 
     /// <summary>
@@ -377,6 +464,22 @@ public class LlmPoolCacheService
     /// </summary>
     public async Task InvalidateEndpointRelatedCachesAsync(string endpointId, CancellationToken cancellationToken = default)
     {
+        await InvalidateEndpointRelatedCachesAsync(endpointId, oldName: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// 移除与指定 Endpoint 关联的所有缓存
+    /// 🎯 支持清除旧名称（当 Endpoint 名称变更时使用）
+    /// </summary>
+    public async Task InvalidateEndpointRelatedCachesAsync(string endpointId, string? oldName, CancellationToken cancellationToken = default)
+    {
+        // 如果提供了旧名称，先清除旧名称的缓存
+        if (!string.IsNullOrEmpty(oldName))
+        {
+            await InvalidateModelCacheAsync(oldName, cancellationToken);
+            _logger.LogInformation("🔄 已清除 Endpoint 旧名称的模型缓存: lb:model:{OldName}", oldName);
+        }
+        
         // 1. 获取 Endpoint 和所有使用该 Endpoint 的 App，清除模型缓存
         await using (var dbContext = await _dbContextFactory.CreateDbContextAsync(cancellationToken))
         {
@@ -386,7 +489,10 @@ public class LlmPoolCacheService
             if (endpoint != null)
             {
                 await InvalidateModelCacheAsync(endpoint.Name, cancellationToken);
-                _logger.LogInformation("🔄 已清除 Endpoint {EndpointId} 的模型缓存: lb:model:{ModelName}", endpointId, endpoint.Name);
+                // 🎯 同时清除 ID 映射的缓存
+                await InvalidateModelCacheAsync(endpoint.Id, cancellationToken);
+                _logger.LogInformation("🔄 已清除 Endpoint {EndpointId} 的模型缓存: lb:model:{ModelName}, lb:model:{EndpointId}", 
+                    endpointId, endpoint.Name, endpoint.Id);
             }
             
             // 清除所有使用该 Endpoint 的 App 的模型缓存
@@ -810,10 +916,20 @@ public class LlmPoolCacheService
     }
 
     /// <summary>
+    /// 刷新实体的多个缓存键（Name 和 Id）
+    /// 🎯 用于 Endpoint、Config、App 等可以通过 Name 或 Id 访问的实体
+    /// </summary>
+    public async Task RefreshModelCacheAsync(string name, string id, CancellationToken cancellationToken = default)
+    {
+        await RefreshModelCacheAsync(name, cancellationToken);
+        await RefreshModelCacheAsync(id, cancellationToken);
+    }
+
+    /// <summary>
     /// 检查模型名称是否在 App、Config、Endpoint 三者中全局唯一
     /// 🎯 因为 modelName 会用来查询这三种实体,所以必须全局唯一
     /// </summary>
-    public async Task<string?> CheckModelNameUniquenessAsync(string name, string entityType, string? excludeId = null, CancellationToken cancellationToken = default)
+    public virtual async Task<string?> CheckModelNameUniquenessAsync(string name, string entityType, string? excludeId = null, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -884,8 +1000,9 @@ public class LlmPoolCacheService
 
     /// <summary>
     /// 清除指定模型名称的缓存（LoadBalancer 使用）
+    /// 🎯 私有方法，仅由 InvalidateAppRelatedCachesAsync、InvalidateEndpointRelatedCachesAsync、InvalidateConfigRelatedCachesAsync 调用
     /// </summary>
-    public async Task InvalidateModelCacheAsync(string modelName, CancellationToken cancellationToken = default)
+    private async Task InvalidateModelCacheAsync(string modelName, CancellationToken cancellationToken = default)
     {
         var key = $"{LoadBalancerCacheKeyPrefix}{modelName}";
         try

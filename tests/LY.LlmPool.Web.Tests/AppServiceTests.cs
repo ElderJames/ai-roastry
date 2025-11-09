@@ -2,10 +2,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services;
+using LY.LlmPool.Web.Services.LoadBalancing;
 using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -27,7 +29,9 @@ public class AppServiceTests
     {
         var factory = new TestDbContextFactory(options);
         var toolMetadataService = new MockToolMetadataService();
-        return new AppService(factory, toolMetadataService, NullLogger<AppService>.Instance);
+        var cacheService = new MockCacheService();
+        var loadBalancerService = new MockLoadBalancerService();
+        return new AppService(factory, toolMetadataService, NullLogger<AppService>.Instance, cacheService, loadBalancerService);
     }
 
     // Mock classes for testing
@@ -41,6 +45,24 @@ public class AppServiceTests
     private class MockToolMetadataService : ToolMetadataService
     {
         public MockToolMetadataService() : base(null!, null!, null!, null!, null!) { }
+    }
+
+    private class MockCacheService : LlmPoolCacheService
+    {
+        public MockCacheService() : base(null!, NullLogger<LlmPoolCacheService>.Instance, null!, null!) { }
+
+        // 重写方法以避免数据库调用
+        public override async Task<string?> CheckModelNameUniquenessAsync(string name, string entityType, string? excludeId = null, CancellationToken cancellationToken = default)
+        {
+            // 对于测试，总是返回 null（表示名称唯一）
+            await Task.Yield(); // 让方法真正异步
+            return null;
+        }
+    }
+
+    private class MockLoadBalancerService : LoadBalancerService
+    {
+        public MockLoadBalancerService() : base(null!, null!) { }
     }
 
     [Fact]

@@ -301,24 +301,6 @@ public class LoadBalancerService
     {
         return _configRequestCounts.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
     }
-
-    /// <summary>
-    /// 清除指定模型名称的缓存
-    /// 🎯 委托给 LlmPoolCacheService 进行统一管理
-    /// </summary>
-    public async Task InvalidateModelCacheAsync(string modelName)
-    {
-        var cacheService = _serviceProvider.GetService<LlmPoolCacheService>();
-        if (cacheService != null)
-        {
-            await cacheService.InvalidateModelCacheAsync(modelName);
-            _logger.LogDebug("🗑️ 已清除模型缓存: {ModelName}", modelName);
-        }
-        else
-        {
-            _logger.LogWarning("⚠️ LlmPoolCacheService 未就绪，无法清除缓存: {ModelName}", modelName);
-        }
-    }
 }
 
 /// <summary>

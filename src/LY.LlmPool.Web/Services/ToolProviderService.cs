@@ -176,9 +176,9 @@ public class ToolProviderService
         if (!string.IsNullOrEmpty(app.PromptId))
         {
             using var scope = _serviceProvider.CreateScope();
-            var llmPoolService = scope.ServiceProvider.GetRequiredService<LlmPoolService>();
+            var promptService = scope.ServiceProvider.GetRequiredService<PromptService>();
             
-            var prompt = await llmPoolService.GetPromptByIdAsync(app.PromptId);
+            var prompt = await promptService.GetPromptByIdAsync(app.PromptId);
             if (prompt != null)
             {
                 _logger.LogInformation("App {AppName} has associated Prompt {PromptId}, loading tools from PromptTools", 

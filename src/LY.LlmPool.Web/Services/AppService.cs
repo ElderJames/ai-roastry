@@ -10,16 +10,16 @@ public class AppService
 {
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
     private readonly ToolMetadataService _toolMetadataService;
-    private readonly LlmPoolCacheService? _cacheService;
-    private readonly LoadBalancerService? _loadBalancer;
+    private readonly LlmPoolCacheService _cacheService;
+    private readonly LoadBalancerService _loadBalancer;
     private readonly ILogger<AppService> _logger;
 
     public AppService(
         IDbContextFactory<LlmDbContext> dbContextFactory,
         ToolMetadataService toolMetadataService,
         ILogger<AppService> logger,
-        LlmPoolCacheService? cacheService = null,
-        LoadBalancerService? loadBalancer = null)
+        LlmPoolCacheService cacheService,
+        LoadBalancerService loadBalancer)
     {
         _dbContextFactory = dbContextFactory;
         _toolMetadataService = toolMetadataService;
@@ -73,13 +73,10 @@ public class AppService
     public async Task<LlmApp> AddAppAsync(LlmApp app)
     {
         // 检查名称全局唯一性
-        if (_cacheService != null)
+        var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App");
+        if (uniquenessError != null)
         {
-            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App");
-            if (uniquenessError != null)
-            {
-                throw new InvalidOperationException(uniquenessError);
-            }
+            throw new InvalidOperationException(uniquenessError);
         }
 
         // 如果是 Tool 类型，验证名称只包含 ASCII 字母、数字、下划线和横线
@@ -107,19 +104,17 @@ public class AppService
         dbContext.Apps.Add(app);
         await dbContext.SaveChangesAsync();
 
-        // 如果添加的是 Tool 类型的 App,刷新缓存
-        if (app.AppType == "Tool")
+        // 🎯 刷新 App 相关缓存（包括 Tool 类型的工具元数据）
+        try
         {
-            try
-            {
-                _logger.LogInformation("Refreshing tool metadata cache for new App: {AppId}", app.Id);
-                await _toolMetadataService.RefreshAppToolAsync(app.Id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to refresh tool metadata cache for new App: {AppId}", app.Id);
-                // 非关键错误,继续执行
-            }
+            _logger.LogInformation("Refreshing cache for new App: {AppId} ({AppName}, Type: {AppType})", 
+                app.Id, app.Name, app.AppType);
+            await _cacheService.InvalidateAppRelatedCachesAsync(app.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh cache for new App: {AppId}", app.Id);
+            // 非关键错误,继续执行
         }
 
         return app;
@@ -128,13 +123,10 @@ public class AppService
     public async Task<LlmApp> UpdateAppAsync(LlmApp app)
     {
         // 检查名称全局唯一性（排除自身）
-        if (_cacheService != null)
+        var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App", app.Id);
+        if (uniquenessError != null)
         {
-            var uniquenessError = await _cacheService.CheckModelNameUniquenessAsync(app.Name, "App", app.Id);
-            if (uniquenessError != null)
-            {
-                throw new InvalidOperationException(uniquenessError);
-            }
+            throw new InvalidOperationException(uniquenessError);
         }
         
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
@@ -180,30 +172,27 @@ public class AppService
 
         await dbContext.SaveChangesAsync();
 
-        // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称）
-        if (_cacheService != null)
+        // 🎯 刷新 App 相关缓存（包括 Tool 类型的工具元数据）
+        try
         {
-            if (oldName != app.Name && _loadBalancer != null)
+            _logger.LogInformation("Refreshing cache for updated App: {AppId} ({AppName}, Type: {AppType})", 
+                app.Id, app.Name, app.AppType);
+            
+            // 🔥 如果 AppType 从 Tool 变为其他类型，需要先移除工具元数据
+            if (oldAppType == "Tool" && app.AppType != "Tool")
             {
-                _logger.LogInformation("App 名称变更: {OldName} -> {NewName}, 清除旧缓存", oldName, app.Name);
-                await _loadBalancer.InvalidateModelCacheAsync(oldName);
-            }
-            await _cacheService.RefreshModelCacheAsync(app.Name);
-        }
-
-        // 如果是 Tool 类型的 App,刷新缓存
-        if (oldAppType == "Tool" || app.AppType == "Tool")
-        {
-            try
-            {
-                _logger.LogInformation("Refreshing tool metadata cache for App: {AppId}", app.Id);
+                _logger.LogInformation("App {AppId} 的类型从 Tool 改为 {NewType}，移除工具元数据", app.Id, app.AppType);
                 await _toolMetadataService.RefreshAppToolAsync(app.Id!);
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to refresh tool metadata cache for App: {AppId}", app.Id);
-                // 非关键错误,继续执行
-            }
+            
+            // 使用支持旧名称的重载方法（如果名称变更，会自动清除旧名称缓存）
+            var oldNameToInvalidate = oldName != app.Name ? oldName : null;
+            await _cacheService.InvalidateAppRelatedCachesAsync(app.Id!, oldNameToInvalidate);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh cache for updated App: {AppId}", app.Id);
+            // 非关键错误,继续执行
         }
 
         return existing;
@@ -218,33 +207,52 @@ public class AppService
             throw new KeyNotFoundException($"App with ID {id} not found.");
         }
 
-        // 记录信息用于缓存刷新
-        var isToolApp = app.AppType == "Tool";
+        // 记录信息用于日志和后续缓存处理
         var appName = app.Name;
+        var appType = app.AppType;
+        var isToolType = appType == "Tool";
 
-        dbContext.Apps.Remove(app);
-        await dbContext.SaveChangesAsync();
-
-        // 🎯 清除 LoadBalancer 缓存
-        if (_cacheService != null)
-        {
-            await _cacheService.RefreshModelCacheAsync(appName);
-        }
-
-        // 如果删除的是 Tool 类型的 App,刷新缓存
-        if (isToolApp)
+        // 🔥 如果是 Tool 类型，先移除工具元数据缓存（在删除前）
+        if (isToolType)
         {
             try
             {
-                _logger.LogInformation("Refreshing tool metadata cache after deleting Tool App: {AppName} (ID: {AppId})", appName, id);
-                // 传递 appName 而不是 appId,因为 app 已被删除
-                await _toolMetadataService.RefreshAppToolByNameAsync(appName);
+                _logger.LogInformation("删除前先移除 Tool App {AppId} ({AppName}) 的工具元数据", id, appName);
+                await _toolMetadataService.RemoveToolByNameAsync(appName);
+                
+                // 🔥 额外确保所有工具缓存也被清除
+                await _toolMetadataService.RefreshAllToolsCacheAsync();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to refresh tool metadata cache after deleting App: {AppId}", id);
-                // 非关键错误,继续执行
+                _logger.LogError(ex, "删除前移除工具元数据失败: {AppId}", id);
             }
+        }
+
+        // 🎯 删除 App
+        dbContext.Apps.Remove(app);
+        await dbContext.SaveChangesAsync();
+
+        _logger.LogInformation("App deleted: {AppId} ({AppName}, Type: {AppType})", id, appName, appType);
+
+        // 🎯 删除后刷新其他缓存（负载均衡缓存等）
+        try
+        {
+            _logger.LogInformation("Refreshing cache after deleting App: {AppId} ({AppName}, Type: {AppType})", 
+                id, appName, appType);
+            await _cacheService.InvalidateAppRelatedCachesAsync(id);
+            
+            // 🔥 如果是 Tool 类型，确保工具缓存完全刷新
+            if (isToolType)
+            {
+                _logger.LogInformation("删除后刷新 Tool App {AppId} ({AppName}) 的工具元数据缓存", id, appName);
+                await _toolMetadataService.RefreshAllToolsCacheAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh cache after deleting App: {AppId}", id);
+            // 非关键错误
         }
     }
 

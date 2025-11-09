@@ -52,19 +52,18 @@ public class EndpointService
                 throw new InvalidOperationException(uniquenessError);
             }
         }
-        
+
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         endpoint.Id = Guid.NewGuid().ToString("N");
         dbContext.Endpoints.Add(endpoint);
         await dbContext.SaveChangesAsync();
-        
-        // 🎯 刷新 LoadBalancer 缓存
+
+        // 🎯 刷新 LoadBalancer 缓存（Name 和 Id）
         if (_cacheService != null)
         {
-            await _cacheService.RefreshModelCacheAsync(endpoint.Name);
-            await _cacheService.RefreshModelCacheAsync(endpoint.Id);
+            await _cacheService.RefreshModelCacheAsync(endpoint.Name, endpoint.Id);
         }
-        
+
         return endpoint;
     }
 
@@ -79,7 +78,7 @@ public class EndpointService
                 throw new InvalidOperationException(uniquenessError);
             }
         }
-        
+
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
         var existing = await dbContext.Endpoints
             .Include(x => x.EndpointConfigs)
@@ -139,17 +138,11 @@ public class EndpointService
 
         await dbContext.SaveChangesAsync();
         
-        // 🎯 刷新 LoadBalancer 缓存（如果名称变更，需要清除旧名称和旧 ID）
+        // 🎯 刷新 Endpoint 和相关 App 的缓存（如果名称变更，会自动清除旧名称）
         if (_cacheService != null)
         {
-            if (oldName != existing.Name && _loadBalancer != null)
-            {
-                await _loadBalancer.InvalidateModelCacheAsync(oldName);
-                // 也需要清除 ID 映射的旧缓存（因为 Endpoint 可以通过 ID 访问）
-                await _loadBalancer.InvalidateModelCacheAsync(existing.Id);
-            }
-            await _cacheService.RefreshModelCacheAsync(existing.Name);
-            await _cacheService.RefreshModelCacheAsync(existing.Id);
+            var oldNameToInvalidate = oldName != existing.Name ? oldName : null;
+            await _cacheService.InvalidateEndpointRelatedCachesAsync(existing.Id, oldNameToInvalidate);
         }
         
         return existing;
@@ -164,16 +157,14 @@ public class EndpointService
             throw new KeyNotFoundException($"Endpoint with ID {id} not found.");
         }
 
-        var endpointName = endpoint.Name;
-        dbContext.Endpoints.Remove(endpoint);
-        await dbContext.SaveChangesAsync();
-        
-        // 🎯 清除 LoadBalancer 缓存
+        // 🎯 在删除前刷新所有相关缓存（包括关联的 App）
         if (_cacheService != null)
         {
-            await _cacheService.RefreshModelCacheAsync(endpointName);
-            await _cacheService.RefreshModelCacheAsync(id);
+            await _cacheService.InvalidateEndpointRelatedCachesAsync(id);
         }
+        
+        dbContext.Endpoints.Remove(endpoint);
+        await dbContext.SaveChangesAsync();
     }
 
     // Resolve an endpoint by its name (enabled only)

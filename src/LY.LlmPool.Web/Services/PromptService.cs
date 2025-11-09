@@ -1,7 +1,6 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Models;
-using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.SemanticKernel;
 using HandlebarsDotNet;
@@ -15,20 +14,20 @@ public class PromptService
     private readonly IChatClientService _chatClientService;
     private readonly ILogger<PromptService> _logger;
     private readonly LlmPoolCacheService _cacheService; // 🎯 缓存服务
-    private readonly ToolMetadataService _toolMetadataService; // 🎯 工具元数据服务
+    private readonly IServiceProvider _serviceProvider;
 
     public PromptService(
         IDbContextFactory<LlmDbContext> dbContextFactory, 
         IChatClientService chatClientService,
         ILogger<PromptService> logger,
         LlmPoolCacheService cacheService, // 🎯 注入缓存服务
-        ToolMetadataService toolMetadataService) // 🎯 注入工具元数据服务
+        IServiceProvider serviceProvider)
     {
         _dbContextFactory = dbContextFactory;
         _chatClientService = chatClientService;
         _logger = logger;
         _cacheService = cacheService;
-        _toolMetadataService = toolMetadataService;
+        _serviceProvider = serviceProvider;
     }
 
     public async Task<List<LlmPrompt>> GetPromptsAsync()
@@ -86,43 +85,44 @@ public class PromptService
         existing.Name = prompt.Name;
         existing.Description = prompt.Description;
         existing.Content = prompt.Content;
+        existing.ModelParameters = prompt.ModelParameters; // 🎯 保存模型参数
         existing.UpdateTime = DateTime.UtcNow;
         existing.Version++;
 
         await dbContext.SaveChangesAsync();
 
-        // 🎯 查找所有使用该 Prompt 的 Tool 类型 App,并刷新它们的工具缓存
+        // 🎯 刷新所有关联该 Prompt 的 App 的缓存（所有类型）
         try
         {
-            var relatedToolApps = await dbContext.Apps
-                .Where(a => a.LlmPromptId == prompt.Id && a.AppType == "Tool")
-                .Select(a => new { a.Id, a.Name })
+            var relatedApps = await dbContext.Apps
+                .Where(a => a.LlmPromptId == prompt.Id)
+                .Select(a => new { a.Id, a.Name, a.AppType })
                 .ToListAsync();
 
-            if (relatedToolApps.Any())
+            if (relatedApps.Any())
             {
                 _logger.LogInformation(
-                    "Prompt {PromptId} ({PromptName}) updated, refreshing {Count} related Tool App(s): {AppNames}",
-                    prompt.Id, prompt.Name, relatedToolApps.Count, string.Join(", ", relatedToolApps.Select(a => a.Name)));
+                    "Prompt {PromptId} ({PromptName}) updated, refreshing {Count} related App(s): {AppNames}",
+                    prompt.Id, prompt.Name, relatedApps.Count, string.Join(", ", relatedApps.Select(a => $"{a.Name}({a.AppType})")));
 
-                foreach (var app in relatedToolApps)
+                foreach (var app in relatedApps)
                 {
                     if (!string.IsNullOrEmpty(app.Id))
                     {
-                        await _toolMetadataService.RefreshAppToolAsync(app.Id);
+                        // InvalidateAppRelatedCachesAsync 会自动处理 Tool 类型的工具元数据刷新
                         await _cacheService.InvalidateAppRelatedCachesAsync(app.Id);
                     }
                 }
             }
             else
             {
-                _logger.LogDebug("Prompt {PromptId} ({PromptName}) updated, no related Tool Apps found", 
+                _logger.LogDebug("Prompt {PromptId} ({PromptName}) updated, no related Apps found", 
                     prompt.Id, prompt.Name);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to refresh tool caches after Prompt {PromptId} update", prompt.Id);
+            _logger.LogError(ex, "Failed to refresh caches after Prompt {PromptId} update", prompt.Id);
             // 不抛出异常,允许 Prompt 更新继续完成
         }
 
@@ -177,6 +177,13 @@ public class PromptService
         history.Id = Guid.NewGuid().ToString("N");
         history.Version = lastVersion + 1;
         history.CreateTime = DateTime.UtcNow;
+
+        // 🎯 同步更新 prompt 的版本号保持最新（避免 history 记录版本增加 prompt 没有同步更新）
+        var prompt = await dbContext.Prompts.FindAsync(history.PromptId);
+        if (prompt != null) 
+        {  
+            prompt.Version = history.Version;
+        }
 
         dbContext.PromptHistory.Add(history);
         await dbContext.SaveChangesAsync();
@@ -256,7 +263,8 @@ public class PromptService
             throw new KeyNotFoundException($"Prompt with ID {promptId} not found.");
         }
 
-        var endpointService = new EndpointService(_dbContextFactory);
+        using var scope = _serviceProvider.CreateScope();
+        var endpointService = scope.ServiceProvider.GetRequiredService<EndpointService>();
         var endpoint = await endpointService.GetEndpointByIdAsync(endpointId);
         if (endpoint == null)
         {
