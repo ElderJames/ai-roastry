@@ -26,6 +26,9 @@ using Microsoft.Extensions.AI;
 using AgentOrchestratorServiceAlias = LY.LlmPool.Web.Services.Agents.AgentOrchestratorService;
 using AIChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using AIChatResponse = Microsoft.Extensions.AI.ChatResponse;
+using AIContentItem = Microsoft.Extensions.AI.AIContent;
+using AITextContent = Microsoft.Extensions.AI.TextContent;
+using AIDataContent = Microsoft.Extensions.AI.DataContent;
 
 namespace LY.LlmPool.Web.Controllers
 {
@@ -1019,11 +1022,134 @@ namespace LY.LlmPool.Web.Controllers
         /// <summary>
         /// 将原始消息 JSON 转换为 AIChatMessage
         /// </summary>
+        private List<AIContentItem> ParseMultimodalContent(JsonElement contentElement)
+        {
+            var contents = new List<AIContentItem>();
+
+            void AddText(string? text)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    contents.Add(new AITextContent(text));
+                }
+            }
+
+            void TryAddImage(string? source)
+            {
+                if (string.IsNullOrWhiteSpace(source))
+                {
+                    return;
+                }
+
+                if (!source.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var commaIndex = source.IndexOf(',');
+                if (commaIndex <= 5)
+                {
+                    _logger.LogWarning("Invalid data URL image payload from chat message.");
+                    return;
+                }
+
+                var descriptor = source.Substring(5, commaIndex - 5);
+                var payload = source[(commaIndex + 1)..];
+
+                var mimeType = "application/octet-stream";
+                var descriptorParts = descriptor.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (descriptorParts.Length > 0 && descriptorParts[0].Contains('/'))
+                {
+                    mimeType = descriptorParts[0];
+                }
+
+                try
+                {
+                    var decoded = Convert.FromBase64String(payload);
+                    contents.Add(new AIDataContent(new BinaryData(decoded), mimeType));
+                }
+                catch (FormatException ex)
+                {
+                    _logger.LogWarning(ex, "Failed to decode base64 image payload from chat message.");
+                }
+                catch (ArgumentException ex)
+                {
+                    _logger.LogWarning(ex, "Failed to decode base64 image payload from chat message.");
+                }
+            }
+
+            void ProcessObject(JsonElement obj)
+            {
+                if (!obj.TryGetProperty("type", out var typeElement) ||
+                    typeElement.ValueKind != JsonValueKind.String)
+                {
+                    return;
+                }
+
+                var typeValue = typeElement.GetString();
+                if (string.Equals(typeValue, "text", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (obj.TryGetProperty("text", out var textElement) &&
+                        textElement.ValueKind == JsonValueKind.String)
+                    {
+                        AddText(textElement.GetString());
+                    }
+                }
+                else if (string.Equals(typeValue, "image_url", StringComparison.OrdinalIgnoreCase) &&
+                         obj.TryGetProperty("image_url", out var imageElement))
+                {
+                    string? url = null;
+                    if (imageElement.ValueKind == JsonValueKind.Object &&
+                        imageElement.TryGetProperty("url", out var urlElement) &&
+                        urlElement.ValueKind == JsonValueKind.String)
+                    {
+                        url = urlElement.GetString();
+                    }
+                    else if (imageElement.ValueKind == JsonValueKind.String)
+                    {
+                        url = imageElement.GetString();
+                    }
+
+                    TryAddImage(url);
+                }
+            }
+
+            switch (contentElement.ValueKind)
+            {
+                case JsonValueKind.String:
+                    AddText(contentElement.GetString());
+                    break;
+                case JsonValueKind.Object:
+                    ProcessObject(contentElement);
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var item in contentElement.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String)
+                        {
+                            AddText(item.GetString());
+                        }
+                        else if (item.ValueKind == JsonValueKind.Object)
+                        {
+                            ProcessObject(item);
+                        }
+                    }
+                    break;
+            }
+
+            return contents;
+        }
+
+        /// <summary>
+        /// 将原始消息 JSON 转换为 AIChatMessage
+        /// </summary>
         private List<AIChatMessage> ConvertToAIChatMessages(List<JsonElement> messages)
         {
-            return messages.Select(m =>
+            var result = new List<AIChatMessage>();
+
+            foreach (var message in messages)
             {
-                var roleName = ExtractRole(m);
+                var roleName = ExtractRole(message);
                 var role = roleName.ToLowerInvariant() switch
                 {
                     "system" => ChatRole.System,
@@ -1032,9 +1158,30 @@ namespace LY.LlmPool.Web.Controllers
                     _ => ChatRole.User
                 };
 
-                var content = ExtractContent(m);
-                return new AIChatMessage(role, content);
-            }).Where(x => !string.IsNullOrEmpty(x.Text)).ToList();
+                var contents = new List<AIContentItem>();
+                if (message.TryGetProperty("content", out var contentElement))
+                {
+                    contents.AddRange(ParseMultimodalContent(contentElement));
+                }
+
+                if (contents.Count == 0)
+                {
+                    var fallbackText = ExtractContent(message);
+                    if (!string.IsNullOrWhiteSpace(fallbackText))
+                    {
+                        contents.Add(new AITextContent(fallbackText));
+                    }
+                }
+
+                if (contents.Count == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new AIChatMessage(role, contents));
+            }
+
+            return result;
         }
 
         /// <summary>
