@@ -65,9 +65,9 @@ pipeline {
       }
     }
     stage('Publish Nuget Packages') {
-      // when {
-      //   expression { return CONFIGURATION == 'Release' }
-      // }
+      when {
+        expression { return CONFIGURATION == 'Release' }
+      }
       steps {
         script {
           withCredentials([string(credentialsId: 'forgejo-jenkins-api-token', variable: 'NUGET_API_KEY')]) {
