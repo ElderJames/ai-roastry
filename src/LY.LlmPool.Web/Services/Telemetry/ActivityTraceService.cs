@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using LY.LlmPool.Web.Repositories;
@@ -23,7 +24,26 @@ public class ActivityTraceService : IDisposable
     private readonly ConcurrentQueue<TraceNode> _completedTraces = new();
     private readonly ConcurrentDictionary<string, Activity> _activeActivities = new();  // 🎯 缓存真实的 Activity 对象
     private ActivityListener? _activityListener;
-    private const int MaxCompletedTraces = 40000; // 保留最近 40000 条完成的追踪
+
+    // 📉 限制在内存中保留的完成追踪数量，避免堆积大请求体/响应体导致的内存暴涨
+    private const int MaxCompletedTraces = 2000;
+
+    // 📉 限制存储到 TraceNode.Tags 的单个值长度，防止把完整请求/响应放进内存
+    private const int MaxTagValueLength = 2048;
+    private const int LargePayloadTagLength = 1024;
+    private static readonly HashSet<string> LargePayloadTagKeys = new(
+        new[]
+        {
+            "request.body",
+            "response.content",
+            "app.input.messages",
+            "app.output.interaction_sequence",
+            "app.input.parameters",
+            "gen_ai.prompt",
+            "gen_ai.completion",
+            "response.error"
+        },
+        StringComparer.OrdinalIgnoreCase);
     
     // 🎯 HybridCache 键名常量
     private const string CacheKeyCompletedTraces = "ActivityTrace:CompletedTraces";
@@ -358,6 +378,9 @@ public class ActivityTraceService : IDisposable
                 node.ConversationId);
         }
 
+        // 📉 截断可能过大的 Tag 值，避免在内存中持有完整请求/响应
+        TrimLargeTags(node);
+
         _activeTraces.TryAdd(node.ActivityId, node);
 
         // 🎯 触发事件通知
@@ -424,6 +447,9 @@ public class ActivityTraceService : IDisposable
 
             // 🎯 重新提取 Tags（因为 OnActivityStarted 时 Tags 可能为空）
             ExtractKeyInformation(activity, node);
+
+            // 📉 截断可能过大的 Tag 值，避免在内存中长期保存大 payload
+            TrimLargeTags(node);
             
             // 🎯 【CRITICAL FIX】在 OnActivityStopped 时再次尝试获取 ConversationId
             // 原因：Middleware 可能在 OnActivityStarted 之后才设置 gen_ai.conversation.id Tag
@@ -573,6 +599,35 @@ public class ActivityTraceService : IDisposable
         }
         
         return count;
+    }
+
+    /// <summary>
+    /// 截断过大的 Tag，防止在内存中保留完整请求/响应正文
+    /// </summary>
+    private void TrimLargeTags(TraceNode node)
+    {
+        if (node.Tags == null || node.Tags.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var key in node.Tags.Keys.ToList())
+        {
+            var value = node.Tags[key];
+            if (string.IsNullOrEmpty(value))
+            {
+                continue;
+            }
+
+            var threshold = LargePayloadTagKeys.Contains(key) ? LargePayloadTagLength : MaxTagValueLength;
+            var shouldTrim = value.Length > threshold;
+
+            if (shouldTrim)
+            {
+                var truncated = value.Substring(0, threshold);
+                node.Tags[key] = $"{truncated}... [truncated {value.Length} chars]";
+            }
+        }
     }
 
     /// <summary>
@@ -965,24 +1020,28 @@ public class ActivityTraceService : IDisposable
             {               
                 // 🎯 首先尝试从 gen_ai.prompt 和 gen_ai.completion Tags 提取 (我们自己添加的)
                 if (node.Tags.TryGetValue("gen_ai.prompt", out var promptJson))
-                {                
-                    try
+                {
+                    // 如果已被截断，则不要尝试解析，避免 JSON 格式错误
+                    if (!promptJson.Contains("[truncated", StringComparison.OrdinalIgnoreCase))
                     {
-                        var messages = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(promptJson);
-                        if (messages != null)
+                        try
                         {
-                            foreach (var msg in messages)
+                            var messages = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(promptJson);
+                            if (messages != null)
                             {
-                                if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
+                                foreach (var msg in messages)
                                 {
-                                    node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
+                                    if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
+                                    {
+                                        node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
+                                    }
                                 }
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning("  ❌ Failed to parse gen_ai.prompt JSON: {Error}", ex.Message);
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning("  ❌ Failed to parse gen_ai.prompt JSON: {Error}", ex.Message);
+                        }
                     }
                 }
                 
@@ -994,24 +1053,27 @@ public class ActivityTraceService : IDisposable
                 // 兼容：也尝试旧的 input.messages 格式
                 if (node.InputMessages.Count == 0 && node.Tags.TryGetValue("input.messages", out var inputMsg))
                 {   
-                    // 尝试解析 JSON
-                    try
+                    if (!inputMsg.Contains("[truncated", StringComparison.OrdinalIgnoreCase))
                     {
-                        var messages = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(inputMsg);
-                        if (messages != null)
+                        // 尝试解析 JSON
+                        try
                         {
-                            foreach (var msg in messages)
+                            var messages = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(inputMsg);
+                            if (messages != null)
                             {
-                                if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
+                                foreach (var msg in messages)
                                 {
-                                    node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
+                                    if (msg.TryGetValue("role", out var role) && msg.TryGetValue("content", out var content))
+                                    {
+                                        node.InputMessages.Add(new TraceChatMessage { Role = role, Content = content });
+                                    }
                                 }
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning("  ❌ Failed to parse input.messages JSON: {Error}", ex.Message);
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning("  ❌ Failed to parse input.messages JSON: {Error}", ex.Message);
+                        }
                     }
                 }
                 
