@@ -88,12 +88,12 @@ public class McpServerService : IMcpServerService
             var data = AsMcpServerConfigDto(serverConfig);
            
             dbContext.Add(data);
+            await dbContext.SaveChangesAsync();
             
             // Add only the new MCP client for this server
             _logger.LogInformation("Adding MCP client for new server {ServerId}", serverConfig.Id);
             await _mcpClientsFactory.AddClientAsync(serverConfig.Id);
 
-            await dbContext.SaveChangesAsync();
             _logger.LogInformation("Created MCP server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
         }
         catch (Exception ex)
