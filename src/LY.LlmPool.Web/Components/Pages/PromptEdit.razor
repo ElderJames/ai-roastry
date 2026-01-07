@@ -19,6 +19,7 @@
 @implements IDisposable
 @inject LlmPoolService LlmPoolService
 @inject IChatClientService ChatClientService
+@inject ChatClientFactory _chatClientFactory
 @inject PromptService PromptService
 @inject ToolMetadataService ToolMetadataService
 @inject ToolProviderService ToolProviderService
@@ -58,6 +59,12 @@
                                     <Button Type="@ButtonType.Primary" OnClick="SavePrompt">
                                         <Icon Type="save" />
                                         Save
+                                    </Button>
+                                </SpaceItem>
+                                <SpaceItem>
+                                    <Button OnClick="ShowOptimizeModal" Disabled="@(string.IsNullOrWhiteSpace(_editingPrompt.Content))">
+                                        <Icon Type="thunderbolt" />
+                                        优化Prompt
                                     </Button>
                                 </SpaceItem>
                             </Space>
@@ -853,6 +860,97 @@
     </Table>
 </Drawer>
 
+<Modal Title="优化Prompt"
+       Visible="@_showOptimizeModal"
+       Width="900"
+       Footer="null"
+       OnCancel="CloseOptimizeModal">
+    <div class="optimize-modal-content">
+        <Form TModel="object" Layout="@FormLayout.Vertical">
+            <FormItem Label="选择模型配置">
+                @if (_availableConfigs?.Any() == true)
+                {
+                    <Select TItemValue="string" TItem="LlmConfig"
+                            @bind-Value="@_optimizeConfigId"
+                            ValueName="Id"
+                            LabelName="Name"
+                            Placeholder="请选择一个LLM配置"
+                            Style="width: 100%;"
+                            DataSource="_availableConfigs">
+                    </Select>
+                }
+                else
+                {
+                    <Alert Type="@AlertType.Warning" Message="没有可用的模型配置，请先配置LLM" ShowIcon="true" />
+                }
+            </FormItem>
+            <FormItem Label="额外要求（可选）">
+                <TextArea @bind-Value="@_optimizeRequirement"
+                         Placeholder="如果有特殊要求，可以在此说明..."
+                         Rows="3"
+                         MaxLength="500" />
+            </FormItem>
+        </Form>
+
+        <Divider>优化结果</Divider>
+
+        <div class="optimize-result-container" id="optimize-result-container">
+            @if (_optimizing)
+            {
+                <div class="optimize-loading">
+                    <Spin Tip="正在优化中，请稍候..."></Spin>
+                </div>
+            }
+            else if (!string.IsNullOrEmpty(_optimizedContent))
+            {
+                <div class="optimize-result-text">
+                    <pre>@_optimizedContent</pre>
+                    @if (_optimizing)
+                    {
+                        <span class="cursor-effect"></span>
+                    }
+                </div>
+            }
+            else
+            {
+                <Empty Description="@("选择模型后点击生成优化按钮开始优化")" ImageStyle="height: 80px;" />
+            }
+        </div>
+
+        <div class="optimize-actions">
+            <Space>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary"
+                            OnClick="StartOptimize"
+                            Disabled="@(string.IsNullOrWhiteSpace(_optimizeConfigId) || _optimizing)"
+                            Loading="@_optimizing">
+                        @(_optimizing ? "优化中..." : (string.IsNullOrEmpty(_optimizedContent) ? "生成优化" : "重新生成"))
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default"
+                            OnClick="ApplyOptimizedPrompt"
+                            Disabled="@(string.IsNullOrWhiteSpace(_optimizedContent) || _optimizing)">
+                        <Icon Type="check" /> 应用到编辑器
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default"
+                            OnClick="StopOptimize"
+                            Disabled="@(!_optimizing)">
+                        <Icon Type="stop" /> 停止
+                    </Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default" OnClick="CloseOptimizeModal">
+                        <Icon Type="close" /> 关闭
+                    </Button>
+                </SpaceItem>
+            </Space>
+        </div>
+    </div>
+</Modal>
+
 <style>
     .prompt-edit-section {
         margin-bottom: 16px;
@@ -1505,6 +1603,51 @@
         margin-bottom: 6px;
     }
 
+    /* 优化Prompt Modal样式 */
+    .optimize-modal-content {
+        max-height: 70vh;
+        overflow-y: auto;
+    }
+
+    .optimize-result-container {
+        min-height: 300px;
+        max-height: 400px;
+        overflow-y: auto;
+        background: #fafafa;
+        border: 1px solid #e8e8e8;
+        border-radius: 6px;
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+
+    .optimize-loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 200px;
+    }
+
+    .optimize-result-text {
+        position: relative;
+    }
+
+    .optimize-result-text pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        line-height: 1.8;
+        color: #333;
+    }
+
+    .optimize-actions {
+        display: flex;
+        justify-content: flex-end;
+        padding-top: 8px;
+        border-top: 1px solid #f0f0f0;
+    }
+
     .message-body-compact {
         font-size: 13px;
     }
@@ -1827,6 +1970,14 @@
     private List<LlmEndpoint> _availableEndpoints = new();
     private bool _testLoading;
     private CancellationTokenSource? _testCancellationTokenSource;
+    
+    // Prompt优化相关
+    private bool _showOptimizeModal = false;
+    private bool _optimizing = false;
+    private string? _optimizeConfigId;
+    private string? _optimizeRequirement = string.Empty;
+    private string _optimizedContent = string.Empty;
+    private CancellationTokenSource? _optimizeCancellationTokenSource;
     private string _selectedTestType = "Model";
     private string? _selectedConfigId;
     private string? _selectedEndpointId;
@@ -1882,6 +2033,7 @@
     {
         _autoSaveTimer?.Dispose();
         _testCancellationTokenSource?.Dispose();
+        _optimizeCancellationTokenSource?.Dispose();
     }
 
     private async Task LoadDataAsync()
@@ -3176,4 +3328,214 @@
     {
         return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
+
+    #region Prompt优化功能
+
+    private void ShowOptimizeModal()
+    {
+        // 先检查是否有可用配置
+        if (_availableConfigs == null || !_availableConfigs.Any())
+        {
+            _message.Warning("没有可用的模型配置，请先配置LLM");
+            return;
+        }
+        
+        _showOptimizeModal = true;
+        _optimizedContent = string.Empty;
+        _optimizeRequirement = string.Empty;
+        
+        // 默认选择一个有效的配置（如果当前选择无效或为空则选择第一个）
+        if (string.IsNullOrEmpty(_optimizeConfigId) || !_availableConfigs.Any(c => c.Id == _optimizeConfigId))
+        {
+            _optimizeConfigId = _availableConfigs.FirstOrDefault()?.Id;
+        }
+    }
+
+    private void CloseOptimizeModal()
+    {
+        _showOptimizeModal = false;
+        _optimizing = false;
+        _optimizeCancellationTokenSource?.Cancel();
+        _optimizeCancellationTokenSource?.Dispose();
+        _optimizeCancellationTokenSource = null;
+    }
+
+    private async Task StartOptimize()
+    {
+        if (string.IsNullOrWhiteSpace(_editingPrompt.Content))
+        {
+            _message.Error("请先填写Prompt内容");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_optimizeConfigId))
+        {
+            _message.Error("请选择一个模型配置");
+            return;
+        }
+
+        try
+        {
+            // 创建新的取消令牌
+            _optimizeCancellationTokenSource?.Cancel();
+            _optimizeCancellationTokenSource?.Dispose();
+            _optimizeCancellationTokenSource = new CancellationTokenSource();
+
+            _optimizing = true;
+            _optimizedContent = string.Empty;
+            StateHasChanged();
+
+            // 读取优化Prompt模板
+            var templatePath = Path.Combine(AppContext.BaseDirectory, "PromptTemplates", "OptimizePrompt.txt");
+            if (!File.Exists(templatePath))
+            {
+                _message.Error("优化模板文件不存在");
+                _optimizing = false;
+                return;
+            }
+
+            var template = await File.ReadAllTextAsync(templatePath);
+            
+            // 替换模板中的占位符
+            var systemPrompt = template
+                .Replace("{{$prompt}}", _editingPrompt.Content)
+                .Replace("{{$requirement}}", _optimizeRequirement ?? "无特殊要求");
+
+            // 构建消息列表
+            var messages = new List<AIChatMessage>
+            {
+                new AIChatMessage(ChatRole.System, systemPrompt),
+                new AIChatMessage(ChatRole.User, "请开始优化这个提示词")
+            };
+
+            var chatOptions = new ChatOptions
+            {
+                Temperature = 0.7f,
+                MaxOutputTokens = 4000
+            };
+
+            // 获取LlmConfig对象
+            var config = _availableConfigs.FirstOrDefault(c => c.Id == _optimizeConfigId);
+            if (config == null)
+            {
+                _message.Error("未找到指定的模型配置");
+                _optimizing = false;
+                return;
+            }
+
+            // 流式调用LLM，加入 429 专门处理与重试
+            var chatClient = _chatClientFactory.CreateClientWithHttpClient(config);
+
+            var maxRetries = 3;
+            var attempt = 0;
+            var fullResponse = new System.Text.StringBuilder();
+
+            for (; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    var streamingResponse = chatClient.GetStreamingResponseAsync(
+                        messages,
+                        chatOptions,
+                        _optimizeCancellationTokenSource.Token
+                    );
+
+                    await foreach (var update in streamingResponse)
+                    {
+                        if (_optimizeCancellationTokenSource.Token.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        if (update.Text != null)
+                        {
+                            fullResponse.Append(update.Text);
+                            _optimizedContent = fullResponse.ToString();
+                            StateHasChanged();
+
+                            // 自动滚动到底部
+                            try
+                            {
+                                await JSRuntime.InvokeVoidAsync("scrollToBottom", "optimize-result-container");
+                            }
+                            catch { /* 静默失败 */ }
+                        }
+                    }
+
+                    // 如果执行成功，跳出重试循环
+                    break;
+                }
+                catch (Exception ex) when (
+                    (ex is System.Net.Http.HttpRequestException httpEx && httpEx.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    || (ex.Message != null && ex.Message.Contains("429"))
+                    || (ex.InnerException != null && ex.InnerException.Message?.Contains("429") == true)
+                )
+                {
+                    // 处理 429 限流
+                    Logger.LogWarning(ex, "Optimize prompt attempt {Attempt} received 429 Too Many Requests", attempt);
+                    _message.Warning($"上游服务返回 429（请求过多），正在重试 ({attempt}/{maxRetries})...");
+
+                    if (attempt >= maxRetries || _optimizeCancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        _message.Error("优化失败：上游服务限流，请稍后重试或选择其他模型配置。");
+                        throw; // 让外层 catch 处理清理
+                    }
+
+                    // 指数退避
+                    var delayMs = (int)(Math.Pow(2, attempt) * 1000);
+                    await Task.Delay(delayMs, _optimizeCancellationTokenSource.Token);
+                    continue;
+                }
+            }
+
+            _message.Success("Prompt优化完成！");
+        }
+        catch (OperationCanceledException)
+        {
+            _message.Info("优化已停止");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"优化失败: {ex.Message}");
+            Logger.LogError(ex, "Failed to optimize prompt");
+        }
+        finally
+        {
+            _optimizing = false;
+            StateHasChanged();
+        }
+    }
+
+    private void StopOptimize()
+    {
+        _optimizeCancellationTokenSource?.Cancel();
+        _message.Info("正在停止优化...");
+    }
+
+    private async Task ApplyOptimizedPrompt()
+    {
+        if (string.IsNullOrWhiteSpace(_optimizedContent))
+        {
+            _message.Warning("没有可应用的优化内容");
+            return;
+        }
+
+        var result = await _confirm.Show(
+            "确定要用优化后的内容替换当前Prompt吗？此操作将覆盖编辑器中的内容。",
+            "确认应用",
+            ConfirmButtons.YesNo,
+            ConfirmIcon.Question
+        );
+
+        if (result == ConfirmResult.Yes)
+        {
+            _editingPrompt.Content = _optimizedContent;
+            UpdatePromptParameters(_optimizedContent);
+            TriggerAutoSave();
+            _message.Success("已应用优化后的Prompt");
+            CloseOptimizeModal();
+        }
+    }
+
+    #endregion
 }

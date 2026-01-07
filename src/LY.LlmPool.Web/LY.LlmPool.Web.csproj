@@ -52,4 +52,10 @@
     <ProjectReference Include="..\LY.LlmPool.Client\LY.LlmPool.Client.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="PromptTemplates\OptimizePrompt.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
