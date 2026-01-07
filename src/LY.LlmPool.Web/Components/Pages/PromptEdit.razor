@@ -28,6 +28,7 @@
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 @inject ILogger<PromptEdit> Logger
+@inject IWebHostEnvironment Env
 
 <PageTitle>@(_editingPrompt.Id == null ? "New Prompt" : "Edit Prompt")</PageTitle>
 
@@ -280,7 +281,7 @@
                             <TitleTemplate>
                                 <Space Size="@SpaceSize.Small" Wrap>
                                     <SpaceItem>
-                                        <Icon Type="@(config.Type == "Model" ? "robot" : "api")" />
+                                        <Button Icon="@(config.IsHistoryCollapsed ? "caret-right" : "caret-down")" Size="@ButtonSize.Small" OnClick="() => ToggleHistoryCollapse(config)"></Button>
                                     </SpaceItem>
                                     <SpaceItem>
                                         <Select TItem="string"
@@ -321,14 +322,22 @@
                                                     Disabled="@_testLoading" />
                                         }
                                     </SpaceItem>
-                                    @if (!string.IsNullOrWhiteSpace(config.ConversationId))
+                                    @* @if (!string.IsNullOrWhiteSpace(config.ConversationId))
                                     {
                                         <SpaceItem>
                                             <Tag Color="TagColor.Green">
                                                 🔗 ConversationId: @config.ConversationId
                                             </Tag>
                                         </SpaceItem>
-                                    }
+                                    } *@
+                                    <SpaceItem>
+                                        @if (config.TestResult?.Score.HasValue == true)
+                                        {
+                                            <Tooltip Title="@config.TestResult.ScoreComment">
+                                                <Tag Color="TagColor.Blue">评分: @config.TestResult.Score</Tag>
+                                            </Tooltip>
+                                        }
+                                    </SpaceItem>
                                     <SpaceItem>
                                         @if (config.ChatHistory.Any())
                                         {
@@ -377,7 +386,7 @@
                             </TitleTemplate>
                             <ChildContent>
                                 @* 展示历史记录 *@
-                                @if (config.ChatHistory.Any())
+                                @if (config.ChatHistory.Any() && !config.IsHistoryCollapsed)
                                 {
                                     <div class="chat-history-section" id="chat-history-@(config.ConfigId)">
                                         <div class="chat-history-header-inline">
@@ -698,6 +707,15 @@
         </Card>
     </AntDesign.Col>
 </Row>
+
+@code {
+    private void ToggleHistoryCollapse(PromptTestConfig config)
+    {
+        if (config == null) return;
+        config.IsHistoryCollapsed = !config.IsHistoryCollapsed;
+        StateHasChanged();
+    }
+}
 
 <Drawer Title="@("Prompt History")"
         Visible="@_showHistoryDrawer"
@@ -1954,7 +1972,7 @@
     };
 </script>
 
-    @code {
+@code {
     [Parameter]
     public string? Id { get; set; }
 
@@ -1970,7 +1988,7 @@
     private List<LlmEndpoint> _availableEndpoints = new();
     private bool _testLoading;
     private CancellationTokenSource? _testCancellationTokenSource;
-    
+
     // Prompt优化相关
     private bool _showOptimizeModal = false;
     private bool _optimizing = false;
@@ -1983,6 +2001,8 @@
     private string? _selectedEndpointId;
     private LlmPrompt _editingPrompt = new();
     private List<PromptTestConfig> _testConfigs = new();
+    // 记录正在评分的配置Id，用于在 UI 中显示“评分中”状态
+    private HashSet<string> _scoringInProgressIds = new();
     private bool _showHistoryDrawer;
     private bool _historyLoading;
     private List<LlmPromptHistory> _promptHistory = new();
@@ -2105,7 +2125,7 @@
                 var displayTitle = string.IsNullOrWhiteSpace(tool.Description) 
                     ? tool.Name 
                     : $"{tool.Name} - {tool.Description}";
-                
+
                 appCategoryNode.Children.Add(new ToolTreeNode(displayTitle, $"App:{tool.SourceId}")
                 {
                     ToolType = "App"
@@ -2141,7 +2161,7 @@
                     var displayTitle = string.IsNullOrWhiteSpace(tool.Description) 
                         ? tool.Name 
                         : $"{tool.Name} - {tool.Description}";
-                    
+
                     mcpServerNode.Children.Add(new ToolTreeNode(displayTitle, $"MCP:{tool.SourceId}")
                     {
                         ToolType = "Mcp"
@@ -2169,7 +2189,7 @@
             {
                 var sourceType = pt.ToolType == ToolType.Internal ? "App" : "MCP";
                 var value = $"{sourceType}:{pt.ToolId}";
-              
+
                 return value;
             }).ToArray();
 
@@ -2230,12 +2250,12 @@
 
             // 🎯 加载完成后,触发 UI 更新并滚动到底部
             StateHasChanged();
-            
+
             // 使用 InvokeAsync 确保在下一个渲染周期后执行滚动
             await InvokeAsync(async () =>
             {
                 await Task.Delay(150); // 等待 DOM 渲染
-                
+
                 // 为每个有历史记录的配置滚动到底部
                 foreach (var config in _testConfigs.Where(c => c.ChatHistory.Any()))
                 {
@@ -2548,7 +2568,7 @@
         {
             // Process the prompt content with parameter values
             var processedPromptContent = _editingPrompt.Content;
-            
+
             // 🔧 使用 PromptParameterService 正确替换参数（支持所有格式：{{param}}、{{*param}}、{{param|desc}}、{{*param|desc}}）
             var parameterService = new PromptParameterService();
             var paramDict = new Dictionary<string, object>();
@@ -2577,7 +2597,7 @@
                     {
                         Console.WriteLine($"♻️ [PromptEdit] 复用现有 ConversationId: {config.ConversationId}");
                     }
-                    
+
                     config.IsStreaming = true;
                     config.TestResult = new PromptTestResult { Success = true };
                     StateHasChanged();
@@ -2600,7 +2620,7 @@
                             // 如果第一条不是 system 消息,在开头插入
                             config.ChatHistory.Insert(0, new AIChatMessage(Microsoft.Extensions.AI.ChatRole.System, processedPromptContent));
                         }
-                        
+
                         messages.AddRange(config.ChatHistory);
                     }
                     else
@@ -2724,7 +2744,7 @@
 
                         // 准备参数
                         Dictionary<string, object>? parameters = null;
-                        
+
                         // 🎯 如果此配置有 ConversationId，通过参数传递（在请求头中发送）
                         if (!string.IsNullOrWhiteSpace(config.ConversationId))
                         {
@@ -2791,14 +2811,14 @@
                                                 toolCall.ToolName,
                                                 args
                                             );
-                                            
+
                                             // 🔑 通过 AdditionalProperties 传递批次ID
                                             if (!string.IsNullOrEmpty(segment.CallBatchId))
                                             {
                                                 functionCall.AdditionalProperties ??= new AdditionalPropertiesDictionary();
                                                 functionCall.AdditionalProperties["CallBatchId"] = segment.CallBatchId;
                                             }
-                                            
+
                                             contents.Add(functionCall);
 
                                             // 🔑 如果工具调用有结果，添加工具结果内容（FunctionResultContent）
@@ -2855,14 +2875,14 @@
 
                             await Task.Delay(10, cancellationToken); // 保持打字效果的流畅性
                         }
-                        
+
                         // 🔑 将最终的助手消息添加到 messages 列表（如果 messages 还没有）
                         // 这样 FunctionInvokingChatClient 的后续处理才能正确工作
                         if (!messages.Contains(assistantMessage))
                         {
                             messages.Add(assistantMessage);
                         }
-                        
+
                         // 🔑 同步 FunctionInvokingChatClient 添加的额外消息到 ChatHistory
                         // 这些消息包括工具结果等
                         var currentHistoryCount = config.ChatHistory.Count;
@@ -2871,17 +2891,17 @@
                             var newMessages = messages.Skip(currentHistoryCount).ToList();
                             config.ChatHistory.AddRange(newMessages);
                         }
-                        
+
                         // 计算总文本长度和工具调用数量（用于日志）
                         var totalTextLength = assistantMessage.Text?.Length ?? 0;
                         var totalToolCalls = assistantMessage.Contents?.OfType<Microsoft.Extensions.AI.FunctionCallContent>().Count() ?? 0;
-                        
+
                         // 🔑 最终刷新UI，确保历史记录显示
                         StateHasChanged();
-                        
+
                         // 🔥 等待一小段时间，让 FunctionInvokingChatClient 完成工具结果的添加
                         await Task.Delay(50);
-                        
+
                         // 🔑 再次检查并同步工具结果（FunctionInvokingChatClient 可能在流式完成后才添加）
                         var finalHistoryCount = config.ChatHistory.Count;
                         if (messages.Count > finalHistoryCount)
@@ -2889,6 +2909,17 @@
                             var additionalMessages = messages.Skip(finalHistoryCount).ToList();
                             config.ChatHistory.AddRange(additionalMessages);
                             StateHasChanged(); // 刷新UI显示工具结果
+                        }
+
+                        // 测试结束后立即对该配置进行评分（不需等待所有配置完成）
+                        try
+                        {
+                            // 异步执行评分，失败时记录日志但不抛出
+                            _ = ScoreSingleTestResultAsync(config);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.LogWarning(ex, "Failed to start scoring for config {ConfigId}", config.ConfigId);
                         }
                     }
                     catch (OperationCanceledException)
@@ -2940,8 +2971,11 @@
             }
 
             // 🔑 不再清空输入框，让用户可以继续修改和发送
+
+            // 在所有测试完成后，为每个成功的测试执行评分
+            await ScoreAllTestResults();
             // 如果需要清空，用户可以手动清空或使用快捷键
-            
+
             // 自动对焦输入框，支持连续提问
             if (_testInputRef != null)
             {
@@ -3146,7 +3180,7 @@
         {
             await PromptService.DeletePromptHistoryAsync(history.Id);
             _message.Success("History record deleted successfully");
-            
+
             // Refresh the history list
             if (_showHistoryDrawer)
             {
@@ -3167,7 +3201,7 @@
         {
             var draftKey = Id ?? "new";
             var draft = await JSRuntime.InvokeAsync<PromptDraft?>("promptDraft.load", draftKey);
-            
+
             if (draft != null)
             {
                 var result = await _confirm.Show(
@@ -3183,7 +3217,7 @@
                     _editingPrompt.Description = draft.Description ?? _editingPrompt.Description;
                     _editingPrompt.Content = draft.Content ?? _editingPrompt.Content;
                     _editingPrompt.ModelParameters = draft.ModelParameters ?? _editingPrompt.ModelParameters;
-                    
+
                     if (draft.ParameterValues != null)
                     {
                         _parameterValues = new Dictionary<string, string>(draft.ParameterValues);
@@ -3214,7 +3248,7 @@
     private void TriggerAutoSave()
     {
         _hasPendingChanges = true;
-        
+
         // 重置定时器
         _autoSaveTimer?.Dispose();
         _autoSaveTimer = new System.Threading.Timer(async _ =>
@@ -3339,11 +3373,11 @@
             _message.Warning("没有可用的模型配置，请先配置LLM");
             return;
         }
-        
+
         _showOptimizeModal = true;
         _optimizedContent = string.Empty;
         _optimizeRequirement = string.Empty;
-        
+
         // 默认选择一个有效的配置（如果当前选择无效或为空则选择第一个）
         if (string.IsNullOrEmpty(_optimizeConfigId) || !_availableConfigs.Any(c => c.Id == _optimizeConfigId))
         {
@@ -3395,7 +3429,7 @@
             }
 
             var template = await File.ReadAllTextAsync(templatePath);
-            
+
             // 替换模板中的占位符
             var systemPrompt = template
                 .Replace("{{$prompt}}", _editingPrompt.Content)
@@ -3534,6 +3568,203 @@
             TriggerAutoSave();
             _message.Success("已应用优化后的Prompt");
             CloseOptimizeModal();
+        }
+    }
+
+    #endregion
+
+    #region 测试评分功能
+
+    private async Task ScoreAllTestResults()
+    {
+        foreach (var config in _testConfigs)
+        {
+            if (config.TestResult == null) continue;
+            if (!config.TestResult.Success) continue;
+
+            // 如果已经评分，跳过
+            if (config.TestResult.Score.HasValue) continue;
+
+            try
+            {
+                // 标记为正在评分（UI 将显示“评分中”）
+                if (!string.IsNullOrEmpty(config.ConfigId))
+                {
+                    _scoringInProgressIds.Add(config.ConfigId);
+                    StateHasChanged();
+                }
+
+                // 取最后的文本响应（合并所有文本片段）
+                var responseText = string.Join("\n", config.TestResult.Segments
+                    .Where(s => s.Type == ResponseSegmentType.Text && !string.IsNullOrEmpty(s.Text))
+                    .Select(s => s.Text!.Trim())
+                ).Trim();
+
+                if (string.IsNullOrWhiteSpace(responseText))
+                {
+                    Logger.LogDebug("No textual response to score for config {ConfigId}", config.ConfigId);
+                    continue;
+                }
+
+                var promptContent = _editingPrompt.Content ?? string.Empty;
+
+                var score = await ScoreResponseAsync(promptContent, responseText, config);
+                if (score != null)
+                {
+                    config.TestResult.Score = score.Score;
+                    config.TestResult.ScoreComment = score.Comment;
+                    StateHasChanged();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Failed to score test result for config {ConfigId}", config.ConfigId);
+            }
+            finally
+            {
+                // 清除评分中标记
+                if (!string.IsNullOrEmpty(config.ConfigId))
+                {
+                    _scoringInProgressIds.Remove(config.ConfigId);
+                    StateHasChanged();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 为单个配置执行评分（在其测试完成后立即调用）。
+    /// </summary>
+    private async Task ScoreSingleTestResultAsync(PromptTestConfig config)
+    {
+        if (config == null || config.TestResult == null) return;
+        if (!config.TestResult.Success) return;
+        if (config.TestResult.Score.HasValue) return;
+
+        if (string.IsNullOrEmpty(config.ConfigId))
+        {
+            Logger.LogDebug("Skip scoring because ConfigId is empty");
+            return;
+        }
+
+        try
+        {
+            _scoringInProgressIds.Add(config.ConfigId);
+            await InvokeAsync(StateHasChanged);
+
+            var responseText = string.Join("\n", config.ChatHistory.SelectMany(s => s.Contents)
+                .OfType<TextContent>()
+                .Select(s => s.Text!.Trim()))
+                .Trim();
+
+            if (string.IsNullOrWhiteSpace(responseText))
+            {
+                Logger.LogDebug("No textual response to score for config {ConfigId}", config.ConfigId);
+                return;
+            }
+
+            var promptContent = _editingPrompt.Content ?? string.Empty;
+            var score = await ScoreResponseAsync(promptContent, responseText, config);
+            if (score != null)
+            {
+                config.TestResult.Score = score.Score;
+                config.TestResult.ScoreComment = score.Comment;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to score single test result for config {ConfigId}", config.ConfigId);
+        }
+        finally
+        {
+            if (!string.IsNullOrEmpty(config.ConfigId))
+            {
+                _scoringInProgressIds.Remove(config.ConfigId);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private class ScoreResult
+    {
+        public int Score { get; set; }
+        public string Comment { get; set; } = string.Empty;
+    }
+
+    private async Task<ScoreResult?> ScoreResponseAsync(string promptContent, string responseText, PromptTestConfig config)
+    {
+        try
+        {
+            // 读取评分模板
+            var candidates = new[]
+            {
+                Path.Combine(Env.ContentRootPath ?? string.Empty, "PromptTemplates", "ScorePrompt.txt"),
+                Path.Combine(AppContext.BaseDirectory ?? string.Empty, "PromptTemplates", "ScorePrompt.txt"),
+            };
+            var templatePath = candidates.FirstOrDefault(File.Exists);
+            if (templatePath == null)
+            {
+                Logger.LogWarning("Score template not found. Tried: {Candidates}", string.Join(";", candidates));
+                return null;
+            }
+
+            var template = await File.ReadAllTextAsync(templatePath);
+            var systemPrompt = template.Replace("{{$content}}", promptContent).Replace("{{$response}}", responseText);
+
+            var messages = new List<AIChatMessage>
+            {
+                new AIChatMessage(ChatRole.System, systemPrompt),
+                new AIChatMessage(ChatRole.User, "请按要求输出 JSON 评分结果。")
+            };
+
+            var chatOptions = new ChatOptions { Temperature = 0.0f, MaxOutputTokens = 256 };
+
+            // 获取 LlmConfig 并创建客户端
+            var llmConfig = await LlmPoolService.GetConfigByIdAsync(config.ConfigId);
+            if (llmConfig == null)
+            {
+                Logger.LogWarning("Cannot score because config not found: {ConfigId}", config.ConfigId);
+                return null;
+            }
+
+            var chatClient = _chatClientFactory.CreateClientWithHttpClient(llmConfig);
+            var response = await chatClient.GetResponseAsync(messages, chatOptions);
+            var text = response.Text ?? string.Empty;
+
+            // 尝试解析 JSON
+            try
+            {
+                // 可能返回纯 JSON 或带编码块，尝试提取第一个 JSON 对象
+                var jsonStart = text.IndexOf('{');
+                var jsonEnd = text.LastIndexOf('}');
+                if (jsonStart >= 0 && jsonEnd > jsonStart)
+                {
+                    var json = text.Substring(jsonStart, jsonEnd - jsonStart + 1);
+                    var doc = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(json);
+                    var score = doc.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt32() : 0;
+                    var comment = doc.TryGetProperty("comment", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? string.Empty : string.Empty;
+                    return new ScoreResult { Score = Math.Clamp(score, 0, 100), Comment = comment };
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Failed to parse scoring output: {Text}", text);
+            }
+
+            // 解析失败，尝试从文本中提取数字
+            var digits = System.Text.RegularExpressions.Regex.Match(text, "(\\d{1,3})");
+            if (digits.Success && int.TryParse(digits.Value, out var parsed))
+            {
+                return new ScoreResult { Score = Math.Clamp(parsed, 0, 100), Comment = text.Replace(digits.Value, "").Trim() };
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "ScoreResponseAsync failed for config {ConfigId}", config.ConfigId);
+            return null;
         }
     }
 

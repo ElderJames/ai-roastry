@@ -9,6 +9,8 @@ namespace LY.LlmPool.Web.Models
         public string? Parameters { get; set; }
         public PromptTestResult? TestResult { get; set; }
         public bool IsStreaming { get; set; }
+        // 是否折叠历史记录（默认展开）
+        public bool IsHistoryCollapsed { get; set; } = false;
         public List<Microsoft.Extensions.AI.ChatMessage> ChatHistory { get; set; } = new();
         
         /// <summary>
@@ -56,6 +58,9 @@ namespace LY.LlmPool.Web.Models
         /// 这是主要的数据存储，包含完整的响应内容
         /// </summary>
         public List<ResponseSegment> Segments { get; set; } = new();
+        // 评分结果（可选）
+        public int? Score { get; set; }
+        public string? ScoreComment { get; set; }
     }
 
     /// <summary>
