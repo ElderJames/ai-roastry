@@ -2,10 +2,10 @@
 
 <PageTitle>LLM Pool</PageTitle>
 
-<h1>欢迎使用 LLM Pool</h1>
-<p style="color:#666;margin-top:-6px">统一管理模型配置、端点与应用，提供 OpenAI 兼容接口与可视化分析。</p>
+<h1 style="margin-bottom:10px">欢迎使用 LLM Pool</h1>
+<p style="color:#666;margin-top:-6px; font-size:16px">统一管理模型配置、端点与应用，提供 OpenAI 兼容接口与可视化分析。</p>
 
-<h2 style="margin-top:20px">使用指南</h2>
+<h2 style="margin-top:24px; margin-bottom:16px">使用指南</h2>
 <ol>
 		<li>
 				创建/配置端点：在 <a href="/endpoint-config">端点配置</a> 中添加你的上游服务（如 OpenAI、Azure OpenAI、DeepSeek 等）的 BaseUrl 与 API Key。
@@ -111,111 +111,24 @@ curl -N \
 	</code></pre>
 </details>
 
-<h2 style="margin-top:24px">快速链接</h2>
-<Row Gutter="16">
-	<Col Span="6">
-			<a href="/chat-test" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="experiment" />
-					<div>
-						<div style="font-weight:600">聊天测试</div>
-						<div style="color:#666">快速验证对话与工具调用</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6">
-			<a href="/request-log" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="search" />
-					<div>
-						<div style="font-weight:600">请求日志</div>
-						<div style="color:#666">按时间线查看请求详情</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6">
-			<a href="/model-config" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="robot" />
-					<div>
-						<div style="font-weight:600">模型配置</div>
-						<div style="color:#666">管理模型、并发与可用性</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6">
-			<a href="/endpoint-config" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="api" />
-					<div>
-						<div style="font-weight:600">端点配置</div>
-						<div style="color:#666">配置上游服务与凭据</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
+<details style="margin-top:10px">
+	<summary><b>Java 客户端示例（openai-java）</b></summary>
+	<pre style="background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto"><code>
+import com.openai.client.OpenAIClient;
+import com.openai.client.okhttp.OkHttpOpenAIClient;
+import com.openai.models.ChatCompletionCreateParams;
+import com.openai.models.ChatCompletion;
 
-	<Col Span="6" Style="margin-top:16px">
-			<a href="/app-list" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="appstore" />
-					<div>
-						<div style="font-weight:600">应用管理</div>
-						<div style="color:#666">用 Prompt + 模型组装应用</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6" Style="margin-top:16px">
-			<a href="/prompt-list" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="message" />
-					<div>
-						<div style="font-weight:600">Prompt 管理</div>
-						<div style="color:#666">管理与复用提示词</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6" Style="margin-top:16px">
-			<a href="/model-stats" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="area-chart" />
-					<div>
-						<div style="font-weight:600">模型统计</div>
-						<div style="color:#666">请求量与耗时分布</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-	<Col Span="6" Style="margin-top:16px">
-			<a href="/endpoint-calls" style="text-decoration:none">
-				<Card Hoverable="true">
-				<div style="display:flex;align-items:center;gap:10px">
-					<Icon Type="cloud" />
-					<div>
-						<div style="font-weight:600">端点调用</div>
-						<div style="color:#666">端点维度的调用明细</div>
-					</div>
-				</div>
-					</Card>
-		</a>
-	</Col>
-</Row>
+OpenAIClient client = OkHttpOpenAIClient.builder()
+    .apiKey("your-api-key")
+    .baseUrl("http://localhost:5071/v1")
+    .build();
+
+ChatCompletion chatCompletion = client.chat().completions().create(ChatCompletionCreateParams.builder()
+    .model("your-app-or-config")
+    .addUserMessage("你好")
+    .build());
+
+System.out.println(chatCompletion.choices().get(0).message().content());
+	</code></pre>
+</details>

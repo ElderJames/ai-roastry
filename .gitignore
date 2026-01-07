@@ -365,3 +365,5 @@ FodyWeavers.xsd
 .claude/
 .serena/
 /CLAUDE.md
+/src/LY.LlmPool.Web/llm-pool.db-shm
+/src/LY.LlmPool.Web/llm-pool.db-wal
