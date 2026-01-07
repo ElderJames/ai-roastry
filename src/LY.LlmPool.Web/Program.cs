@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Http.Resilience;
 using Scalar.AspNetCore;
 using OpenTelemetry.Resources;
@@ -31,6 +32,8 @@ builder.Logging.AddProvider(new FileLoggerProvider(activityLogPath, LogLevel.Deb
 
 // Add services to the container.
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var sqliteConnectionString = builder.Configuration.GetConnectionString("SqliteConnection");
+var databaseType = builder.Configuration.GetValue<string>("Database:Type") ?? "PostgreSQL";
 var useInMemoryDb = Environment.GetEnvironmentVariable("USE_INMEMORY_DB")?.ToLowerInvariant() == "true";
 
 // Add database contexts
@@ -44,11 +47,24 @@ if (useInMemoryDb)
 }
 else
 {
-    builder.Services.AddDbContextFactory<LlmDbContext>(options =>
-        options.UseNpgsql(connectionString));
+    if (databaseType.Equals("SQLite", StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Services.AddDbContextFactory<LlmDbContext>(options =>
+            options.UseSqlite(sqliteConnectionString)
+                   .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
 
-    builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
-        options.UseNpgsql(connectionString));
+        builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+            options.UseSqlite(sqliteConnectionString)
+                   .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
+    }
+    else
+    {
+        builder.Services.AddDbContextFactory<LlmDbContext>(options =>
+            options.UseNpgsql(connectionString));
+
+        builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
+            options.UseNpgsql(connectionString));
+    }
 }
 
 builder.Services.AddDatabaseDeveloperPageExceptionFilter();
@@ -373,12 +389,14 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-if (!useInMemoryDb && Environment.GetEnvironmentVariable("APPLY_MIGRATIONS")?.ToLower() == "true")
+if (!useInMemoryDb)
 {
     using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     dbContext.Database.Migrate();
     var llmDbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
+    
+    // 抑制迁移警告，因为我们知道模型是一致的
     llmDbContext.Database.Migrate();
 }
 
@@ -587,47 +605,63 @@ if (useInMemoryDb)
 }
 
 // Apply database migrations and seed initial data if needed
-//using (var scope = app.Services.CreateScope())
-//{
-//    var dbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
-//    dbContext.Database.Migrate();
+if (!useInMemoryDb)
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<LlmDbContext>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        
+        try
+        {
+            logger.LogInformation($"Applying database migrations for {databaseType}...");
+            dbContext.Database.Migrate();
+            logger.LogInformation("Database migrations applied successfully");
 
-//    // Seed initial model types if none exist
-//    if (!await dbContext.ModelTypes.AnyAsync())
-//    {
-//        dbContext.ModelTypes.AddRange(
-//            new LlmModelType
-//            {
-//                Name = "OpenAI",
-//                Description = "OpenAI Compatible Models",
-//                Icon = "thunderbolt",
-//                DefaultEndpoint = "https://api.openai.com"
-//            },
-//            new LlmModelType
-//            {
-//                Name = "DeepSeek",
-//                Description = "DeepSeek Models",
-//                Icon = "robot",
-//                DefaultEndpoint = "https://api.deepseek.com"
-//            },
-//            new LlmModelType
-//            {
-//                Name = "Qwen",
-//                Description = "Qwen Models",
-//                Icon = "cloud",
-//                DefaultEndpoint = "https://dashscope.aliyuncs.com"
-//            },
-//            new LlmModelType
-//            {
-//                Name = "Ollama",
-//                Description = "Ollama Local Models",
-//                Icon = "laptop",
-//                DefaultEndpoint = "http://localhost:11434"
-//            }
-//        );
-//        await dbContext.SaveChangesAsync();
-//    }
-//}
+            // Seed initial model types if none exist
+            if (!await dbContext.ModelTypes.AnyAsync())
+            {
+                logger.LogInformation("Seeding initial model types...");
+                dbContext.ModelTypes.AddRange(
+                    new LlmModelType
+                    {
+                        Name = "OpenAI",
+                        Description = "OpenAI Compatible Models",
+                        Icon = "thunderbolt",
+                        DefaultEndpoint = "https://api.openai.com"
+                    },
+                    new LlmModelType
+                    {
+                        Name = "DeepSeek",
+                        Description = "DeepSeek Models",
+                        Icon = "robot",
+                        DefaultEndpoint = "https://api.deepseek.com"
+                    },
+                    new LlmModelType
+                    {
+                        Name = "Qwen",
+                        Description = "Qwen Models",
+                        Icon = "cloud",
+                        DefaultEndpoint = "https://dashscope.aliyuncs.com"
+                    },
+                    new LlmModelType
+                    {
+                        Name = "Ollama",
+                        Description = "Ollama Local Models",
+                        Icon = "laptop",
+                        DefaultEndpoint = "http://localhost:11434"
+                    }
+                );
+                await dbContext.SaveChangesAsync();
+                logger.LogInformation("Initial model types seeded successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, $"Failed to apply migrations or seed data for {databaseType}");
+        }
+    }
+}
 
 // Initialize Tool Metadata Cache on startup
 using (var scope = app.Services.CreateScope())
