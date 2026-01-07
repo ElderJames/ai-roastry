@@ -2,6 +2,7 @@
 using LY.LlmPool.Web.Data;
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Aggregation;
+using LY.LlmPool.Web.Services.Tools;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 using System.Text.Encodings.Web;
@@ -17,15 +18,18 @@ public class McpServerService : IMcpServerService
     private readonly ILogger<McpServerService> _logger;
     private readonly McpClientsFactory _mcpClientsFactory;
     private readonly IDbContextFactory<LlmDbContext> _dbContextFactory;
+    private readonly ToolMetadataService _toolMetadataService;
 
     public McpServerService(
         IDbContextFactory<LlmDbContext> dbContextFactory,
         ILogger<McpServerService> logger,
-        McpClientsFactory mcpClientsFactory)
+        McpClientsFactory mcpClientsFactory,
+        ToolMetadataService toolMetadataService)
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
         _mcpClientsFactory = mcpClientsFactory;
+        _toolMetadataService = toolMetadataService;
     }
 
     public async Task<McpServerInfo[]> GetAllServersAsync()
@@ -94,6 +98,9 @@ public class McpServerService : IMcpServerService
             _logger.LogInformation("Adding MCP client for new server {ServerId}", serverConfig.Id);
             await _mcpClientsFactory.AddClientAsync(serverConfig.Id);
 
+            // 刷新工具元数据缓存
+            await _toolMetadataService.RefreshMcpServerAsync(serverConfig.Id);
+
             _logger.LogInformation("Created MCP server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
         }
         catch (Exception ex)
@@ -142,6 +149,9 @@ public class McpServerService : IMcpServerService
             // Update only the specific MCP client for this server
             _logger.LogInformation("Updating MCP client for server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
             await _mcpClientsFactory.UpdateClientAsync(serverConfig.Id);
+
+            // 刷新工具元数据缓存
+            await _toolMetadataService.RefreshMcpServerAsync(serverConfig.Id);
              
             _logger.LogInformation("Updated MCP server {Name}:{ServerId}", serverConfig.Id, serverConfig.Name);
         }
@@ -177,6 +187,9 @@ public class McpServerService : IMcpServerService
             // Remove only the specific MCP client for this server
             _logger.LogInformation("Removing MCP client for deleted server {ServerId}", serverId);
             await _mcpClientsFactory.RemoveClientAsync(serverId);
+
+            // 刷新工具元数据缓存
+            await _toolMetadataService.RefreshMcpServerAsync(serverId);
            
             _logger.LogInformation("Deleted MCP server {ServerId}", serverId);
         }
@@ -209,6 +222,9 @@ public class McpServerService : IMcpServerService
             // Update only the specific MCP client for this server (enable/disable)
             _logger.LogInformation("Updating MCP client status for server {ServerId} to {Enabled}", serverId, enabled);
             await _mcpClientsFactory.UpdateClientAsync(serverId);
+
+            // 刷新工具元数据缓存
+            await _toolMetadataService.RefreshMcpServerAsync(serverId);
 
             _logger.LogInformation("Toggled MCP server {ServerId} status to {Enabled}", serverId, enabled);
         }
@@ -410,6 +426,9 @@ public class McpServerService : IMcpServerService
 
         entity.SchemaCacheJson = content;
         await dbContext.SaveChangesAsync(ct);
+
+        // 刷新工具元数据缓存
+        await _toolMetadataService.RefreshMcpServerAsync(id);
 
         return ParseCounts(content);
     }
