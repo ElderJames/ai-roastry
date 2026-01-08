@@ -3419,16 +3419,12 @@
             _optimizedContent = string.Empty;
             StateHasChanged();
 
-            // 读取优化Prompt模板
-            var templatePath = Path.Combine(AppContext.BaseDirectory, "PromptTemplates", "OptimizePrompt.txt");
-            if (!File.Exists(templatePath))
+            var template = TemplateResources.OptimizePrompt;
+            if (string.IsNullOrEmpty(template))
             {
-                _message.Error("优化模板文件不存在");
                 _optimizing = false;
                 return;
             }
-
-            var template = await File.ReadAllTextAsync(templatePath);
 
             // 替换模板中的占位符
             var systemPrompt = template
@@ -3696,20 +3692,11 @@
     {
         try
         {
-            // 读取评分模板
-            var candidates = new[]
+            var template = TemplateResources.ScorePrompt;
+            if (string.IsNullOrEmpty(template))
             {
-                Path.Combine(Env.ContentRootPath ?? string.Empty, "PromptTemplates", "ScorePrompt.txt"),
-                Path.Combine(AppContext.BaseDirectory ?? string.Empty, "PromptTemplates", "ScorePrompt.txt"),
-            };
-            var templatePath = candidates.FirstOrDefault(File.Exists);
-            if (templatePath == null)
-            {
-                Logger.LogWarning("Score template not found. Tried: {Candidates}", string.Join(";", candidates));
                 return null;
             }
-
-            var template = await File.ReadAllTextAsync(templatePath);
             var systemPrompt = template.Replace("{{$content}}", promptContent).Replace("{{$response}}", responseText);
 
             var messages = new List<AIChatMessage>

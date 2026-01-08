@@ -11,6 +11,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="PromptTemplates\OptimizePrompt.txt" />
+    <EmbeddedResource Include="PromptTemplates\ScorePrompt.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AntDesign" Version="1.4.0" />
     <PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="9.0.5" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="9.0.5" />
@@ -50,15 +55,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LY.LlmPool.Client\LY.LlmPool.Client.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Update="PromptTemplates\OptimizePrompt.txt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="PromptTemplates\ScorePrompt.txt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
 
 </Project>
