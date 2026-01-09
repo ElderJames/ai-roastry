@@ -15,10 +15,21 @@
         <div class="d-flex justify-content-between align-items-center">
             <div>Prompt List</div>
             <div>
-                <Button Type="@ButtonType.Primary" OnClick="AddNewPrompt">
-                    <Icon Type="plus" />
-                    Add New Prompt
-                </Button>
+                <Space>
+                    <Select TItem="string" TItemValue="string" Values="_selectedTags" ValuesChanged="@((IEnumerable<string> vals) => { _selectedTags = vals ?? Array.Empty<string>(); _ = OnTagsChanged(null); })" Mode="@SelectMode.Multiple" Placeholder="Filter by tags" Style="min-width:220px; margin-right:8px;">
+                        @foreach (var tag in _availableTags)
+                        {
+                            <SelectOption TItem="string" TItemValue="string" Value="@tag">@tag</SelectOption>
+                        }
+                    </Select>
+
+                    <Button OnClick="ClearTagFilter">Clear</Button>
+
+                    <Button Type="@ButtonType.Primary" OnClick="AddNewPrompt">
+                        <Icon Type="plus" />
+                        Add New Prompt
+                    </Button>
+                </Space>
             </div>
         </div>
     </TitleTemplate>
@@ -43,6 +54,18 @@
                 </div>
             </PropertyColumn>
             <PropertyColumn Property="c=>c.UpdateTime" Title="Last Modified" Format="yyyy-MM-dd HH:mm:ss" />
+            <PropertyColumn Property="c=>c.Status" Title="Status" />
+            <Column Title="Tags" TData="string">
+                {@{
+                    var tags = (context.Tags ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    <div>
+                        @foreach (var t in tags)
+                        {
+                            <Tag Class="mb-1">@t</Tag>
+                        }
+                    </div>
+                }}
+            </Column>
             <ActionColumn Title="Action">
                 <Space>
                     <SpaceItem>
@@ -66,6 +89,22 @@
                                 <Icon Type="delete" />
                             </Button>
                         </Popconfirm>
+                    </SpaceItem>
+                    <SpaceItem>
+                        @if (context.Status == "Draft")
+                        {
+                            <Button OnClick="() => SubmitForReview(context)">
+                                提交审核
+                            </Button>
+                        }
+                        else if (context.Status == "PendingReview")
+                        {
+                            <AuthorizeView Roles="prompt-auditor,Administrator">
+                                <Authorized Context="auth">
+                                    <Button OnClick="() => PublishPrompt(context)">发布</Button>
+                                </Authorized>
+                            </AuthorizeView>
+                        }
                     </SpaceItem>
                 </Space>
             </ActionColumn>
@@ -122,6 +161,8 @@
 
 @code {
     private List<LlmPrompt> _prompts = new();
+    private List<string> _availableTags = new();
+    private IEnumerable<string> _selectedTags = Array.Empty<string>();
     private bool _showHistoryDrawer;
     private bool _loading;
     private bool _historyLoading;
@@ -130,6 +171,30 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadAvailableTagsAsync();
+        await LoadDataAsync();
+    }
+
+    private async Task LoadAvailableTagsAsync()
+    {
+        try
+        {
+            _availableTags = await PromptService.GetAllTagsAsync();
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"Failed to load tags: {ex.Message}");
+        }
+    }
+
+    private async Task OnTagsChanged(object? _)
+    {
+        await LoadDataAsync();
+    }
+
+    private async Task ClearTagFilter()
+    {
+        _selectedTags = Array.Empty<string>();
         await LoadDataAsync();
     }
 
@@ -138,7 +203,7 @@
         _loading = true;
         try
         {
-            _prompts = await PromptService.GetPromptsAsync();
+            _prompts = await PromptService.GetPromptsAsync(_selectedTags?.Any() == true ? _selectedTags : null);
         }
         finally
         {
@@ -218,6 +283,34 @@
     private void RestoreFromHistory(PromptHistoryEntry history)
     {
         NavigationManager.NavigateTo($"/prompt-edit/{_selectedPrompt.Id}?version={history.Version}&restore=true");
+    }
+
+    private async Task SubmitForReview(LlmPrompt prompt)
+    {
+        try
+        {
+            await PromptService.SubmitForReviewAsync(prompt.Id!);
+            await LoadDataAsync();
+            _message.Success("Prompt 已提交审核");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"提交审核失败: {ex.Message}");
+        }
+    }
+
+    private async Task PublishPrompt(LlmPrompt prompt)
+    {
+        try
+        {
+            await PromptService.PublishPromptAsync(prompt.Id!);
+            await LoadDataAsync();
+            _message.Success("Prompt 已发布");
+        }
+        catch (Exception ex)
+        {
+            _message.Error($"发布失败: {ex.Message}");
+        }
     }
 
     public class PromptHistoryEntry

@@ -33,6 +33,7 @@ builder.Logging.AddProvider(new FileLoggerProvider(activityLogPath, LogLevel.Deb
 // Add services to the container.
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 var sqliteConnectionString = builder.Configuration.GetConnectionString("SqliteConnection");
+var sqliteIdentityConnection = builder.Configuration.GetConnectionString("SqliteIdentityConnection") ?? sqliteConnectionString;
 var databaseType = builder.Configuration.GetValue<string>("Database:Type") ?? "PostgreSQL";
 var useInMemoryDb = Environment.GetEnvironmentVariable("USE_INMEMORY_DB")?.ToLowerInvariant() == "true";
 
@@ -50,11 +51,12 @@ else
     if (databaseType.Equals("SQLite", StringComparison.OrdinalIgnoreCase))
     {
         builder.Services.AddDbContextFactory<LlmDbContext>(options =>
-            options.UseSqlite(sqliteConnectionString)
+            options.UseSqlite(sqliteConnectionString, b => b.MigrationsAssembly("LY.LlmPool.DataMigrations.Sqlite"))
                    .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
 
+        // Use a separate sqlite file for Identity (ApplicationDbContext) so Identity tables are stored separately
         builder.Services.AddDbContextFactory<ApplicationDbContext>(options =>
-            options.UseSqlite(sqliteConnectionString)
+            options.UseSqlite(sqliteIdentityConnection, b => b.MigrationsAssembly("LY.LlmPool.DataMigrations.Sqlite"))
                    .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning)));
     }
     else
@@ -415,9 +417,9 @@ app.UseActivityContext();
 app.UseHttpLogging();
 
 // Add authentication & authorization
-//app.UseAuthentication();
+app.UseAuthentication();
 app.UseAntiforgery();
-//app.UseAuthorization();
+app.UseAuthorization();
 
 // Configure OpenAPI
 app.MapOpenApi();

@@ -705,6 +705,15 @@ namespace LY.LlmPool.DataMigrations.Sqlite.Migrations.LlmDb
                         .HasColumnType("TEXT")
                         .HasColumnName("name");
 
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Tags")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("tags");
+
                     b.Property<DateTime>("UpdateTime")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT")

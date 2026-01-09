@@ -31,10 +31,22 @@ public class LlmPrompt
     public int Version { get; set; }
 
     /// <summary>
+    /// Prompt 状态: Draft / PendingReview / Published
+    /// </summary>
+    [Column("status")]
+    public string Status { get; set; } = "Draft";
+
+    /// <summary>
     /// 模型参数配置 (如: temp=0.7,tokens=100)
     /// </summary>
     [Column("model_parameters")]
     public string? ModelParameters { get; set; }
+
+    /// <summary>
+    /// Prompt 标签，逗号分隔
+    /// </summary>
+    [Column("tags")]
+    public string? Tags { get; set; }
 
     /// <summary>
     /// 绑定的工具

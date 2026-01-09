@@ -1,5 +1,7 @@
 @page "/prompt-edit"
 @page "/prompt-edit/{Id}"
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
 @using LY.LlmPool.Web.Services
 @using LY.LlmPool.Web.Services.Tools
 @using LY.LlmPool.Web.Services.Agents
@@ -83,6 +85,14 @@
                         <FormItem Label="Description">
                             <TextArea @bind-Value="@_editingPrompt.Description" 
                                       @bind-Value:after="TriggerAutoSave" />
+                        </FormItem>
+                        <FormItem Label="Tags">
+                            <Select TItem="string" TItemValue="string" Values="_selectedTags" ValuesChanged="@((IEnumerable<string> vals) => _selectedTags = vals ?? Array.Empty<string>())" Mode="@SelectMode.Tags" Placeholder="Enter or select tags" Style="min-width:300px;" AllowClear>
+                                @foreach (var tag in _availableTags)
+                                {
+                                    <SelectOption TItem="string" TItemValue="string" Value="@tag">@tag</SelectOption>
+                                }
+                            </Select>
                         </FormItem>
                         <FormItem Label="Content" Required>
                             <TextArea @bind-Value="@_editingPrompt.Content" 
@@ -1986,6 +1996,8 @@
 
     private List<LlmConfig> _availableConfigs = new();
     private List<LlmEndpoint> _availableEndpoints = new();
+    private List<string> _availableTags = new();
+    private IEnumerable<string> _selectedTags = Array.Empty<string>();
     private bool _testLoading;
     private CancellationTokenSource? _testCancellationTokenSource;
 
@@ -2063,6 +2075,15 @@
             _availableConfigs = await LlmPoolService.GetConfigsAsync();
             _availableEndpoints = await LlmPoolService.GetEndpointsAsync();
             await LoadAvailableToolsAsync();
+            // Load tag options
+            try
+            {
+                _availableTags = await PromptService.GetAllTagsAsync();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Failed to load prompt tags");
+            }
         }
         catch (Exception ex)
         {
@@ -2307,6 +2328,11 @@
 
             await LoadTestConfigsAndParameters(latestHistory?.TestConfigs);
 
+            // Load tags for editing
+            _selectedTags = string.IsNullOrEmpty(_editingPrompt.Tags)
+                ? Array.Empty<string>()
+                : _editingPrompt.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
             // Load associated tools
             await LoadPromptToolsAsync();
 
@@ -2341,6 +2367,7 @@
                 Id = Restore ? version.PromptId : null,
                 Name = _editingPrompt.Name, // Keep the current name
                 Description = _editingPrompt.Description, // Keep the current description
+                Tags = _editingPrompt.Tags, // Keep current tags when loading a historical content version
                 Content = version.Content,
                 Version = version.Version
             };
@@ -2375,6 +2402,10 @@
 
         try
         {
+            // Normalize and save tags from UI
+            _editingPrompt.Tags = _selectedTags?.Any() == true
+                ? string.Join(',', _selectedTags.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()))
+                : null;
             if (_editingPrompt.Id == null)
             {
                 await PromptService.CreatePromptAsync(_editingPrompt);

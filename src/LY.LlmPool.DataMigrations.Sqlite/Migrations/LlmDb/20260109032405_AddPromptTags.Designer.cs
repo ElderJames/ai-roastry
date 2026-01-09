@@ -3,16 +3,19 @@ using System;
 using LY.LlmPool.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace LY.LlmPool.Web.Data.Migrations
+namespace LY.LlmPool.DataMigrations.Sqlite.Migrations.LlmDb
 {
     [DbContext(typeof(LlmDbContext))]
-    partial class LlmDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260109032405_AddPromptTags")]
+    partial class AddPromptTags
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.5");

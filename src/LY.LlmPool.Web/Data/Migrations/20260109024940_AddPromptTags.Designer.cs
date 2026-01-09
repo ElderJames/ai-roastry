@@ -3,6 +3,7 @@ using System;
 using LY.LlmPool.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace LY.LlmPool.Web.Data.Migrations
 {
     [DbContext(typeof(LlmDbContext))]
-    partial class LlmDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260109024940_AddPromptTags")]
+    partial class AddPromptTags
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.5");

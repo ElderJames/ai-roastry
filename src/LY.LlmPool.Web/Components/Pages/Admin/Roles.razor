@@ -1,0 +1,94 @@
+@page "/admin/roles"
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Administrator")]
+@inject RoleManager<IdentityRole> RoleManager
+@inject MessageService _message
+
+<PageTitle>角色管理</PageTitle>
+
+<Card>
+    <TitleTemplate>
+        <div class="d-flex justify-content-between align-items-center">
+            <div>角色管理</div>
+            <div>
+                <Input @bind-Value="_newRole" Placeholder="角色名" />
+                <Button OnClick="CreateRole">新建角色</Button>
+            </div>
+        </div>
+    </TitleTemplate>
+    <ChildContent>
+        <Table TItem="IdentityRole" DataSource="@_roles" Loading="_loading">
+            <PropertyColumn Property="c => c.Name" Title="角色名" />
+            <ActionColumn Title="操作">
+                <Space>
+                    <SpaceItem>
+                        <Popconfirm Title="确认删除该角色吗？" OkText="是" CancelText="否" OnConfirm="() => DeleteRole(context)">
+                            <Button Danger>删除</Button>
+                        </Popconfirm>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </ChildContent>
+</Card>
+
+@code {
+    private List<IdentityRole> _roles = new();
+    private bool _loading;
+    private string _newRole = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+    }
+
+    private async Task Refresh()
+    {
+        _loading = true;
+        try
+        {
+            _roles = RoleManager.Roles.ToList();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task CreateRole()
+    {
+        if (string.IsNullOrWhiteSpace(_newRole)) return;
+        if (await RoleManager.RoleExistsAsync(_newRole))
+        {
+            _message.Warning("角色已存在");
+            return;
+        }
+
+        var result = await RoleManager.CreateAsync(new IdentityRole(_newRole));
+        if (result.Succeeded)
+        {
+            await Refresh();
+            _message.Success("角色已创建");
+            _newRole = string.Empty;
+        }
+        else
+        {
+            _message.Error("创建角色失败");
+        }
+    }
+
+    private async Task DeleteRole(IdentityRole role)
+    {
+        var result = await RoleManager.DeleteAsync(role);
+        if (result.Succeeded)
+        {
+            await Refresh();
+            _message.Success("角色已删除");
+        }
+        else
+        {
+            _message.Error("删除角色失败");
+        }
+    }
+}

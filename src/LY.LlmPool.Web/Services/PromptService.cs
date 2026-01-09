@@ -30,13 +30,49 @@ public class PromptService
         _serviceProvider = serviceProvider;
     }
 
-    public async Task<List<LlmPrompt>> GetPromptsAsync()
+    /// <summary>
+    /// Get prompts, optionally filtering by tags (any match).
+    /// </summary>
+    public async Task<List<LlmPrompt>> GetPromptsAsync(IEnumerable<string>? tags = null)
     {
         await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
-        return await dbContext.Prompts
+        var query = dbContext.Prompts
             .AsNoTracking()
-            .OrderByDescending(x => x.UpdateTime)
+            .OrderByDescending(x => x.UpdateTime);
+
+        var prompts = await query.ToListAsync();
+
+        if (tags != null && tags.Any())
+        {
+            var set = new HashSet<string>(tags.Select(t => t?.Trim() ?? string.Empty), StringComparer.OrdinalIgnoreCase);
+            prompts = prompts.Where(p => !string.IsNullOrEmpty(p.Tags) && p.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Any(t => set.Contains(t))).ToList();
+        }
+
+        return prompts;
+    }
+
+    /// <summary>
+    /// 获取所有已存在的标签（去重并排序）
+    /// </summary>
+    public async Task<List<string>> GetAllTagsAsync()
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var tagsList = await dbContext.Prompts
+            .AsNoTracking()
+            .Select(p => p.Tags)
+            .Where(t => !string.IsNullOrEmpty(t))
             .ToListAsync();
+
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tags in tagsList)
+        {
+            foreach (var t in (tags ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                set.Add(t);
+            }
+        }
+
+        return set.OrderBy(t => t).ToList();
     }
 
     public async Task<LlmPrompt?> GetPromptByIdAsync(string id)
@@ -55,10 +91,48 @@ public class PromptService
         prompt.CreateTime = DateTime.UtcNow;
         prompt.UpdateTime = DateTime.UtcNow;
         prompt.Version = 1;
+        prompt.Status = prompt.Status ?? "Draft";
 
         dbContext.Prompts.Add(prompt);
         await dbContext.SaveChangesAsync();
         return prompt;
+    }
+
+    public async Task SubmitForReviewAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var prompt = await dbContext.Prompts.FindAsync(id);
+        if (prompt == null) throw new KeyNotFoundException($"Prompt with ID {id} not found.");
+        prompt.Status = "PendingReview";
+        prompt.UpdateTime = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+    }
+
+    public async Task PublishPromptAsync(string id)
+    {
+        await using var dbContext = await _dbContextFactory.CreateDbContextAsync();
+        var prompt = await dbContext.Prompts.FindAsync(id);
+        if (prompt == null) throw new KeyNotFoundException($"Prompt with ID {id} not found.");
+        prompt.Status = "Published";
+        prompt.UpdateTime = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+
+        // Invalidate cache for related apps
+        try
+        {
+            var relatedApps = await dbContext.Apps
+                .Where(a => a.LlmPromptId == prompt.Id)
+                .Select(a => a.Id)
+                .ToListAsync();
+            foreach (var appId in relatedApps)
+            {
+                await _cacheService.InvalidateAppRelatedCachesAsync(appId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to refresh caches after publishing Prompt {PromptId}", prompt.Id);
+        }
     }
 
     public async Task<LlmPrompt> UpdatePromptAsync(LlmPrompt prompt)
