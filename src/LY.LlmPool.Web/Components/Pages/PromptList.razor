@@ -16,12 +16,19 @@
             <div>Prompt List</div>
             <div>
                 <Space>
-                    <Select TItem="string" TItemValue="string" Values="_selectedTags" ValuesChanged="@((IEnumerable<string> vals) => { _selectedTags = vals ?? Array.Empty<string>(); _ = OnTagsChanged(null); })" Mode="@SelectMode.Multiple" Placeholder="Filter by tags" Style="min-width:220px; margin-right:8px;">
-                        @foreach (var tag in _availableTags)
-                        {
-                            <SelectOption TItem="string" TItemValue="string" Value="@tag">@tag</SelectOption>
-                        }
-                    </Select>
+                    @if (_tagsLoaded)
+                    {
+                        <Select TItem="string" TItemValue="string" Values="_selectedTags" ValuesChanged="@((IEnumerable<string> vals) => { _selectedTags = vals ?? Array.Empty<string>(); _ = OnTagsChanged(null); })" Mode="@SelectMode.Multiple" Placeholder="Filter by tags" Style="min-width:220px; margin-right:8px;" AllowClear>
+                            @foreach (var tag in _availableTags)
+                            {
+                                <SelectOption TItem="string" TItemValue="string" Value="@tag">@tag</SelectOption>
+                            }
+                        </Select>
+                    }
+                    else
+                    {
+                        <Select TItem="string" TItemValue="string" Disabled Placeholder="Loading tags..." Style="min-width:220px; margin-right:8px;" />
+                    }
 
                     <Button OnClick="ClearTagFilter">Clear</Button>
 
@@ -162,6 +169,7 @@
 @code {
     private List<LlmPrompt> _prompts = new();
     private List<string> _availableTags = new();
+    private bool _tagsLoaded = false;
     private IEnumerable<string> _selectedTags = Array.Empty<string>();
     private bool _showHistoryDrawer;
     private bool _loading;
@@ -184,6 +192,11 @@
         catch (Exception ex)
         {
             _message.Error($"Failed to load tags: {ex.Message}");
+        }
+        finally
+        {
+            // Mark tags as loaded so UI can render Select safely
+            _tagsLoaded = true;
         }
     }
 

@@ -22,6 +22,7 @@ using Microsoft.Extensions.Http.Resilience;
 using Scalar.AspNetCore;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using System.Runtime.Loader;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -73,9 +74,14 @@ builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
 // Add Identity services
 builder.Services.AddIdentityCore<ApplicationUser>(options => options.SignIn.RequireConfirmedAccount = true)
+    // 注册角色支持，以便 RoleManager<IdentityRole> 可注入并使用
+    .AddRoles<IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders();
+
+// 确保当创建 ClaimsPrincipal 时会包含角色声明
+builder.Services.AddScoped<IUserClaimsPrincipalFactory<ApplicationUser>, UserClaimsPrincipalFactory<ApplicationUser, IdentityRole>>();
 
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityUserAccessor>();
@@ -393,6 +399,24 @@ if (!app.Environment.IsDevelopment())
 
 if (!useInMemoryDb)
 {
+    // Ensure the external migrations assembly can be resolved at runtime.
+    // Sometimes EF tries to load the assembly by name; explicitly loading it
+    // from the application's base directory makes it available to the default
+    // AssemblyLoadContext and prevents a FileNotFoundException.
+    var migrationsDllPath = Path.Combine(AppContext.BaseDirectory, "LY.LlmPool.DataMigrations.Sqlite.dll");
+    if (File.Exists(migrationsDllPath))
+    {
+        try
+        {
+            AssemblyLoadContext.Default.LoadFromAssemblyPath(migrationsDllPath);
+            builder.Logging.AddConsole();
+            // Using app isn't available yet here; use the builder's logger indirectly
+        }
+        catch (Exception ex)
+        {
+            // Swallow and log later after app is built; don't prevent startup here.
+        }
+    }
     using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     dbContext.Database.Migrate();
@@ -477,6 +501,32 @@ if (app.Environment.IsDevelopment())
         return Results.Json(result);
     });
 }
+
+// Debug: returns current principal claims and roles (for troubleshooting authentication)
+app.MapGet("/debug/whoami", async (HttpContext ctx, UserManager<ApplicationUser> userManager, Microsoft.Extensions.Options.IOptions<IdentityOptions> identityOptions) =>
+{
+    var user = ctx.User;
+    List<string>? rolesFromDb = null;
+    if (user.Identity?.IsAuthenticated == true)
+    {
+        var u = await userManager.GetUserAsync(user);
+        if (u != null)
+        {
+            rolesFromDb = (await userManager.GetRolesAsync(u)).ToList();
+        }
+    }
+
+    var payload = new
+    {
+        IsAuthenticated = user.Identity?.IsAuthenticated == true,
+        AuthenticationType = user.Identity?.AuthenticationType,
+        Name = user.Identity?.Name,
+        Claims = user.Claims.Select(c => new { c.Type, c.Value }).ToList(),
+        RolesInPrincipal = user.Claims.Where(c => c.Type == identityOptions.Value.ClaimsIdentity.RoleClaimType).Select(c => c.Value).ToList(),
+        RolesFromDb = rolesFromDb
+    };
+    return Results.Json(payload);
+});
 
 // Seed minimal data when using InMemory DB so UI dropdowns have items
 if (useInMemoryDb)

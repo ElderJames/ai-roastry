@@ -57,4 +57,14 @@
     <ProjectReference Include="..\LY.LlmPool.Client\LY.LlmPool.Client.csproj" />
   </ItemGroup>
 
+  <!-- Copy the SQLite migrations assembly (if present) into the web output so EF can load
+       the migrations assembly at runtime without requiring a project reference. -->
+  <Target Name="CopySqliteMigrationsAssembly" AfterTargets="Build">
+    <PropertyGroup>
+      <MigrationsAssemblyPath>$(MSBuildThisFileDirectory)..\LY.LlmPool.DataMigrations.Sqlite\bin\$(Configuration)\net9.0\LY.LlmPool.DataMigrations.Sqlite.dll</MigrationsAssemblyPath>
+    </PropertyGroup>
+    <Message Importance="High" Text="Checking for migrations assembly at '$(MigrationsAssemblyPath)'" />
+    <Copy SourceFiles="$(MigrationsAssemblyPath)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(MigrationsAssemblyPath)')" />
+  </Target>
+
 </Project>

@@ -1,0 +1,21 @@
+@inherits LayoutComponentBase
+
+<h1>用户管理</h1>
+
+<div>
+    <div class="row">
+        <div class="col-md-3">
+            <ul class="nav nav-pills flex-column">
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="/admin/users" Match="NavLinkMatch.Prefix">用户管理</NavLink>
+                </li>
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="/admin/roles" Match="NavLinkMatch.Prefix">角色管理</NavLink>
+                </li>
+            </ul>
+        </div>
+        <div class="col-md-9">
+            @Body
+        </div>
+    </div>
+</div>

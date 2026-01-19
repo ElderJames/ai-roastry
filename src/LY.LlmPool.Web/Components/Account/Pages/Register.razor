@@ -14,6 +14,7 @@
 @inject ILogger<Register> Logger
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
+@inject RoleManager<IdentityRole> RoleManager
 
 <PageTitle>Register</PageTitle>
 
@@ -98,8 +99,20 @@
                 new() { ["email"] = Input.Email, ["returnUrl"] = ReturnUrl });
         }
 
+        // 如果这是第一个注册的用户，则创建管理员角色并赋予该用户
+        if (UserManager.Users.Count() == 1)
+        {
+            const string adminRole = "Administrator";
+            if (!await RoleManager.RoleExistsAsync(adminRole))
+            {
+                await RoleManager.CreateAsync(new IdentityRole(adminRole));
+            }
+            await UserManager.AddToRoleAsync(user, adminRole);
+        }
+
         await SignInManager.SignInAsync(user, isPersistent: false);
-        RedirectManager.RedirectTo(ReturnUrl);
+        // 强制完整加载页面以便新的身份验证 cookie 被读取（Server-side Blazor circuit 需要新的请求来更新角色声明）
+        NavigationManager.NavigateTo(ReturnUrl ?? "/", forceLoad: true);
     }
 
     private ApplicationUser CreateUser()

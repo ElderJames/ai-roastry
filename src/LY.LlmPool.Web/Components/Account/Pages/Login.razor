@@ -93,7 +93,8 @@
         if (result.Succeeded)
         {
             Logger.LogInformation("User logged in.");
-            RedirectManager.RedirectTo(ReturnUrl);
+            // 强制完整加载页面以便新的身份验证 cookie 被读取（Server-side Blazor circuit 需要新的请求来更新角色声明）
+            NavigationManager.NavigateTo(ReturnUrl ?? "/", forceLoad: true);
         }
         else if (result.RequiresTwoFactor)
         {

@@ -15,6 +15,7 @@
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
 @inject ILogger<ExternalLogin> Logger
+@inject RoleManager<IdentityRole> RoleManager
 
 <PageTitle>Register</PageTitle>
 
@@ -141,6 +142,17 @@
             {
                 Logger.LogInformation("User created an account using {Name} provider.", externalLoginInfo.LoginProvider);
 
+                    // 如果这是第一个注册的用户，则创建管理员角色并赋予该用户
+                    if (UserManager.Users.Count() == 1)
+                    {
+                        const string adminRole = "Administrator";
+                        if (!await RoleManager.RoleExistsAsync(adminRole))
+                        {
+                            await RoleManager.CreateAsync(new IdentityRole(adminRole));
+                        }
+                        await UserManager.AddToRoleAsync(user, adminRole);
+                    }
+
                 var userId = await UserManager.GetUserIdAsync(user);
                 var code = await UserManager.GenerateEmailConfirmationTokenAsync(user);
                 code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
@@ -157,7 +169,8 @@
                 }
 
                 await SignInManager.SignInAsync(user, isPersistent: false, externalLoginInfo.LoginProvider);
-                RedirectManager.RedirectTo(ReturnUrl);
+                // External login flow also needs a full reload so role claims are available in the new circuit
+                NavigationManager.NavigateTo(ReturnUrl ?? "/", forceLoad: true);
             }
         }
 
