@@ -19,6 +19,8 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.VectorData;
+using Microsoft.SemanticKernel;
 using Scalar.AspNetCore;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -101,6 +103,49 @@ builder.Services.AddScoped<IChatClientService, ChatClientService>();
 builder.Services.AddScoped(sp => (ChatClientService)sp.GetRequiredService<IChatClientService>());
 builder.Services.AddSingleton<PromptParameterService>(); // Singleton - 无状态服务,可被 Singleton 依赖(包含环境变量替换功能)
 builder.Services.AddScoped<CallRecordService>();
+
+// 🎯 Prompt 缓存服务配置 - 使用 Microsoft.Extensions.VectorData 抽象
+builder.Services.Configure<LY.LlmPool.Web.Services.PromptCache.PromptCacheOptions>(
+    builder.Configuration.GetSection("PromptCache"));
+builder.Services.Configure<LY.LlmPool.Web.Services.PromptCache.EmbeddingGeneratorOptions>(
+    builder.Configuration.GetSection("EmbeddingGenerator"));
+
+// 注册 Embedding 生成器工厂
+builder.Services.AddSingleton<LY.LlmPool.Web.Services.PromptCache.EmbeddingGeneratorFactory>();
+
+// 添加 Embedding Generator 到 DI（供 VectorStore 使用）
+builder.Services.AddEmbeddingGenerator(sp =>
+{
+    var factory = sp.GetRequiredService<LY.LlmPool.Web.Services.PromptCache.EmbeddingGeneratorFactory>();
+    return factory.CreateGenerator();
+});
+
+// 配置 SQLite Vector Store
+var promptCacheOptions = builder.Configuration.GetSection("PromptCache").Get<LY.LlmPool.Web.Services.PromptCache.PromptCacheOptions>() 
+    ?? new LY.LlmPool.Web.Services.PromptCache.PromptCacheOptions();
+var vectorStorePath = Path.Combine(AppContext.BaseDirectory, promptCacheOptions.VectorDbPath);
+var vectorStoreConnectionString = $"Data Source={vectorStorePath}";
+
+// 只有在配置启用时才注册 Prompt Cache 相关服务
+if (promptCacheOptions.Enabled)
+{
+    // 注册 SQLite Vector Store 和 Collection
+    builder.Services.AddSqliteVectorStore(_ => vectorStoreConnectionString);
+    builder.Services.AddSqliteCollection<string, LY.LlmPool.Web.Data.Entities.PromptCacheEntry>(
+        LY.LlmPool.Web.Data.Entities.PromptCacheEntry.CollectionName,
+        vectorStoreConnectionString);
+
+    // 注册 Prompt 缓存服务（使用新的 VectorStore 实现）
+    builder.Services.AddSingleton<LY.LlmPool.Web.Services.PromptCache.PromptCacheService>();
+
+    // 初始化向量存储（后台任务）
+    builder.Services.AddHostedService<LY.LlmPool.Web.Services.PromptCache.PromptCacheInitializationService>();
+}
+else
+{
+    // Prompt Cache 未启用（PromptCache:Enabled = false），跳过注册
+    Console.WriteLine("Prompt cache disabled by configuration (PromptCache:Enabled = false). Skipping registration of prompt cache services.");
+} 
 
 // 🎯 添加统一的缓存管理服务（Singleton - 管理全局缓存）
 builder.Services.AddSingleton<LlmPoolCacheService>();

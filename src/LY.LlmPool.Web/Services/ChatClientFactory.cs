@@ -1,5 +1,6 @@
 using LY.LlmPool.Web.Data.Entities;
 using LY.LlmPool.Web.Services.Monitoring;
+using LY.LlmPool.Web.Services.PromptCache;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using System.ClientModel;
@@ -20,6 +21,7 @@ public class ChatClientFactory
     private readonly ILogger<MonitoringDelegatingChatClient>? _monitoringLogger;
     private readonly ChatExecutionPersistenceService? _persistenceService;
     private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly PromptCacheService? _promptCacheService;
 
     public ChatClientFactory(
         IHttpClientFactory httpClientFactory,
@@ -29,7 +31,8 @@ public class ChatClientFactory
         ILogger<ParameterInjectingHandler>? parameterLogger = null,
         ILogger<MonitoringDelegatingChatClient>? monitoringLogger = null,
         ChatExecutionPersistenceService? persistenceService = null,
-        IHttpContextAccessor? httpContextAccessor = null)
+        IHttpContextAccessor? httpContextAccessor = null,
+        PromptCacheService? promptCacheService = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -39,6 +42,7 @@ public class ChatClientFactory
         _monitoringLogger = monitoringLogger;
         _persistenceService = persistenceService;
         _httpContextAccessor = httpContextAccessor;
+        _promptCacheService = promptCacheService;
     }
 
     /// <summary>
@@ -48,18 +52,21 @@ public class ChatClientFactory
     /// <param name="enableFunctionInvocation">是否启用自动工具调用（默认 true）</param>
     /// <param name="parameters">要注入到请求中的额外参数（如 temperature, max_tokens）</param>
     /// <param name="enableLogging">是否启用 HTTP 请求/响应日志（默认 false）</param>
+    /// <param name="enablePromptCache">是否启用 Prompt 缓存（默认 true）</param>
+    /// <param name="enableLogging">是否启用 HTTP 请求/响应日志（默认 false）</param>
     public IChatClient CreateClient(
         LlmConfig config,
         bool enableFunctionInvocation = true,
         Dictionary<string, object>? parameters = null,
-        bool enableLogging = false)
+        bool enableLogging = false,
+        bool enablePromptCache = true)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentException.ThrowIfNullOrWhiteSpace(config.BaseUrl, nameof(config.BaseUrl));
         ArgumentException.ThrowIfNullOrWhiteSpace(config.ApiKey, nameof(config.ApiKey));
 
-        _logger.LogDebug("为配置 {ConfigName} 创建 ChatClient，BaseUrl: {BaseUrl}, Model: {Model}, FunctionInvocation: {FunctionInvocation}", 
-            config.Name, config.BaseUrl, config.Model, enableFunctionInvocation);
+        _logger.LogDebug("为配置 {ConfigName} 创建 ChatClient，BaseUrl: {BaseUrl}, Model: {Model}, FunctionInvocation: {FunctionInvocation}, PromptCache: {PromptCache}", 
+            config.Name, config.BaseUrl, config.Model, enableFunctionInvocation, enablePromptCache);
 
         // 创建 HttpClient 和 DelegatingHandler 链
         HttpClient httpClient;
@@ -133,6 +140,18 @@ public class ChatClientFactory
                     _loggerFactory.CreateLogger<Decorators.ConversationIdInjectingChatClient>(),
                     _httpContextAccessor);
             }
+        }
+
+        // 🎯 添加 Prompt 缓存支持（在最外层，优先检查缓存）
+        if (enablePromptCache && _promptCacheService != null)
+        {
+            chatClient = chatClient.WithPromptCache(
+                _promptCacheService,
+                _loggerFactory.CreateLogger<CachingChatClient>(),
+                config.Id,
+                config.Model);
+            
+            _logger.LogDebug("已为 ChatClient 启用 Prompt 缓存");
         }
 
         return chatClient;
